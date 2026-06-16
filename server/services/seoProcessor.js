@@ -243,20 +243,189 @@ async function analyzeSeoPage(url) {
 
 // ── Keyword Density Analyzer ─────────────────────────────────────────────────
 
+// Static synonym / related-phrase map for keyword variations
+const KW_SYNONYMS = {
+  website:     ['web design',          'web development',   'online platform',     'web page'],
+  software:    ['web application',     'software solution', 'digital tool',        'app development'],
+  design:      ['UI design',           'graphic design',    'creative design',     'visual design'],
+  development: ['web development',     'coding',            'programming',         'app development'],
+  marketing:   ['digital marketing',   'online marketing',  'SEO strategy',        'content marketing'],
+  business:    ['company strategy',    'enterprise',        'startup',             'business growth'],
+  content:     ['blog post',           'article writing',   'content marketing',   'copywriting'],
+  project:     ['project management',  'project planning',  'project ideas',       'academic project'],
+  technology:  ['tech solution',       'digital technology','IT solution',         'innovation'],
+  service:     ['professional service','managed service',   'consulting',          'service provider'],
+  product:     ['product development', 'product launch',    'ecommerce product',   'product strategy'],
+  data:        ['data analysis',       'data science',      'big data',            'data management'],
+  security:    ['cybersecurity',       'data security',     'network security',    'IT security'],
+  cloud:       ['cloud computing',     'cloud service',     'cloud storage',       'SaaS'],
+  mobile:      ['mobile app',          'Android app',       'iOS app',             'responsive design'],
+  social:      ['social media',        'social marketing',  'social media strategy','community'],
+  ecommerce:   ['online store',        'digital commerce',  'online shopping',     'retail platform'],
+  blog:        ['blogging',            'blog post',         'content creation',    'article writing'],
+  video:       ['video marketing',     'YouTube SEO',       'video content',       'multimedia'],
+  email:       ['email marketing',     'email campaign',    'newsletter',          'email automation'],
+  seo:         ['search optimization', 'on-page SEO',       'technical SEO',       'link building'],
+  analytics:   ['web analytics',       'data tracking',     'traffic analysis',    'Google Analytics'],
+  performance: ['page speed',          'site optimization', 'core web vitals',     'load time'],
+  hosting:     ['web hosting',         'cloud hosting',     'server setup',        'VPS'],
+  domain:      ['domain name',         'URL structure',     'subdomain',           'domain authority'],
+};
+
 async function analyzeKeywords(url, text) {
-  let words;
+  // ── Build word lists ─────────────────────────────────────────────
+  let rawText;
   if (text) {
-    words = text.toLowerCase().replace(/[^a-z0-9\s'-]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !STOP.has(w));
+    rawText = text;
   } else {
     const html = await fetchHtml(url);
-    words = extractWords(html);
+    const $    = cheerio.load(html);
+    $('script,style,nav,footer,header,aside,noscript').remove();
+    rawText = $('body').text();
   }
-  const totalWords = words.length;
+
+  const tokenize = str =>
+    str.toLowerCase().replace(/[^a-z0-9\s'-]/g, ' ').split(/\s+/).filter(Boolean);
+
+  const allTokens  = tokenize(rawText);
+  const rawWordCount = allTokens.filter(w => w.length > 1).length;
+
+  // Filtered: stopwords removed, minimum length 3
+  const filteredWords = allTokens.filter(w => w.length > 2 && !STOP.has(w));
+  const filteredCount = filteredWords.length;
+
+  // ── Frequencies ──────────────────────────────────────────────────
+  const keywords = wordFrequency(filteredWords, 1);
+  const bigrams  = wordFrequency(filteredWords, 2);
+  const trigrams = wordFrequency(filteredWords, 3);
+
+  // Unfiltered keywords — for stopwords-on toggle
+  const allKeywords = wordFrequency(allTokens.filter(w => w.length > 1), 1);
+
+  // ── Primary keyword ──────────────────────────────────────────────
+  const primaryKeyword = keywords[0]?.phrase || null;
+  const primaryDensity = keywords[0]?.density || 0;
+
+  // ── Insights ─────────────────────────────────────────────────────
+  const overused       = keywords.filter(k => k.density > 3);
+  const underused      = keywords.filter(k => k.density >= 0.1 && k.density < 0.5);
+  const hasFocusKeyword = keywords.some(k => k.density >= 1);
+
+  // ── SEO Score (0-100) ────────────────────────────────────────────
+  let seoScore = 0;
+
+  // 1. Primary keyword density balance (0-35 pts)
+  const d = primaryDensity;
+  if      (d >= 0.8 && d <= 2.5) seoScore += 35;   // optimal
+  else if (d >= 0.5 && d < 0.8)  seoScore += 22;   // slightly sparse
+  else if (d > 2.5  && d <= 3.5) seoScore += 22;   // slightly dense
+  else if (d > 3.5  && d <= 5)   seoScore += 10;   // borderline stuffing
+  else if (d >= 0.1 && d < 0.5)  seoScore +=  8;   // underused
+  // d === 0 or d > 5: 0 pts
+
+  // 2. Long-tail keyword presence (0-25 pts)
+  const goodBigrams  = bigrams.filter(b => b.count >= 2).length;
+  const goodTrigrams = trigrams.filter(t => t.count >= 2).length;
+  seoScore += Math.min(15, goodBigrams  * 3);
+  seoScore += Math.min(10, goodTrigrams * 5);
+
+  // 3. Vocabulary richness / keyword diversity (0-20 pts)
+  const uniqueKw = keywords.length;
+  if      (uniqueKw >= 100) seoScore += 20;
+  else if (uniqueKw >=  50) seoScore += 15;
+  else if (uniqueKw >=  20) seoScore += 10;
+  else if (uniqueKw >=  10) seoScore +=  5;
+
+  // 4. Keyword balance / distribution (0-20 pts)
+  if      (overused.length === 0 && uniqueKw >= 10) seoScore += 20;
+  else if (overused.length <= 1  && uniqueKw >=  5) seoScore += 15;
+  else if (overused.length <= 3)                    seoScore +=  8;
+  else                                               seoScore +=  3;
+
+  seoScore = Math.min(100, Math.round(seoScore));
+
+  const scoreLabel = seoScore >= 90 ? 'Excellent'
+    : seoScore >= 70 ? 'Good'
+    : seoScore >= 50 ? 'Average'
+    : 'Needs Improvement';
+
+  // ── Smart suggestions ────────────────────────────────────────────
+  const suggestions = [];
+
+  if (d > 3.5) {
+    suggestions.push(`"${primaryKeyword}" is overused (${d.toFixed(1)}%). Reduce repetition and use synonyms to avoid keyword stuffing penalties.`);
+  } else if (d > 0 && d < 0.5) {
+    suggestions.push(`"${primaryKeyword}" has very low density (${d.toFixed(1)}%). Use it more consistently to signal content focus to search engines.`);
+  } else if (!primaryKeyword || d === 0) {
+    suggestions.push('Content lacks a clear focus keyword. Identify your target keyword and use it with 1–2.5% density.');
+  }
+
+  if (!hasFocusKeyword) {
+    suggestions.push('No keyword exceeds 1% density. Your content lacks a clear SEO focus — identify your primary topic and reinforce it throughout.');
+  }
+
+  if (overused.length > 0) {
+    const ex = overused.slice(0, 2).map(k => `"${k.phrase}"`).join(', ');
+    suggestions.push(`Replace some instances of ${ex} with synonyms or closely related terms to diversify usage.`);
+  }
+
+  if (goodBigrams < 3) {
+    const top = bigrams.slice(0, 3).map(b => `"${b.phrase}"`).join(', ');
+    suggestions.push(top
+      ? `Add more long-tail keyword phrases. Top candidates from your content: ${top}.`
+      : 'Include specific two-word or three-word keyword phrases for better long-tail SEO targeting.');
+  }
+
+  if (goodTrigrams === 0 && filteredCount > 100) {
+    suggestions.push('Use specific 3-word phrases to capture targeted search traffic with lower competition.');
+  }
+
+  if (rawWordCount < 300) {
+    suggestions.push('Content is too short for strong SEO. Aim for at least 300–500 words to improve search visibility.');
+  } else if (rawWordCount < 800) {
+    suggestions.push('Expanding content to 800+ words helps establish topical authority and improve rankings.');
+  }
+
+  if (uniqueKw < 10 && filteredCount > 50) {
+    suggestions.push('Very limited keyword variety. Expand vocabulary to cover related subtopics and semantic variations.');
+  }
+
+  // ── Keyword variations ───────────────────────────────────────────
+  const variations = [];
+  if (primaryKeyword) {
+    // Bigrams/trigrams that contain the primary keyword word
+    [...bigrams, ...trigrams]
+      .filter(b => b.phrase.split(' ').some(w => w === primaryKeyword || primaryKeyword.startsWith(w)))
+      .slice(0, 3)
+      .forEach(b => { if (!variations.includes(b.phrase)) variations.push(b.phrase); });
+
+    // Static synonym map
+    (KW_SYNONYMS[primaryKeyword] || []).forEach(v => {
+      if (!variations.includes(v) && variations.length < 8) variations.push(v);
+    });
+
+    // Fill remaining slots with top bigrams
+    bigrams.slice(0, 6).forEach(b => {
+      if (!variations.includes(b.phrase) && variations.length < 8) variations.push(b.phrase);
+    });
+  }
+
   return {
-    totalWords,
-    keywords: wordFrequency(words, 1),
-    bigrams:  wordFrequency(words, 2),
-    trigrams: wordFrequency(words, 3),
+    totalWords: rawWordCount,
+    filteredWords: filteredCount,
+    seoScore,
+    scoreLabel,
+    primaryKeyword,
+    primaryDensity,
+    keywords,
+    allKeywords,
+    bigrams,
+    trigrams,
+    overused,
+    underused,
+    hasFocusKeyword,
+    suggestions,
+    variations: variations.slice(0, 8),
   };
 }
 

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Globe, AlertCircle, Check, X, ChevronRight, Loader2, CheckCircle2, XCircle, AlertTriangle, FileText, Hash, Link2, Share2 } from 'lucide-react';
+import { Search, Globe, AlertCircle, Check, X, ChevronRight, Loader2, CheckCircle2, XCircle, AlertTriangle, FileText, Hash, Link2, Share2, Lightbulb, Sparkles, BarChart2 } from 'lucide-react';
 import { useSeoAnalyze } from '@/hooks/useSeoAnalyze';
 
 // These slugs accept optional pasted text alongside a URL
@@ -336,6 +336,274 @@ function FullSeoResult({ result }) {
   );
 }
 
+// ── Keyword density bar row ──────────────────────────────────────────────────
+
+function KwRow({ item, maxDensity = 5 }) {
+  const bw  = Math.min(100, (item.density / Math.max(maxDensity, 5)) * 100);
+  const cls = item.density > 3    ? 'bg-red-100 text-red-700 border-red-200'
+    : item.density > 2.5          ? 'bg-amber-100 text-amber-700 border-amber-200'
+    : item.density >= 0.8         ? 'bg-green-100 text-green-700 border-green-200'
+    :                               'bg-slate-100 text-slate-600 border-slate-200';
+  const bar = item.density > 3    ? 'bg-red-400'
+    : item.density > 2.5          ? 'bg-amber-400'
+    : item.density >= 0.8         ? 'bg-blue-400'
+    :                               'bg-slate-300';
+  return (
+    <tr className="border-b border-border last:border-0 hover:bg-surface-2/50">
+      <td className="px-3 py-2 text-xs text-text-primary font-medium">{item.phrase}</td>
+      <td className="px-3 py-2 text-xs text-text-muted text-right tabular-nums">{item.count}</td>
+      <td className="px-3 py-2">
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0 ${cls}`}>
+            {item.density}%
+          </span>
+          <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden min-w-[28px]">
+            <div className={`h-full rounded-full transition-all duration-500 ${bar}`} style={{ width: `${bw}%` }} />
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+// ── Phrase table (bigrams / trigrams) ────────────────────────────────────────
+
+function PhraseTable({ items, label }) {
+  if (!items?.length) return null;
+  const max = items[0]?.density || 5;
+  return (
+    <div>
+      <div className="flex items-center gap-2 pt-1">
+        <BarChart2 className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
+        <span className="text-[10px] font-bold text-text-primary uppercase tracking-widest">{label}</span>
+        <div className="flex-1 h-px bg-slate-200" />
+      </div>
+      <div className="mt-1.5 border border-border rounded-xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-surface-2 border-b border-border">
+            <tr>
+              <th className="text-left px-3 py-2 text-xs font-semibold text-text-muted">Phrase</th>
+              <th className="text-right px-3 py-2 text-xs font-semibold text-text-muted">Count</th>
+              <th className="px-3 py-2 text-xs font-semibold text-text-muted">Density</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item, i) => <KwRow key={i} item={item} maxDensity={max} />)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Enhanced Keyword Density Result ──────────────────────────────────────────
+
+function EnhancedKeywordResult({ result }) {
+  const [excludeStop, setExcludeStop] = useState(true);
+
+  const {
+    totalWords = 0, filteredWords = 0,
+    seoScore = 0, scoreLabel = '',
+    primaryKeyword = null, primaryDensity = 0,
+    keywords = [], allKeywords = [],
+    bigrams = [], trigrams = [],
+    overused = [], underused = [],
+    hasFocusKeyword = false,
+    suggestions = [], variations = [],
+  } = result;
+
+  const displayKw = excludeStop ? keywords : (allKeywords.length ? allKeywords : keywords);
+  const maxDensity = displayKw[0]?.density || 5;
+
+  const scoreColor = seoScore >= 90 ? '#22C55E'
+    : seoScore >= 70 ? '#3B82F6'
+    : seoScore >= 50 ? '#F59E0B'
+    : '#EF4444';
+  const scoreBgCls = seoScore >= 90 ? 'bg-green-50 border-green-200'
+    : seoScore >= 70 ? 'bg-blue-50 border-blue-200'
+    : seoScore >= 50 ? 'bg-amber-50 border-amber-200'
+    : 'bg-red-50 border-red-200';
+
+  const circ = 2 * Math.PI * 42;
+  const dash = circ - (seoScore / 100) * circ;
+
+  return (
+    <div className="space-y-3">
+
+      {/* ── Score + primary keyword ── */}
+      <div className={`flex items-center gap-4 p-4 rounded-xl border ${scoreBgCls}`}>
+        <svg width="96" height="96" viewBox="0 0 100 100" className="flex-shrink-0">
+          <circle cx="50" cy="50" r="42" fill="none" stroke="#E5E7EB" strokeWidth="9" />
+          <circle cx="50" cy="50" r="42" fill="none" stroke={scoreColor} strokeWidth="9"
+            strokeDasharray={circ} strokeDashoffset={dash} strokeLinecap="round"
+            transform="rotate(-90 50 50)" style={{ transition: 'stroke-dashoffset 1s ease' }} />
+          <text x="50" y="47" textAnchor="middle" fontSize="22" fontWeight="bold" fill={scoreColor}>{seoScore}</text>
+          <text x="50" y="62" textAnchor="middle" fontSize="10" fill="#6B7280">/ 100</text>
+        </svg>
+        <div className="flex-1 min-w-0">
+          <p className="text-base font-bold text-text-primary leading-tight">{scoreLabel}</p>
+          <p className="text-xs text-text-muted">SEO Content Score</p>
+          {primaryKeyword && (
+            <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+              <span className="text-xs text-text-muted">Primary:</span>
+              <span className="text-xs font-bold px-2.5 py-0.5 bg-blue-50 text-blue-700 rounded-full border border-blue-200">
+                {primaryKeyword}
+              </span>
+              <span className="text-[11px] text-text-muted">{primaryDensity}% density</span>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-x-3 mt-1.5 text-xs text-text-muted">
+            <span>{totalWords.toLocaleString()} words</span>
+            {filteredWords > 0 && <span>{filteredWords.toLocaleString()} keywords</span>}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Insights: 3 stat cards ── */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className={`p-2.5 rounded-lg border text-center ${
+          overused.length === 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+        }`}>
+          <p className={`text-xl font-bold ${overused.length === 0 ? 'text-green-600' : 'text-red-600'}`}>
+            {overused.length}
+          </p>
+          <p className={`text-[10px] font-semibold mt-0.5 ${overused.length === 0 ? 'text-green-600' : 'text-red-600'}`}>
+            Overused
+          </p>
+          <p className="text-[10px] text-text-muted">density &gt;3%</p>
+        </div>
+        <div className={`p-2.5 rounded-lg border text-center ${
+          underused.length > 3 ? 'bg-amber-50 border-amber-200' : 'bg-green-50 border-green-200'
+        }`}>
+          <p className={`text-xl font-bold ${underused.length > 3 ? 'text-amber-600' : 'text-green-600'}`}>
+            {underused.length}
+          </p>
+          <p className={`text-[10px] font-semibold mt-0.5 ${underused.length > 3 ? 'text-amber-600' : 'text-green-600'}`}>
+            Underused
+          </p>
+          <p className="text-[10px] text-text-muted">&lt;0.5% density</p>
+        </div>
+        <div className={`p-2.5 rounded-lg border text-center ${
+          hasFocusKeyword ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+        }`}>
+          <p className={`text-sm font-bold mt-1.5 ${hasFocusKeyword ? 'text-green-600' : 'text-red-600'}`}>
+            {hasFocusKeyword ? '✓ Yes' : '✗ No'}
+          </p>
+          <p className={`text-[10px] font-semibold mt-0.5 ${hasFocusKeyword ? 'text-green-600' : 'text-red-600'}`}>
+            Focus KW
+          </p>
+          <p className="text-[10px] text-text-muted">density ≥1%</p>
+        </div>
+      </div>
+
+      {/* ── Overused keywords ── */}
+      {overused.length > 0 && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+          <p className="text-xs font-bold text-red-700 mb-1.5">Overused Keywords (&gt;3% density)</p>
+          <div className="flex flex-wrap gap-1.5">
+            {overused.map((k, i) => (
+              <span key={i} className="text-[11px] px-2 py-0.5 bg-red-100 text-red-700 rounded border border-red-200 font-medium">
+                {k.phrase} ({k.density}%)
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Underused keywords (top 8) ── */}
+      {underused.length > 0 && (
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+          <p className="text-xs font-bold text-amber-700 mb-1.5">Underused Keywords (0.1–0.5% density)</p>
+          <div className="flex flex-wrap gap-1.5">
+            {underused.slice(0, 8).map((k, i) => (
+              <span key={i} className="text-[11px] px-2 py-0.5 bg-amber-100 text-amber-700 rounded border border-amber-200 font-medium">
+                {k.phrase} ({k.density}%)
+              </span>
+            ))}
+            {underused.length > 8 && (
+              <span className="text-[11px] text-amber-600 self-center">+{underused.length - 8} more</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Smart suggestions ── */}
+      {suggestions.length > 0 && (
+        <>
+          <SectionLabel icon={Lightbulb} label="Smart Suggestions" />
+          <div className="space-y-1.5">
+            {suggestions.map((s, i) => (
+              <div key={i} className="flex gap-2 items-start px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg">
+                <ChevronRight className="w-3.5 h-3.5 text-blue-500 flex-shrink-0 mt-0.5" />
+                <span className="text-xs text-blue-700">{s}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* ── Keyword variations ── */}
+      {variations.length > 0 && (
+        <>
+          <SectionLabel icon={Sparkles} label="Keyword Variations & Related Phrases" />
+          <div className="flex flex-wrap gap-1.5">
+            {variations.map((v, i) => (
+              <span key={i} className="text-xs px-2.5 py-1 bg-purple-50 text-purple-700 rounded-full border border-purple-200 font-medium">
+                {v}
+              </span>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* ── Single keywords table ── */}
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <div className="flex items-center gap-2">
+            <BarChart2 className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
+            <span className="text-[10px] font-bold text-text-primary uppercase tracking-widest">Single Keywords</span>
+            <div className="h-px bg-slate-200 w-6" />
+          </div>
+          <button
+            onClick={() => setExcludeStop(v => !v)}
+            className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border font-medium transition-colors flex-shrink-0 ${
+              excludeStop
+                ? 'bg-blue-50 border-blue-200 text-blue-700'
+                : 'bg-slate-100 border-slate-200 text-slate-600'
+            }`}
+          >
+            <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${excludeStop ? 'bg-blue-500' : 'bg-slate-400'}`} />
+            {excludeStop ? 'Stopwords Off' : 'Stopwords On'}
+          </button>
+        </div>
+        {displayKw.length > 0 && (
+          <div className="border border-border rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-surface-2 border-b border-border">
+                <tr>
+                  <th className="text-left px-3 py-2 text-xs font-semibold text-text-muted">Keyword</th>
+                  <th className="text-right px-3 py-2 text-xs font-semibold text-text-muted">Count</th>
+                  <th className="px-3 py-2 text-xs font-semibold text-text-muted">Density</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayKw.slice(0, 20).map((item, i) => (
+                  <KwRow key={i} item={item} maxDensity={maxDensity} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Bigrams + Trigrams ── */}
+      <PhraseTable items={bigrams}  label="Bigrams (2-word phrases)" />
+      <PhraseTable items={trigrams} label="Trigrams (3-word phrases)" />
+
+    </div>
+  );
+}
+
 function ResultRenderer({ result }) {
   if (!result) return null;
 
@@ -447,6 +715,11 @@ function ResultRenderer({ result }) {
         </div>
       </div>
     );
+  }
+
+  // ── Enhanced keyword density analyzer (has seoScore) ────────────
+  if (result.keywords && result.seoScore !== undefined) {
+    return <EnhancedKeywordResult result={result} />;
   }
 
   // ── Keyword density / cloud ───────────────────────────────────
