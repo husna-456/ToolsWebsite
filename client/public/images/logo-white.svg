@@ -1,0 +1,14 @@
+<svg width="38" height="38" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="icongrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6aab7a"/>
+      <stop offset="100%" stop-color="#4a7856"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="38" height="38" rx="9" fill="url(#icongrad)"/>
+  <ellipse cx="19" cy="17" rx="6" ry="10" fill="#ffffff"/>
+  <polygon points="19,5 13,14 25,14" fill="#ffffff"/>
+  <polygon points="13,26 9,33 16,30" fill="#d1fae5"/>
+  <polygon points="25,26 29,33 22,30" fill="#d1fae5"/>
+  <circle cx="19" cy="19" r="2.8" fill="#2d6a4f"/>
+</svg>

@@ -1,0 +1,15 @@
+Options -MultiViews
+RewriteEngine On
+
+# API requests — pass to Node.js
+RewriteCond %{REQUEST_URI} ^/api/ [NC]
+RewriteRule ^ - [L]
+
+# SEO files
+RewriteCond %{REQUEST_URI} ^/(sitemap.xml|robots.txt) [NC]
+RewriteRule ^ - [L]
+
+# React SPA — all other routes go to index.html
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.html [QSA,L]

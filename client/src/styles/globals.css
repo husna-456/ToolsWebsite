@@ -1,0 +1,280 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand:               #2563EB; /* solid brand color — buttons, text, icons */
+  --brand-gradient-from: #2563EB; /* gradient start color */
+  --brand-gradient-to:   #3B82F6; /* gradient end color   */
+  --brand-dark:          #1D4ED8; /* hover / pressed state */
+  --admin-brand:         #2563EB; /* admin panel accent — override via Custom CSS */
+}
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background-color: #F8FAFC;
+    color: #0F172A;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    line-height: 1.625;
+    font-size: 1.125rem; /* text-lg base */
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    line-height: 1.2;
+    letter-spacing: -0.025em;
+    color: #0F172A;
+  }
+
+  input, textarea, select, button {
+    font-family: 'Inter', sans-serif;
+  }
+}
+
+@layer components {
+
+  /* ── Brand gradient helper ──────────────────────────────── */
+  .bg-brand {
+    background: linear-gradient(135deg, var(--brand-gradient-from) 0%, var(--brand-gradient-to) 100%);
+  }
+  .bg-brand-dark {
+    background: linear-gradient(135deg, color-mix(in srgb, var(--brand), black 30%) 0%, var(--brand-dark) 100%);
+  }
+
+  /* ── Buttons ────────────────────────────────────────────── */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2
+           text-white font-semibold text-lg
+           px-6 py-3 rounded-xl border-none cursor-pointer
+           transition-all duration-200
+           active:scale-[0.98]
+           disabled:opacity-40 disabled:cursor-not-allowed
+           disabled:transform-none disabled:shadow-none
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40;
+    background: linear-gradient(135deg, var(--brand-gradient-from) 0%, var(--brand-gradient-to) 100%);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: linear-gradient(135deg, var(--brand-gradient-to) 0%, var(--brand-gradient-from) 100%);
+    box-shadow: 0 8px 24px color-mix(in srgb, var(--brand), transparent 65%);
+  }
+
+  .btn-accent {
+    @apply inline-flex items-center justify-center gap-2
+           text-white font-semibold text-base
+           px-6 py-3 rounded-xl border-none cursor-pointer
+           transition-all duration-200
+           active:scale-[0.98]
+           disabled:opacity-40 disabled:cursor-not-allowed
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40;
+    background: linear-gradient(135deg, var(--brand-gradient-from) 0%, var(--brand-gradient-to) 100%);
+  }
+  .btn-accent:hover:not(:disabled) {
+    background: linear-gradient(135deg, var(--brand-gradient-to) 0%, var(--brand-gradient-from) 100%);
+    box-shadow: 0 6px 20px color-mix(in srgb, var(--brand), transparent 70%);
+  }
+
+  .btn-white {
+    @apply inline-flex items-center justify-center gap-2
+           bg-white font-semibold text-base
+           px-6 py-3 rounded-xl border-none cursor-pointer
+           transition-all duration-200
+           hover:bg-blue-50
+           active:scale-[0.98]
+           focus-visible:outline-none;
+    color: var(--brand);
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-1.5
+           px-2.5 py-1.5 text-text-secondary font-medium text-sm
+           rounded-lg hover:bg-surface-2 hover:text-text-primary
+           transition-all duration-150 cursor-pointer;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-1.5
+           px-3.5 py-2 bg-white text-text-primary font-medium text-base
+           rounded-lg border border-border
+           hover:border-blue-300 hover:bg-blue-50
+           transition-all duration-150 cursor-pointer
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/20;
+  }
+
+  /* ── Cards ──────────────────────────────────────────────── */
+  .card {
+    @apply bg-white border border-border rounded-2xl shadow-xs
+           transition-all duration-200
+           hover:-translate-y-0.5 hover:shadow-card hover:border-blue-200;
+  }
+
+  .card-glass {
+    @apply rounded-2xl border border-white/20 backdrop-blur-sm;
+    background: rgba(255,255,255,0.08);
+  }
+
+  /* ── Tool Interface ─────────────────────────────────────── */
+  .tool-textarea {
+    @apply w-full p-4 text-base leading-relaxed
+           text-text-primary bg-white border border-border
+           rounded-xl resize-none transition-all duration-150
+           focus:outline-none focus:ring-2 focus:ring-blue-500/15
+           disabled:bg-surface-2 disabled:cursor-not-allowed;
+  }
+  .tool-textarea:focus { border-color: var(--brand); }
+  .tool-textarea::placeholder { color: #94A3B8; }
+
+  .tool-input {
+    @apply w-full px-4 py-2.5 text-base
+           text-text-primary bg-white border border-border
+           rounded-xl transition-all duration-150
+           focus:outline-none focus:ring-2 focus:ring-blue-500/15
+           disabled:bg-surface-2 disabled:cursor-not-allowed;
+  }
+  .tool-input:focus { border-color: var(--brand); }
+  .tool-input::placeholder { color: #94A3B8; }
+
+  .panel-card {
+    @apply bg-white border border-border rounded-2xl overflow-hidden;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand), transparent 94%), 0 4px 20px color-mix(in srgb, var(--brand), transparent 92%);
+  }
+
+  .panel-header {
+    @apply flex items-center justify-between px-5 py-3.5
+           border-b border-border bg-surface-2/70;
+  }
+
+  /* ── Skeleton ───────────────────────────────────────────── */
+  .skeleton {
+    background: linear-gradient(90deg, #EFF6FF 25%, #DBEAFE 50%, #EFF6FF 75%);
+    background-size: 200% 100%;
+    @apply animate-shimmer rounded-lg;
+  }
+
+  /* ── Typography ─────────────────────────────────────────── */
+  .section-title {
+    @apply font-display font-bold text-text-primary tracking-tight;
+  }
+
+  .section-badge {
+    @apply inline-flex items-center gap-1.5 text-sm font-semibold
+           px-3 py-1.5 rounded-full;
+    color: var(--brand);
+    border: 1px solid color-mix(in srgb, var(--brand), transparent 70%);
+    background: color-mix(in srgb, var(--brand), transparent 92%);
+  }
+
+  /* ── Badges ─────────────────────────────────────────────── */
+  .badge-accent {
+    @apply inline-flex items-center gap-1 text-sm font-semibold
+           px-2.5 py-1 rounded-full;
+    color: var(--brand);
+    border: 1px solid color-mix(in srgb, var(--brand), transparent 75%);
+    background: color-mix(in srgb, var(--brand), transparent 92%);
+  }
+
+  /* ── Category pills ─────────────────────────────────────── */
+  .cat-pill {
+    @apply px-4 py-2 rounded-full text-base font-medium whitespace-nowrap
+           transition-all duration-150 border cursor-pointer
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/20;
+  }
+  .cat-pill-active {
+    @apply cat-pill text-white border-transparent shadow-sm;
+    background: linear-gradient(135deg, var(--brand-gradient-from) 0%, var(--brand-gradient-to) 100%);
+  }
+  .cat-pill-inactive {
+    @apply cat-pill bg-white text-text-secondary border-border
+           hover:border-blue-300 hover:bg-[#EFF6FF];
+  }
+  .cat-pill-inactive:hover { color: var(--brand); }
+
+  /* ── Form fields ────────────────────────────────────────── */
+  .input-field {
+    @apply w-full px-4 py-3 text-base text-text-primary bg-white
+           border border-border rounded-xl
+           focus:outline-none focus:ring-2 focus:ring-blue-500/15
+           transition-all duration-150;
+  }
+  .input-field:focus { border-color: var(--brand); }
+  .input-field::placeholder { color: #94A3B8; }
+}
+
+/* ── Admin panel ───────────────────────────────────────────── */
+.admin-sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+/* Sidebar nav scroll — dark background context */
+.admin-nav-scroll::-webkit-scrollbar       { width: 3px; }
+.admin-nav-scroll::-webkit-scrollbar-track { background: transparent; }
+.admin-nav-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 99px; }
+.admin-nav-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.20); }
+.admin-nav-scroll { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.10) transparent; }
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar-track  { background: #F8FAFC; }
+::-webkit-scrollbar-thumb  { background: #CBD5E1; border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+.scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+
+/* ── Restore list styles inside contenteditable ────────────── */
+/* Tailwind preflight strips ul/ol markers globally; re-apply inside editors */
+[contenteditable] ul,
+[contenteditable] ol {
+  display: block;
+  margin-block-start: 0.5em;
+  margin-block-end: 0.5em;
+  padding-inline-start: 2em;
+}
+[contenteditable] ul { list-style: disc; }
+[contenteditable] ol { list-style: decimal; }
+[contenteditable] li { display: list-item; }
+
+/* ── Misc ──────────────────────────────────────────────────── */
+html { scroll-behavior: smooth; }
+::selection { background: color-mix(in srgb, var(--brand), transparent 82%); color: #0F172A; }
+
+/* ── Hero animations ──────────────────────────────────────── */
+@keyframes float1 {
+  0%, 100% { transform: translateY(0px)   translateX(0px); }
+  33%       { transform: translateY(-15px) translateX(8px); }
+  66%       { transform: translateY(8px)  translateX(-5px); }
+}
+@keyframes float2 {
+  0%, 100% { transform: translateY(0px)   translateX(0px); }
+  33%       { transform: translateY(10px)  translateX(-8px); }
+  66%       { transform: translateY(-12px) translateX(5px); }
+}
+@keyframes float3 {
+  0%, 100% { transform: translateY(0px)   translateX(0px); }
+  50%       { transform: translateY(-18px) translateX(10px); }
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.92); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes barGrow {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+@keyframes scrollUp {
+  0%   { transform: translateY(0); }
+  100% { transform: translateY(-50%); }
+}
+@keyframes scrollDown {
+  0%   { transform: translateY(-50%); }
+  100% { transform: translateY(0); }
+}
