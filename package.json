@@ -6,8 +6,9 @@
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "server": "cd server && npm run dev",
     "client": "cd client && npm run dev",
-    "build": "cd client && npm install && npm run build",
-    "start": "cd server && npm install && npm start",
+    "build": "echo \"No build needed\"",
+    "start": "cd server && npm start",
+    "postinstall": "cd server && npm install",
     "install:all": "cd server && npm install"
   },
   "devDependencies": {
