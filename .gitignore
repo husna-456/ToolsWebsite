@@ -1,7 +1,13 @@
 node_modules/
-.env
-.env.local
 dist/
 .DS_Store
 *.log
 .eslintcache
+
+# Environment files
+.env
+.env.*
+client/.env
+client/.env.*
+server/.env
+server/.env.*
