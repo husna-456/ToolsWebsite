@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express    = require('express');
 const cors       = require('cors');
-const path       = require('path');
 const rateLimit  = require('express-rate-limit');
 const connectDB  = require('./config/db');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
@@ -18,7 +17,7 @@ require('./jobs/cleanup');
 app.set('trust proxy', 1);
 app.use(cors({
   origin: process.env.NODE_ENV === 'production'
-    ? ['https://tools.innovate.com.pk']
+    ? ['https://tools-website-rosy-seven.vercel.app']
     : ['http://localhost:5174', 'http://localhost:5173'],
   credentials: true,
 }));
@@ -59,14 +58,7 @@ app.get('/api/health', (req, res) =>
 );
 
 // ── Serve React Build in Production ──────────────────────────
-if (process.env.NODE_ENV === 'production') {
-  const distPath = path.join(__dirname, '../client/dist');
-  app.use(express.static(distPath));
-  app.get('/{*splat}', (req, res) => {
-    if (req.path.startsWith('/api')) return res.status(404).json({ error: 'API route not found' });
-    res.sendFile(path.join(distPath, 'index.html'));
-  });
-}
+// Frontend is deployed separately on Vercel — no static file serving needed.
 
 // ── Error Handling ────────────────────────────────────────────
 app.use(notFound);
