@@ -17,7 +17,11 @@ require('./jobs/cleanup');
 app.set('trust proxy', 1);
 app.use(cors({
   origin: process.env.NODE_ENV === 'production'
-    ? ['https://tools-website-rosy-seven.vercel.app']
+    ? [
+        'https://globaltechtool.com',
+        'https://www.globaltechtool.com',
+        'https://tools-website-rosy-seven.vercel.app',
+      ]
     : ['http://localhost:5174', 'http://localhost:5173'],
   credentials: true,
 }));
@@ -65,45 +69,9 @@ app.use(notFound);
 app.use(errorHandler);
 
 // ── Start ─────────────────────────────────────────────────────
-const { execSync } = require('child_process');
 const PORT = process.env.PORT || 5000;
 
-function killPort(port) {
-  try {
-    // Works on Windows (netstat + taskkill) and Unix (lsof/fuser)
-    if (process.platform === 'win32') {
-      const out = execSync(`netstat -ano | findstr :${port}`, { encoding: 'utf8', stdio: ['pipe','pipe','pipe'] });
-      const pids = [...new Set(
-        out.split('\n')
-          .filter(l => l.includes('LISTENING'))
-          .map(l => l.trim().split(/\s+/).pop())
-          .filter(Boolean)
-      )];
-      pids.forEach(pid => {
-        try { execSync(`taskkill /F /PID ${pid}`, { stdio: 'pipe' }); } catch {}
-      });
-    } else {
-      try { execSync(`fuser -k ${port}/tcp`, { stdio: 'pipe' }); } catch {}
-    }
-  } catch {}
-}
-
-function startServer() {
-  const server = app.listen(PORT, () => {
-    console.log(`🚀 Server: http://localhost:${PORT}`);
-    console.log(`📦 Mode:   ${process.env.NODE_ENV || 'development'}`);
-  });
-
-  server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.warn(`⚠️  Port ${PORT} in use — freeing it and retrying…`);
-      server.close();
-      killPort(PORT);
-      setTimeout(startServer, 1000);
-    } else {
-      throw err;
-    }
-  });
-}
-
-startServer();
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Mode: ${process.env.NODE_ENV || 'development'}`);
+});
