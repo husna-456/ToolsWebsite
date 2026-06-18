@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, NavLink } from 'react-router-dom';
-import { Menu, X, Zap, ArrowRight } from 'lucide-react';
+import { Menu, X, ArrowRight } from 'lucide-react';
 import usePublicSettings from '@/hooks/usePublicSettings';
 
 const DEFAULT_NAV = [
@@ -44,17 +44,21 @@ export default function Navbar() {
                 className="h-8 w-auto object-contain"
               />
             ) : (
-              <div
-                className="w-8 h-8 rounded-lg flex items-center justify-center"
-                style={{ background: 'linear-gradient(135deg, var(--brand-gradient-from) 0%, var(--brand-gradient-to) 100%)' }}
-              >
-                <Zap className="w-4 h-4 text-white" strokeWidth={2.5} />
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'linear-gradient(135deg, #1D4ED8, #3B82F6)' }}>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M8 1.5L10 6L14.5 8L10 10L8 14.5L6 10L1.5 8L6 6Z" fill="white" fillOpacity="0.95"/>
+                </svg>
               </div>
             )}
-            <span className="font-display font-extrabold text-[1.05rem] tracking-tight text-[#0F172A]">
+            <span className="font-display font-extrabold text-[1.05rem] tracking-tight">
               {settings?.general?.siteName
                 ? settings.general.siteName
-                : <>Innovate<span style={{ color: 'var(--brand)' }}>Tools</span></>}
+                : (
+                  <>
+                    <span style={{ color: '#0F172A' }}>Tool</span>
+                    <span style={{ background: 'linear-gradient(90deg, #2563EB, #60A5FA)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>Nova</span>
+                  </>
+                )}
             </span>
           </>
         </Link>

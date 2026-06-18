@@ -184,7 +184,7 @@ function ToolSettingsModal({ tool, onClose, onSaved }) {
             <SectionHeading>SEO</SectionHeading>
             <div className="space-y-4">
               <Field label="Meta Title">
-                <input className={INPUT} type="text" value={form.seoTitle} onChange={e => set('seoTitle', e.target.value)} placeholder="e.g. Free AI Summarizer — InnovateTools" />
+                <input className={INPUT} type="text" value={form.seoTitle} onChange={e => set('seoTitle', e.target.value)} placeholder="e.g. Free AI Summarizer — ToolNova" />
               </Field>
 
               <Field label="Meta Description">

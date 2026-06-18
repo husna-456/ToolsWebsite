@@ -87,8 +87,8 @@ export default function BlogPage() {
   return (
     <>
       <SEOHead
-        customTitle="Blog — InnovateTools"
-        customDesc="Tips, guides, and updates about AI writing, text tools, image tools, and more from the InnovateTools team."
+        customTitle="Blog — ToolNova"
+        customDesc="Tips, guides, and updates about AI writing, text tools, image tools, and more from the ToolNova team."
       />
 
       {/* Gradient hero header */}

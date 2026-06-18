@@ -9,7 +9,7 @@ import usePublicSettings from '@/hooks/usePublicSettings';
 export default function MainLayout() {
   const settings = usePublicSettings();
 
-  const siteName    = settings?.general?.siteName        || 'InnovateTools';
+  const siteName    = settings?.general?.siteName        || 'ToolNova';
   const description = settings?.general?.siteDescription || '';
   const keywords    = settings?.general?.keywords        || '';
 

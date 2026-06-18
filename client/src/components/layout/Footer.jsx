@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Zap, Mail, ArrowRight } from 'lucide-react';
+import { Mail, ArrowRight } from 'lucide-react';
 import usePublicSettings from '@/hooks/usePublicSettings';
 
 const DEFAULT_FOOTER_LINKS = [
@@ -62,17 +62,16 @@ export default function Footer() {
                     className="h-8 w-auto object-contain"
                   />
                 ) : (
-                  <div
-                    className="w-8 h-8 rounded-lg flex items-center justify-center"
-                    style={{ background: 'rgba(255,255,255,0.25)' }}
-                  >
-                    <Zap className="w-4 h-4 text-white" strokeWidth={2.5} />
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,0.2)' }}>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M8 1.5L10 6L14.5 8L10 10L8 14.5L6 10L1.5 8L6 6Z" fill="white" fillOpacity="0.95"/>
+                    </svg>
                   </div>
                 )}
                 <span className="font-display font-extrabold text-[1.05rem] tracking-tight text-white">
                   {settings?.general?.siteName
                     ? settings.general.siteName
-                    : <>Innovate<span className="text-white/60">Tools</span></>}
+                    : <>Tool<span className="text-white/60">Nova</span></>}
                 </span>
               </>
             </Link>
@@ -95,7 +94,7 @@ export default function Footer() {
             <p className="text-white/35 text-xs mt-auto pt-8">
               {settings?.general?.footerAttribution
                 ? settings.general.footerAttribution
-                : `© ${new Date().getFullYear()} ${settings?.general?.siteName || 'InnovateTools'}. All Rights Reserved.`}
+                : `© ${new Date().getFullYear()} ${settings?.general?.siteName || 'ToolNova'}. All Rights Reserved.`}
             </p>
           </div>
         </div>

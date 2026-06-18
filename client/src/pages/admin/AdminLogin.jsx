@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Zap, Loader2, Eye, EyeOff, ShieldCheck } from 'lucide-react';
+import { Loader2, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api';
 
@@ -47,10 +47,15 @@ export default function AdminLogin() {
       <div className="relative w-full max-w-sm">
         {/* Brand */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-indigo-700 shadow-2xl shadow-indigo-900/50 mb-4">
-            <Zap className="w-7 h-7 text-white" strokeWidth={2.5} />
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl shadow-2xl shadow-blue-900/50 mb-4" style={{ background: 'linear-gradient(135deg, #1D4ED8, #3B82F6)' }}>
+            <svg width="28" height="28" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 1.5L10 6L14.5 8L10 10L8 14.5L6 10L1.5 8L6 6Z" fill="white" fillOpacity="0.95"/>
+            </svg>
           </div>
-          <h1 className="text-white font-bold text-2xl tracking-tight">InnovateTools</h1>
+          <h1 className="font-bold text-2xl tracking-tight">
+            <span className="text-white">Tool</span>
+            <span style={{ background: 'linear-gradient(90deg, #60A5FA, #93C5FD)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>Nova</span>
+          </h1>
           <p className="text-indigo-400 text-sm mt-1">Admin Dashboard</p>
         </div>
 
@@ -76,7 +81,7 @@ export default function AdminLogin() {
                 onChange={e => setEmail(e.target.value)}
                 required
                 autoComplete="email"
-                placeholder="admin@innovatetools.com"
+                placeholder="admin@toolnova.com"
                 className="w-full px-4 py-3 rounded-xl border border-white/10 bg-white/10 text-white text-sm placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition"
               />
             </div>
@@ -115,7 +120,7 @@ export default function AdminLogin() {
         </div>
 
         <p className="text-center text-white/20 text-xs mt-6">
-          InnovateTools Admin · Restricted Access
+          ToolNova Admin · Restricted Access
         </p>
       </div>
     </div>

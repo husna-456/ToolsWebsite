@@ -6,7 +6,7 @@ const SECTIONS = [
   {
     title: 'Information We Collect',
     body: [
-      'InnovateTools is designed to be used without creating an account. We collect minimal information to provide our services.',
+      'ToolNova is designed to be used without creating an account. We collect minimal information to provide our services.',
       'When you use our AI-powered tools, the text you submit is sent to our server solely to generate a result. We do not store, log, or retain your input text after processing is complete.',
       'If you choose to provide your email address to unlock additional daily uses, we store only your email and your daily usage counter. We do not collect your name, location, or any other personal details.',
       'We use standard server logs (IP address, browser type, page visited, timestamp) for security monitoring and abuse prevention. These logs are automatically purged after 30 days.',
@@ -45,13 +45,13 @@ const SECTIONS = [
   {
     title: 'Children\'s Privacy',
     body: [
-      'InnovateTools is not directed at children under 13. We do not knowingly collect personal information from children under 13. If you believe we have inadvertently collected such information, please contact us immediately.',
+      'ToolNova is not directed at children under 13. We do not knowingly collect personal information from children under 13. If you believe we have inadvertently collected such information, please contact us immediately.',
     ],
   },
   {
     title: 'Changes to This Policy',
     body: [
-      'We may update this Privacy Policy from time to time. When we do, we will update the "Last updated" date at the top of this page. Continued use of InnovateTools after any changes constitutes your acceptance of the updated policy.',
+      'We may update this Privacy Policy from time to time. When we do, we will update the "Last updated" date at the top of this page. Continued use of ToolNova after any changes constitutes your acceptance of the updated policy.',
     ],
   },
   {
@@ -66,8 +66,8 @@ export default function PrivacyPage() {
   return (
     <>
       <SEOHead
-        customTitle="Privacy Policy — InnovateTools"
-        customDesc="Learn how InnovateTools collects, uses, and protects your information."
+        customTitle="Privacy Policy — ToolNova"
+        customDesc="Learn how ToolNova collects, uses, and protects your information."
       />
 
       {/* Hero */}
@@ -108,7 +108,7 @@ export default function PrivacyPage() {
         >
           <Shield className="w-5 h-5 mt-0.5 shrink-0" style={{ color: '#4F46E5' }} />
           <p className="text-[#475569] text-sm leading-relaxed">
-            InnovateTools is built on a simple principle: <strong className="text-[#0F172A]">use our tools without giving up your privacy.</strong>{' '}
+            ToolNova is built on a simple principle: <strong className="text-[#0F172A]">use our tools without giving up your privacy.</strong>{' '}
             We collect as little data as possible, never sell it, and never use it to advertise to you.
           </p>
         </div>
@@ -137,7 +137,7 @@ export default function PrivacyPage() {
 
         {/* Footer note */}
         <div className="mt-12 pt-8 border-t border-[#E2E8F0] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <p className="text-xs text-[#94A3B8]">© {new Date().getFullYear()} InnovateTools. All rights reserved.</p>
+          <p className="text-xs text-[#94A3B8]">© {new Date().getFullYear()} ToolNova. All rights reserved.</p>
           <Link
             to="/contact"
             className="inline-flex items-center gap-1.5 text-sm font-semibold transition-colors"

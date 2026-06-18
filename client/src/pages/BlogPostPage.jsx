@@ -60,7 +60,7 @@ export default function BlogPostPage() {
   return (
     <>
       <SEOHead
-        customTitle={`${post.title} — InnovateTools Blog`}
+        customTitle={`${post.title} — ToolNova Blog`}
         customDesc={post.excerpt || post.title}
       />
 

@@ -28,8 +28,8 @@ export default function ContactPage() {
   return (
     <>
       <SEOHead
-        customTitle="Contact Us — InnovateTools"
-        customDesc="Have a question, feedback, or tool request? Get in touch with the InnovateTools team."
+        customTitle="Contact Us — ToolNova"
+        customDesc="Have a question, feedback, or tool request? Get in touch with the ToolNova team."
       />
 
       {/* Gradient hero header */}

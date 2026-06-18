@@ -6,21 +6,21 @@ const SECTIONS = [
   {
     title: 'Acceptance of Terms',
     body: [
-      'By accessing or using InnovateTools ("the Service"), you agree to be bound by these Terms of Service. If you do not agree with any part of these terms, you may not use the Service.',
+      'By accessing or using ToolNova ("the Service"), you agree to be bound by these Terms of Service. If you do not agree with any part of these terms, you may not use the Service.',
       'These Terms apply to all visitors, users, and others who access or use the Service.',
     ],
   },
   {
     title: 'Description of Service',
     body: [
-      'InnovateTools provides a collection of free AI-powered and text-based tools including, but not limited to, an AI Humanizer, AI Detector, Plagiarism Checker, Tone Changer, Word Counter, and Summarizer.',
+      'ToolNova provides a collection of free AI-powered and text-based tools including, but not limited to, an AI Humanizer, AI Detector, Plagiarism Checker, Tone Changer, Word Counter, and Summarizer.',
       'All tools are provided free of charge with a daily usage limit. No account is required to use the tools. Providing an email address may unlock additional daily uses.',
     ],
   },
   {
     title: 'Acceptable Use',
     body: [
-      'You agree to use InnovateTools only for lawful purposes. You must not use the Service to process, generate, or distribute content that is illegal, harmful, abusive, defamatory, or infringes on the rights of others.',
+      'You agree to use ToolNova only for lawful purposes. You must not use the Service to process, generate, or distribute content that is illegal, harmful, abusive, defamatory, or infringes on the rights of others.',
       'You must not attempt to reverse-engineer, scrape, overload, or otherwise interfere with the Service or its underlying infrastructure.',
       'You must not use automated bots, scripts, or tools to artificially inflate usage or circumvent rate limits.',
       'Academic use: While our tools may assist with writing tasks, you are solely responsible for ensuring that your use of AI-generated content complies with your institution\'s academic integrity policies.',
@@ -29,7 +29,7 @@ const SECTIONS = [
   {
     title: 'Intellectual Property',
     body: [
-      'The InnovateTools website, branding, design, and code are the intellectual property of InnovateTools and are protected by copyright law.',
+      'The ToolNova website, branding, design, and code are the intellectual property of ToolNova and are protected by copyright law.',
       'Content you submit to the tools remains yours. We claim no ownership over your input text or the outputs generated from it.',
       'AI-generated outputs are produced by third-party models (Google Gemini). We make no claim of authorship over such outputs and you use them at your own discretion.',
     ],
@@ -39,7 +39,7 @@ const SECTIONS = [
     body: [
       'The Service is provided "as is" and "as available" without any warranties of any kind, either express or implied, including but not limited to fitness for a particular purpose or accuracy.',
       'AI-generated content may contain errors, inaccuracies, or inappropriate material. Always review AI outputs before using them professionally, academically, or publicly.',
-      'InnovateTools shall not be liable for any indirect, incidental, special, consequential, or punitive damages arising from your use of, or inability to use, the Service.',
+      'ToolNova shall not be liable for any indirect, incidental, special, consequential, or punitive damages arising from your use of, or inability to use, the Service.',
       'Our total liability to you for any claim arising under these Terms shall not exceed $0, as the Service is provided free of charge.',
     ],
   },
@@ -76,8 +76,8 @@ export default function TermsPage() {
   return (
     <>
       <SEOHead
-        customTitle="Terms of Service — InnovateTools"
-        customDesc="Read the InnovateTools Terms of Service to understand your rights and responsibilities when using our free tools."
+        customTitle="Terms of Service — ToolNova"
+        customDesc="Read the ToolNova Terms of Service to understand your rights and responsibilities when using our free tools."
       />
 
       {/* Hero */}
@@ -118,7 +118,7 @@ export default function TermsPage() {
         >
           <FileText className="w-5 h-5 mt-0.5 shrink-0" style={{ color: '#4F46E5' }} />
           <p className="text-[#475569] text-sm leading-relaxed">
-            Please read these Terms of Service carefully before using InnovateTools.{' '}
+            Please read these Terms of Service carefully before using ToolNova.{' '}
             <strong className="text-[#0F172A]">By using our tools, you agree to these terms.</strong>{' '}
             They are written in plain language — no legal jargon.
           </p>
@@ -148,7 +148,7 @@ export default function TermsPage() {
 
         {/* Footer note */}
         <div className="mt-12 pt-8 border-t border-[#E2E8F0] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <p className="text-xs text-[#94A3B8]">© {new Date().getFullYear()} InnovateTools. All rights reserved.</p>
+          <p className="text-xs text-[#94A3B8]">© {new Date().getFullYear()} ToolNova. All rights reserved.</p>
           <div className="flex items-center gap-5">
             <Link to="/privacy" className="text-sm font-medium text-[#64748B] hover:text-[#4F46E5] transition-colors">
               Privacy Policy

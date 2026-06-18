@@ -5,7 +5,7 @@ import {
   LayoutTemplate, Link2, ShieldCheck,
   FileText, FileCheck, MessageSquare, Users2,
   Users, UserCircle,
-  LogOut, Bell, Menu, X, Zap,
+  LogOut, Bell, Menu, X,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import usePublicSettings from '@/hooks/usePublicSettings';
@@ -80,10 +80,12 @@ function Sidebar({ user, initials, onClose, onLogout }) {
       <div className="flex items-center justify-between px-5 py-5 border-b border-white/10 shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-white/15 backdrop-blur-sm flex items-center justify-center shrink-0">
-            <Zap className="w-[18px] h-[18px] text-white" strokeWidth={2.5} />
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 1.5L10 6L14.5 8L10 10L8 14.5L6 10L1.5 8L6 6Z" fill="white" fillOpacity="0.95"/>
+            </svg>
           </div>
           <div>
-            <p className="text-white font-semibold text-[15px] leading-none">InnovateTools</p>
+            <p className="text-white font-semibold text-[15px] leading-none">ToolNova</p>
             <p className="text-blue-200/60 text-[10px] tracking-[0.2em] uppercase mt-1">
               Admin Panel
             </p>

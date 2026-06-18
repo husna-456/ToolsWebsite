@@ -40,10 +40,10 @@ function injectRootBlock(existingCss, colors) {
 }
 
 const DEFAULTS = {
-  siteName:          'InnovateTools',
+  siteName:          'ToolNova',
   siteDescription:   '',
   keywords:          '',
-  footerAttribution: '© InnovateTools. All Rights Reserved.',
+  footerAttribution: '© ToolNova. All Rights Reserved.',
   logo:              '',
   contrastingLogo:   '',
   favicon:           '',
@@ -123,11 +123,11 @@ export default function AdminGeneralSettings() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Site Name</label>
-            <input className={INPUT} value={form.siteName} onChange={e => set('siteName', e.target.value)} placeholder="InnovateTools" />
+            <input className={INPUT} value={form.siteName} onChange={e => set('siteName', e.target.value)} placeholder="ToolNova" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Footer Attribution</label>
-            <input className={INPUT} value={form.footerAttribution} onChange={e => set('footerAttribution', e.target.value)} placeholder="© InnovateTools. All Rights Reserved." />
+            <input className={INPUT} value={form.footerAttribution} onChange={e => set('footerAttribution', e.target.value)} placeholder="© ToolNova. All Rights Reserved." />
           </div>
         </div>
         <div>

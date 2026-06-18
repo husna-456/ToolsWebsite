@@ -1,27 +1,10 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bgGradient" x1="0" y1="0" x2="512" y2="512">
-      <stop offset="0%" stop-color="#020617"/>
-      <stop offset="45%" stop-color="#0F172A"/>
-      <stop offset="75%" stop-color="#2563EB"/>
-      <stop offset="100%" stop-color="#60A5FA"/>
-    </linearGradient>
-
-    <linearGradient id="curveGradient" x1="250" y1="0" x2="512" y2="512">
-      <stop offset="0%" stop-color="#1D4ED8"/>
-      <stop offset="100%" stop-color="#60A5FA"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1D4ED8"/>
+      <stop offset="1" stop-color="#3B82F6"/>
     </linearGradient>
   </defs>
-
-  <rect width="512" height="512" rx="110" fill="url(#bgGradient)"/>
-
-  <path
-    d="M370 0C280 85 250 180 330 256C410 335 395 430 315 512H512V0H370Z"
-    fill="url(#curveGradient)"
-    opacity="0.95"/>
-
-  <path
-    d="M280 70L155 255H235L200 435L360 215H275L280 70Z"
-    fill="white"/>
+  <rect width="40" height="40" rx="10" fill="url(#bg)"/>
+  <path d="M20 9L24.5 15.5L31 20L24.5 24.5L20 31L15.5 24.5L9 20L15.5 15.5Z" fill="white" fill-opacity="0.95"/>
 </svg>

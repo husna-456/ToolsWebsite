@@ -6,7 +6,7 @@ export default function NotFound() {
   return (
     <>
       <SEOHead
-        customTitle="Page Not Found — InnovateTools"
+        customTitle="Page Not Found — ToolNova"
         customDesc="The page you're looking for doesn't exist. Browse our free AI tools instead."
       />
 

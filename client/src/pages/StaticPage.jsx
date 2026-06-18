@@ -47,7 +47,7 @@ export default function StaticPage() {
   return (
     <>
       <SEOHead
-        customTitle={page.seoTitle || `${page.title} — InnovateTools`}
+        customTitle={page.seoTitle || `${page.title} — ToolNova`}
         customDesc={page.seoDescription || page.title}
       />
 

@@ -22,7 +22,7 @@ export default function CategoryPage() {
   return (
     <>
       <SEOHead
-        customTitle={`${cat.label} — Free Online Tools | InnovateTools`}
+        customTitle={`${cat.label} — Free Online Tools | ToolNova`}
         customDesc={`Free ${cat.label.toLowerCase()} tools — fast, accurate, no signup needed.`}
       />
 
