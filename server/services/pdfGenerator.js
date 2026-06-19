@@ -1,4 +1,7 @@
 const puppeteer = require('puppeteer');
+const os   = require('os');
+const path = require('path');
+const fs   = require('fs');
 
 // ── Font loading — English, Urdu, and Arabic professional fonts ──
 const FONTS_URL =
@@ -351,10 +354,22 @@ function buildFullHTML(doc) {
 async function generatePDF(doc) {
   const html = buildFullHTML(doc);
 
-  // Safe minimal flags for Linux/Hostinger — do NOT add --single-process or --no-zygote
-  // as they are unsupported and cause Chrome to crash immediately.
+  // Unique per-request user data dir — prevents open EEXIST when a previous
+  // Chrome process left its profile directory behind after a crash.
+  const userDataDir = path.join(
+    os.tmpdir(),
+    `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  );
+  try {
+    fs.mkdirSync(userDataDir, { recursive: true });
+  } catch (mkdirErr) {
+    console.error('Text-to-PDF: failed to create userDataDir:', userDataDir, mkdirErr);
+    throw mkdirErr;
+  }
+
   const launchOptions = {
     headless: true,
+    userDataDir,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -363,7 +378,6 @@ async function generatePDF(doc) {
     ],
   };
 
-  // Optional: point to a system Chrome if CHROME_BIN env var is set on the server
   if (process.env.CHROME_BIN) {
     launchOptions.executablePath = process.env.CHROME_BIN;
   }
@@ -372,7 +386,8 @@ async function generatePDF(doc) {
   try {
     browser = await puppeteer.launch(launchOptions);
   } catch (launchErr) {
-    console.error('Text-to-PDF generation failed: Puppeteer could not launch Chrome:', launchErr);
+    console.error('Text-to-PDF: Puppeteer could not launch Chrome. userDataDir:', userDataDir, launchErr);
+    try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch (_) {}
     throw new Error(`Chrome failed to start: ${launchErr.message}`);
   }
 
@@ -401,6 +416,12 @@ async function generatePDF(doc) {
     return Buffer.isBuffer(pdfData) ? pdfData : Buffer.from(pdfData);
   } finally {
     await browser.close();
+    // Remove the unique profile dir so it doesn't accumulate on disk
+    try {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    } catch (cleanupErr) {
+      console.error('Text-to-PDF: failed to remove userDataDir:', userDataDir, cleanupErr);
+    }
   }
 }
 
