@@ -350,79 +350,105 @@ function buildFullHTML(doc) {
 </html>`;
 }
 
+// ── Chrome executable resolution ─────────────────────────────────
+// Puppeteer v22+ stores Chrome in ~/.cache/puppeteer/ (not node_modules).
+// On some hosts that directory is missing; fall back to system Chromium.
+function resolveChrome() {
+  // 1. Explicit env override always wins
+  if (process.env.CHROME_BIN && fs.existsSync(process.env.CHROME_BIN)) {
+    return process.env.CHROME_BIN;
+  }
+  // 2. Puppeteer's own bundled Chrome
+  try {
+    const p = puppeteer.executablePath();
+    if (p && fs.existsSync(p)) return p;
+  } catch (_) {}
+  // 3. Common system Chromium paths (Debian/Ubuntu/CentOS)
+  const systemPaths = [
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/snap/bin/chromium',
+  ];
+  for (const p of systemPaths) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null; // let Puppeteer try its default path and surface the error
+}
+
 // ── Main entry point ─────────────────────────────────────────────
 async function generatePDF(doc) {
   const html = buildFullHTML(doc);
 
-  // Unique per-request user data dir. recursive:true never throws EEXIST.
+  // Unique per-request Chrome profile dir — prevents EEXIST if a previous
+  // Chrome process left its profile behind after a crash.
   const tempPath = path.join(
     os.tmpdir(),
     `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   );
-  const outputPath = null; // page.pdf() returns a buffer — no output file is written
 
   try {
     fs.mkdirSync(tempPath, { recursive: true });
   } catch (mkdirErr) {
-    console.error('Text-to-PDF error:', {
-      message: mkdirErr.message, stack: mkdirErr.stack,
-      code: mkdirErr.code, syscall: mkdirErr.syscall,
-      tempPath, outputPath,
-    });
-    throw mkdirErr;
+    console.error('[PDF] tempPath creation failed:', mkdirErr.code, tempPath);
+    throw new Error(`Temp dir error: ${mkdirErr.message}`);
   }
 
+  const chromePath = resolveChrome();
+  console.log('[PDF] chrome path:', chromePath || '(puppeteer default)');
+  console.log('[PDF] tmpdir:', os.tmpdir(), '| profile:', tempPath);
+
+  // NOTE: pipe:true was removed. It routes CDP over file-descriptors 3/4
+  // (--remote-debugging-pipe). On Hostinger and many VPS hosts the process
+  // manager closes non-standard FDs before spawning children, so Chrome
+  // silently exits every time → same "Target closed" error on every click.
+  // Default WebSocket mode (random port) works correctly on all hosts.
   const launchOptions = {
     headless: true,
-    // pipe: true uses stdio file-descriptors instead of a WebSocket/Unix-socket,
-    // so Chrome never creates a socket file in /tmp that could conflict.
-    pipe: true,
     userDataDir: tempPath,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      // Prevents Chrome from spawning a crashpad_handler subprocess that
-      // creates a socket file at a predictable /tmp path. That socket persists
-      // after a crash and causes "open EEXIST" on the very next launch.
-      '--disable-crash-reporter',
+      '--disable-crash-reporter',  // stops crashpad socket creation in /tmp
       '--disable-breakpad',
       '--no-first-run',
     ],
   };
-
-  if (process.env.CHROME_BIN) {
-    launchOptions.executablePath = process.env.CHROME_BIN;
-  }
+  if (chromePath) launchOptions.executablePath = chromePath;
 
   let browser;
   try {
     browser = await puppeteer.launch(launchOptions);
+    console.log('[PDF] browser launched');
   } catch (launchErr) {
-    console.error('Text-to-PDF error:', {
-      message: launchErr.message, stack: launchErr.stack,
-      code: launchErr.code, syscall: launchErr.syscall, path: launchErr.path,
-      tempPath, outputPath,
+    console.error('[PDF] launch failed:', {
+      message: launchErr.message,
+      code:    launchErr.code,
+      chrome:  chromePath,
+      tmpdir:  os.tmpdir(),
     });
     try { fs.rmSync(tempPath, { recursive: true, force: true }); } catch (_) {}
-    throw launchErr;
+    throw new Error(`Chrome launch failed: ${launchErr.message}`);
   }
 
   try {
     const page = await browser.newPage();
     page.setDefaultNavigationTimeout(60000);
 
-    // domcontentloaded fires before stylesheets/fonts load, avoiding a hang
-    // on servers where the Google Fonts CDN is slow or unreachable.
+    // domcontentloaded fires before fonts/stylesheets finish loading,
+    // so this never hangs waiting for the Google Fonts CDN.
     await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    // Allow up to 10 s for fonts to finish loading; proceed even if they don't.
+    // Give fonts up to 10 s; proceed anyway if they don't finish in time.
     await Promise.race([
       page.evaluate(() => document.fonts.ready),
       new Promise(r => setTimeout(r, 10000)),
     ]);
 
+    console.log('[PDF] rendering PDF...');
     const pdfData = await page.pdf({
       format:              'A4',
       margin:              { top: '2.5cm', bottom: '2.5cm', left: '2cm', right: '2cm' },
@@ -432,33 +458,21 @@ async function generatePDF(doc) {
       footerTemplate:      buildFooterTemplate(doc),
     });
 
-    return Buffer.isBuffer(pdfData) ? pdfData : Buffer.from(pdfData);
+    const buf = Buffer.isBuffer(pdfData) ? pdfData : Buffer.from(pdfData);
+    console.log('[PDF] done, bytes:', buf.length);
+    return buf;
   } catch (pageErr) {
-    console.error('Text-to-PDF error:', {
-      message: pageErr.message, stack: pageErr.stack,
-      code: pageErr.code, syscall: pageErr.syscall, path: pageErr.path,
-      tempPath, outputPath,
+    console.error('[PDF] page/render error:', {
+      message: pageErr.message,
+      code:    pageErr.code,
+      stack:   pageErr.stack,
     });
-    throw pageErr;
+    throw new Error(`PDF render failed: ${pageErr.message}`);
   } finally {
-    // browser.close() MUST be in its own try/catch inside finally.
-    // If it throws (Chrome already crashed), the exception would otherwise
-    // replace the original error AND skip the rmSync cleanup below.
-    try {
-      await browser.close();
-    } catch (closeErr) {
-      console.error('Text-to-PDF: browser.close() failed (Chrome may have already exited):', closeErr.message);
-    }
-    // Always remove the unique profile dir regardless of what happened above.
-    try {
-      fs.rmSync(tempPath, { recursive: true, force: true });
-    } catch (cleanupErr) {
-      console.error('Text-to-PDF error:', {
-        message: cleanupErr.message, stack: cleanupErr.stack,
-        code: cleanupErr.code, syscall: cleanupErr.syscall, path: cleanupErr.path,
-        tempPath, outputPath,
-      });
-    }
+    // browser.close() inside try/catch so its exception never replaces the
+    // real error and never skips the cleanup below.
+    try { await browser.close(); } catch (_) {}
+    try { fs.rmSync(tempPath, { recursive: true, force: true }); } catch (_) {}
   }
 }
 
