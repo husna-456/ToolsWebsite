@@ -369,21 +369,7 @@ async function generatePDF(doc) {
     throw new Error(`Temp dir error: ${mkdirErr.message}`);
   }
 
-  // PUPPETEER_EXECUTABLE_PATH env var wins (set this in Hostinger's environment
-  // variables panel to the path shown in build logs, e.g.
-  // /home/u593246313/.cache/puppeteer/chrome/linux-149.0.7827.22/chrome-linux64/chrome).
-  // Hostinger's build env ($HOME=/home/<user>) and runtime env ($HOME=<domain-dir>)
-  // differ, so puppeteer.executablePath() resolves different paths at each stage.
-  // The env var provides a single stable path that works at runtime.
-  let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || null;
-
-  if (!executablePath) {
-    try {
-      executablePath = await puppeteer.executablePath();
-    } catch (err) {
-      console.error('[PDF] executablePath resolve failed:', err);
-    }
-  }
+  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || await puppeteer.executablePath();
 
   console.log('[PDF] using chrome path:', executablePath);
   console.log('[PDF] tmpdir:', os.tmpdir(), '| profile:', tempPath);
