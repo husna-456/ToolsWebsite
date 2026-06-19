@@ -5,7 +5,8 @@
   "scripts": {
     "start": "NODE_ENV=production node server.js",
     "dev": "nodemon server.js",
-    "install:chrome": "echo \"Installing Puppeteer Chrome...\" && npx puppeteer browsers install chrome"
+    "install:chrome": "echo \"Installing Puppeteer Chrome...\" && npx puppeteer browsers install chrome",
+    "install:fonts": "node scripts/download-fonts.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

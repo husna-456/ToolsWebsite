@@ -4,6 +4,11 @@ dist/
 *.log
 .eslintcache
 
+# Downloaded font files (fetched at deploy time by server/scripts/download-fonts.js)
+server/fonts/*.woff2
+server/fonts/*.woff
+server/fonts/*.ttf
+
 # Environment files
 .env
 .env.*
