@@ -24,7 +24,7 @@ async function textToPdfGenerate(req, res) {
     if (!documentData.blocks?.length)
       return res.status(400).json({ success: false, error: 'Document has no blocks to render.' });
 
-    const { generatePDF } = require('../services/pdfGenerator');
+    const { generatePDF } = require('../services/pdfGeneratorMake');
     const pdfBuffer = await generatePDF(documentData);
 
     // Strip non-ASCII from filename (HTTP headers: ASCII only)
