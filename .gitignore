@@ -4,7 +4,8 @@ dist/
 *.log
 .eslintcache
 
-# Downloaded font files (fetched at deploy time by server/scripts/download-fonts.js)
+# Font files fetched/extracted at deploy time — not committed
+server/fonts/_cache/
 server/fonts/*.woff2
 server/fonts/*.woff
 server/fonts/*.ttf

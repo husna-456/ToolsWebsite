@@ -1,124 +1,142 @@
 'use strict';
 
 /**
- * Production-safe PDF generator using pdfmake (no Puppeteer / no Chrome).
+ * Production-safe PDF generator — pdfmake/src/printer (Node.js server API).
  *
- * Uses pdfmake/src/printer — the documented Node.js / server-side API.
- * Font strategy (each step is a fallback for the previous):
- *   Roboto: pdfmake's own fonts/ dir → VFS extraction to OS temp dir
- *   Amiri:  server/fonts/ (download-fonts.js) → @fontsource/amiri/files/
- *           → falls back to Roboto if unavailable (PDF still generates)
+ * Font strategy at startup (synchronous, deterministic):
+ *   Roboto: pdfmake fonts/ dir → VFS extraction into server/fonts/_cache/
+ *   Amiri:  server/fonts/Amiri-*.woff2 (download-fonts.js) → @fontsource/amiri
+ *
+ * LATIN_FONT always falls back to whatever Arabic font IS available so that
+ * no font name is ever referenced in a docDefinition without being registered
+ * — an unregistered font causes pdfmake to hang silently until timeout.
  */
 
 const PdfPrinter = require('pdfmake/src/printer');
 const path = require('path');
 const fs   = require('fs');
-const os   = require('os');
 
 // ─────────────────────────────────────────────────────────────────
-// Font resolution helpers
+// Paths
 // ─────────────────────────────────────────────────────────────────
-function pickFile(...candidates) {
-  for (const f of candidates) {
-    try { if (f && fs.existsSync(f)) return f; } catch (_) {}
+const FONTS_DIR   = path.join(__dirname, '../fonts');           // server/fonts/
+const CACHE_DIR   = path.join(__dirname, '../fonts/_cache');    // Roboto extraction cache
+const AMIRI_SRC   = path.join(__dirname, '../node_modules/@fontsource/amiri/files');
+
+function ensureDir(d) {
+  try { fs.mkdirSync(d, { recursive: true }); } catch (_) {}
+}
+
+function fileOk(p) {
+  try { return p && fs.existsSync(p) && fs.statSync(p).size > 500; } catch (_) { return false; }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Roboto — extract from pdfmake's VFS into server/fonts/_cache/
+// This runs ONCE at process startup, synchronously.
+// ─────────────────────────────────────────────────────────────────
+function loadRoboto() {
+  // 1. Try pdfmake's bundled fonts/ directory (present in some versions)
+  let pdfmakeRoot = null;
+  try { pdfmakeRoot = path.dirname(require.resolve('pdfmake/package.json')); } catch (_) {}
+
+  const pdfmakeFontsDir = pdfmakeRoot ? path.join(pdfmakeRoot, 'fonts') : null;
+  const ttfInPkg = pdfmakeFontsDir && fileOk(path.join(pdfmakeFontsDir, 'Roboto-Regular.ttf'));
+  if (ttfInPkg) {
+    console.log('[PDF] Roboto: using pdfmake bundled fonts dir');
+    return {
+      normal:      path.join(pdfmakeFontsDir, 'Roboto-Regular.ttf'),
+      bold:        path.join(pdfmakeFontsDir, 'Roboto-Medium.ttf'),
+      italics:     path.join(pdfmakeFontsDir, 'Roboto-Italic.ttf'),
+      bolditalics: path.join(pdfmakeFontsDir, 'Roboto-MediumItalic.ttf'),
+    };
   }
+
+  // 2. Extract from pdfmake/build/vfs_fonts.js → server/fonts/_cache/
+  try {
+    ensureDir(CACHE_DIR);
+    const vfsMod  = require('pdfmake/build/vfs_fonts');
+    // Covers multiple possible export shapes across pdfmake versions
+    const fontVFS = vfsMod?.pdfMake?.vfs || vfsMod?.vfs || {};
+
+    const MAP = {
+      normal:      'Roboto-Regular.ttf',
+      bold:        'Roboto-Medium.ttf',
+      italics:     'Roboto-Italic.ttf',
+      bolditalics: 'Roboto-MediumItalic.ttf',
+    };
+    const result = {};
+    let ok = 0;
+
+    for (const [key, filename] of Object.entries(MAP)) {
+      const b64  = fontVFS[filename];
+      const dest = path.join(CACHE_DIR, filename);
+      if (!b64) { console.warn('[PDF] VFS missing key:', filename); continue; }
+      if (!fileOk(dest)) {
+        fs.writeFileSync(dest, Buffer.from(b64, 'base64'));
+      }
+      result[key] = dest;
+      ok++;
+    }
+
+    if (ok > 0) {
+      console.log(`[PDF] Roboto: extracted ${ok}/4 files to ${CACHE_DIR}`);
+      // Fill missing variants with the normal weight
+      for (const key of ['bold', 'italics', 'bolditalics']) {
+        if (!result[key] && result.normal) result[key] = result.normal;
+      }
+      return result;
+    }
+  } catch (e) {
+    console.error('[PDF] VFS extraction error:', e.message);
+  }
+
+  console.error('[PDF] Roboto: NOT FOUND. PDF will fail.');
   return null;
 }
 
-// Find pdfmake's installed root so we can read its bundled Roboto TTFs.
-let pdfmakeRoot = null;
-try {
-  pdfmakeRoot = path.dirname(require.resolve('pdfmake/package.json'));
-} catch (_) {
-  try {
-    pdfmakeRoot = path.dirname(path.dirname(require.resolve('pdfmake/src/printer')));
-  } catch (_2) {}
-}
-const PDFMAKE_FONTS = pdfmakeRoot ? path.join(pdfmakeRoot, 'fonts') : null;
+// ─────────────────────────────────────────────────────────────────
+// Amiri — loaded from disk (downloaded at deploy time)
+// ─────────────────────────────────────────────────────────────────
+function loadAmiri() {
+  const normal = [
+    path.join(FONTS_DIR, 'Amiri-Regular.woff2'),
+    path.join(AMIRI_SRC, 'amiri-arabic-400-normal.woff2'),
+    path.join(AMIRI_SRC, 'amiri-arabic-400-normal.woff'),
+  ].find(fileOk) || null;
 
-// If pdfmake ships without a fonts/ dir, extract Roboto from vfs_fonts.js.
-function extractFromVFS(fontFilename) {
-  const dest = path.join(os.tmpdir(), `_pdfmake_${fontFilename}`);
-  if (pickFile(dest)) return dest;
-  try {
-    const vfs = require('pdfmake/build/vfs_fonts');
-    const b64 = vfs?.pdfMake?.vfs?.[fontFilename];
-    if (!b64) return null;
-    fs.writeFileSync(dest, Buffer.from(b64, 'base64'));
-    console.log(`[PDF] extracted ${fontFilename} from VFS → ${dest}`);
-    return dest;
-  } catch (e) {
-    console.warn('[PDF] VFS extraction failed:', e.message);
-    return null;
+  const bold = [
+    path.join(FONTS_DIR, 'Amiri-Bold.woff2'),
+    path.join(AMIRI_SRC, 'amiri-arabic-700-normal.woff2'),
+    path.join(AMIRI_SRC, 'amiri-arabic-700-normal.woff'),
+  ].find(fileOk) || normal;
+
+  if (normal) {
+    console.log('[PDF] Amiri:', normal);
+    return { normal, bold: bold || normal };
   }
-}
-
-// ── Roboto (Latin / English) ──────────────────────────────────────
-const robotoNormal = pickFile(
-  PDFMAKE_FONTS && path.join(PDFMAKE_FONTS, 'Roboto-Regular.ttf'),
-) || extractFromVFS('Roboto-Regular.ttf');
-
-const robotoBold = pickFile(
-  PDFMAKE_FONTS && path.join(PDFMAKE_FONTS, 'Roboto-Medium.ttf'),
-) || extractFromVFS('Roboto-Medium.ttf') || robotoNormal;
-
-const robotoItalic = pickFile(
-  PDFMAKE_FONTS && path.join(PDFMAKE_FONTS, 'Roboto-Italic.ttf'),
-) || extractFromVFS('Roboto-Italic.ttf') || robotoNormal;
-
-const robotoBoldItalic = pickFile(
-  PDFMAKE_FONTS && path.join(PDFMAKE_FONTS, 'Roboto-MediumItalic.ttf'),
-) || extractFromVFS('Roboto-MediumItalic.ttf') || robotoNormal;
-
-// ── Amiri (Arabic / Urdu) ─────────────────────────────────────────
-const SERVER_FONTS     = path.join(__dirname, '../fonts');
-const FONTSOURCE_AMIRI = path.join(__dirname, '../node_modules/@fontsource/amiri/files');
-
-const amiriNormal = pickFile(
-  path.join(SERVER_FONTS,     'Amiri-Regular.woff2'),
-  path.join(FONTSOURCE_AMIRI, 'amiri-arabic-400-normal.woff2'),
-  path.join(FONTSOURCE_AMIRI, 'amiri-arabic-400-normal.woff'),
-);
-const amiriBold = pickFile(
-  path.join(SERVER_FONTS,     'Amiri-Bold.woff2'),
-  path.join(FONTSOURCE_AMIRI, 'amiri-arabic-700-normal.woff2'),
-  path.join(FONTSOURCE_AMIRI, 'amiri-arabic-700-normal.woff'),
-) || amiriNormal;
-
-// ── Font diagnostics ──────────────────────────────────────────────
-console.log('[PDF] Roboto:', robotoNormal || 'NOT FOUND');
-console.log('[PDF] Amiri: ', amiriNormal  || 'NOT FOUND — using Roboto fallback');
-
-if (!robotoNormal) {
-  console.error('[PDF] CRITICAL: Roboto font not found. pdfmake may not be installed correctly.');
+  console.warn('[PDF] Amiri: NOT FOUND — Arabic/Urdu will use Roboto fallback');
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Build font descriptor — omit fonts that weren't found
+// Build font descriptors — only register fonts whose files exist
 // ─────────────────────────────────────────────────────────────────
+const robotoFiles = loadRoboto();
+const amiriFiles  = loadAmiri();
+
 const fontDescriptors = {};
+if (robotoFiles) fontDescriptors.Roboto = robotoFiles;
+if (amiriFiles)  fontDescriptors.Amiri  = amiriFiles;
 
-if (robotoNormal) {
-  fontDescriptors.Roboto = {
-    normal:      robotoNormal,
-    bold:        robotoBold,
-    italics:     robotoItalic,
-    bolditalics: robotoBoldItalic,
-  };
-}
-
-if (amiriNormal) {
-  fontDescriptors.Amiri = {
-    normal: amiriNormal,
-    bold:   amiriBold || amiriNormal,
-  };
-}
-
-const ARABIC_FONT = fontDescriptors.Amiri  ? 'Amiri'  : 'Roboto';
+// CRITICAL: LATIN_FONT and ARABIC_FONT MUST reference names that are
+// actually in fontDescriptors, otherwise pdfmake hangs silently.
+const ARABIC_FONT = fontDescriptors.Amiri  ? 'Amiri'  : (fontDescriptors.Roboto ? 'Roboto' : null);
 const LATIN_FONT  = fontDescriptors.Roboto ? 'Roboto' : ARABIC_FONT;
 
-// PdfPrinter is instantiated once at module load.
-// If no fonts are found at all, we create a no-op that returns an error.
+console.log('[PDF] fonts registered:', Object.keys(fontDescriptors));
+console.log('[PDF] ARABIC_FONT:', ARABIC_FONT, '| LATIN_FONT:', LATIN_FONT);
+
 const printer = Object.keys(fontDescriptors).length > 0
   ? new PdfPrinter(fontDescriptors)
   : null;
@@ -160,22 +178,14 @@ function renderChapterHeading(block) {
   const nodes = [];
   if (block.arabicTitle) {
     nodes.push({
-      text:      block.arabicTitle,
-      font:      ARABIC_FONT,
-      fontSize:  22,
-      bold:      true,
-      alignment: 'center',
-      margin:    [0, 20, 0, block.urduSubtitle ? 4 : 14],
+      text: block.arabicTitle, font: ARABIC_FONT, fontSize: 22, bold: true,
+      alignment: 'center', margin: [0, 20, 0, block.urduSubtitle ? 4 : 14],
     });
   }
   if (block.urduSubtitle) {
     nodes.push({
-      text:      block.urduSubtitle,
-      font:      ARABIC_FONT,
-      fontSize:  17,
-      bold:      true,
-      alignment: 'center',
-      margin:    [0, 0, 0, 14],
+      text: block.urduSubtitle, font: ARABIC_FONT, fontSize: 17, bold: true,
+      alignment: 'center', margin: [0, 0, 0, 14],
     });
   }
   return nodes;
@@ -202,19 +212,12 @@ function renderFiqh(block) {
   const heading = block.heading || 'فقہ الحدیث:';
   const points  = block.points  || [];
   const nodes   = [{
-    text:      heading,
-    font:      ARABIC_FONT,
-    fontSize:  15,
-    bold:      true,
-    alignment: 'right',
-    margin:    [0, 8, 0, 4],
+    text: heading, font: ARABIC_FONT, fontSize: 15, bold: true,
+    alignment: 'right', margin: [0, 8, 0, 4],
   }];
   points.forEach((pt, i) => nodes.push({
-    text:      `${CIRCLED[i] || `(${i + 1})`} ${pt}`,
-    font:      ARABIC_FONT,
-    fontSize:  13,
-    alignment: 'right',
-    margin:    [0, 2, 0, 2],
+    text: `${CIRCLED[i] || `(${i + 1})`} ${pt}`,
+    font: ARABIC_FONT, fontSize: 13, alignment: 'right', margin: [0, 2, 0, 2],
   }));
   return nodes;
 }
@@ -222,10 +225,7 @@ function renderFiqh(block) {
 function renderReference(block) {
   if (!block.content?.trim()) return [];
   return [
-    {
-      canvas: [{ type: 'line', x1: 330, y1: 0, x2: 481, y2: 0, lineWidth: 0.8, lineColor: '#555' }],
-      margin: [0, 8, 0, 3],
-    },
+    { canvas: [{ type: 'line', x1: 330, y1: 0, x2: 481, y2: 0, lineWidth: 0.8, lineColor: '#555' }], margin: [0, 8, 0, 3] },
     { text: block.content, font: ARABIC_FONT, fontSize: 10, alignment: 'right', color: '#333', margin: [0, 0, 0, 6] },
   ];
 }
@@ -238,14 +238,13 @@ function renderVerse(block) {
 }
 
 function renderFreeText(block) {
-  const dir       = block.direction || 'rtl';
-  const font      = dir === 'ltr' ? LATIN_FONT : ARABIC_FONT;
-  const alignment = pdfAlign(block.textAlign, dir);
+  const dir  = block.direction || 'rtl';
+  const font = dir === 'ltr' ? LATIN_FONT : ARABIC_FONT;
   return {
     text:      stripHtml(block.content || ''),
     font,
     fontSize:  Number(block.fontSize) || 13,
-    alignment,
+    alignment: pdfAlign(block.textAlign, dir),
     margin:    [0, 4, 0, 4],
   };
 }
@@ -308,12 +307,12 @@ function makeFooter(doc) {
 // Main export
 // ─────────────────────────────────────────────────────────────────
 async function generatePDF(doc) {
-  if (!printer) {
-    throw new Error('[PDF] No fonts available — pdfmake cannot generate PDF. Check server logs.');
+  if (!printer || !ARABIC_FONT) {
+    throw new Error('[PDF] No fonts loaded — check server logs for font extraction errors.');
   }
 
   console.time('[PDF] generate');
-  console.log('[PDF] blocks:', doc.blocks?.length ?? 0, '| arabic:', ARABIC_FONT);
+  console.log('[PDF] blocks:', doc.blocks?.length ?? 0, '| ARABIC:', ARABIC_FONT, '| LATIN:', LATIN_FONT);
 
   const docDefinition = {
     pageSize:     'A4',
@@ -325,13 +324,11 @@ async function generatePDF(doc) {
   };
 
   return new Promise((resolve, reject) => {
-    // 30-second hard timeout — prevents 504 gateway errors
-    const timer = setTimeout(() => reject(new Error('[PDF] generation timed out')), 30000);
-
+    const timer = setTimeout(() => reject(new Error('[PDF] timed out after 30s')), 30000);
     try {
       const pdfDoc = printer.createPdfKitDocument(docDefinition);
       const chunks = [];
-      pdfDoc.on('data',  (chunk) => chunks.push(chunk));
+      pdfDoc.on('data',  (c) => chunks.push(c));
       pdfDoc.on('end',   () => {
         clearTimeout(timer);
         const buf = Buffer.concat(chunks);
@@ -347,7 +344,7 @@ async function generatePDF(doc) {
       pdfDoc.end();
     } catch (err) {
       clearTimeout(timer);
-      console.error('[PDF] build error:', err.message);
+      console.error('[PDF] createPdfKitDocument error:', err.message);
       reject(err);
     }
   });
