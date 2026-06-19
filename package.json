@@ -6,9 +6,9 @@
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "server": "cd server && npm run dev",
     "client": "cd client && npm run dev",
-    "build": "echo \"No build needed\"",
+    "build": "cd server && npm run install:chrome",
     "start": "cd server && npm start",
-    "postinstall": "cd server && npm install && npx puppeteer browsers install chrome",
+    "postinstall": "cd server && npm install && npm run install:chrome",
     "install:all": "cd server && npm install"
   },
   "devDependencies": {
