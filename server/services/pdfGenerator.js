@@ -369,24 +369,28 @@ async function generatePDF(doc) {
     throw new Error(`Temp dir error: ${mkdirErr.message}`);
   }
 
-  let executablePath;
-  try {
-    executablePath = await puppeteer.executablePath();
-  } catch (err) {
-    console.error('[PDF] executablePath resolve failed:', err);
+  // PUPPETEER_EXECUTABLE_PATH env var wins (set this in Hostinger's environment
+  // variables panel to the path shown in build logs, e.g.
+  // /home/u593246313/.cache/puppeteer/chrome/linux-149.0.7827.22/chrome-linux64/chrome).
+  // Hostinger's build env ($HOME=/home/<user>) and runtime env ($HOME=<domain-dir>)
+  // differ, so puppeteer.executablePath() resolves different paths at each stage.
+  // The env var provides a single stable path that works at runtime.
+  let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || null;
+
+  if (!executablePath) {
+    try {
+      executablePath = await puppeteer.executablePath();
+    } catch (err) {
+      console.error('[PDF] executablePath resolve failed:', err);
+    }
   }
-  console.log('[PDF] executablePath:', executablePath);
+
+  console.log('[PDF] using chrome path:', executablePath);
   console.log('[PDF] tmpdir:', os.tmpdir(), '| profile:', tempPath);
 
-  // Fail fast with a clear message if Chrome binary is missing.
-  // On Hostinger, Chrome is installed by prestart: npx puppeteer browsers install chrome
-  if (!executablePath || typeof executablePath !== 'string') {
+  if (!executablePath || !fs.existsSync(executablePath)) {
     try { fs.rmSync(tempPath, { recursive: true, force: true }); } catch (_) {}
-    throw new Error('Chrome executable path could not be resolved. Puppeteer Chrome may not be installed.');
-  }
-  if (!fs.existsSync(executablePath)) {
-    try { fs.rmSync(tempPath, { recursive: true, force: true }); } catch (_) {}
-    throw new Error(`Chrome binary not found at: ${executablePath}. Run npm run install:chrome inside the server directory.`);
+    throw new Error(`Chrome binary not found at: ${executablePath}. Set PUPPETEER_EXECUTABLE_PATH in Hostinger environment variables.`);
   }
 
   let browser;
