@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
+    "prestart": "npx puppeteer browsers install chrome",
     "start": "NODE_ENV=production node server.js",
     "dev": "nodemon server.js",
     "install:chrome": "npx puppeteer browsers install chrome"

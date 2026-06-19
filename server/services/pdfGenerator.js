@@ -378,26 +378,33 @@ async function generatePDF(doc) {
   console.log('[PDF] executablePath:', executablePath);
   console.log('[PDF] tmpdir:', os.tmpdir(), '| profile:', tempPath);
 
-  const launchOptions = {
-    headless: true,
-    userDataDir: tempPath,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-crash-reporter',
-      '--disable-breakpad',
-      '--no-first-run',
-    ],
-  };
-  if (executablePath && typeof executablePath === 'string') {
-    launchOptions.executablePath = executablePath;
+  // Fail fast with a clear message if Chrome binary is missing.
+  // On Hostinger, Chrome is installed by prestart: npx puppeteer browsers install chrome
+  if (!executablePath || typeof executablePath !== 'string') {
+    try { fs.rmSync(tempPath, { recursive: true, force: true }); } catch (_) {}
+    throw new Error('Chrome executable path could not be resolved. Puppeteer Chrome may not be installed.');
+  }
+  if (!fs.existsSync(executablePath)) {
+    try { fs.rmSync(tempPath, { recursive: true, force: true }); } catch (_) {}
+    throw new Error(`Chrome binary not found at: ${executablePath}. Run npm run install:chrome inside the server directory.`);
   }
 
   let browser;
   try {
-    browser = await puppeteer.launch(launchOptions);
+    browser = await puppeteer.launch({
+      headless: true,
+      executablePath,
+      userDataDir: tempPath,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-crash-reporter',
+        '--disable-breakpad',
+        '--no-first-run',
+      ],
+    });
     console.log('[PDF] browser launched');
   } catch (launchErr) {
     console.error('[PDF] launch failed:', {
