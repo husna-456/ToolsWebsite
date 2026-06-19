@@ -48,6 +48,73 @@ function safeStr(v) {
   return String(v).trim();
 }
 
+/**
+ * Remove characters that cause fontkit to return null (→ xCoordinate crash).
+ *
+ * Amiri covers: Basic Latin (0000-007F), Latin Extended (0080-024F),
+ *   Arabic (0600-06FF), Arabic Supplement (0750-077F),
+ *   Arabic Extended-A (08A0-08FF), Arabic Presentation Forms-A (FB50-FDFF),
+ *   Arabic Presentation Forms-B (FE70-FEFF), General Punctuation (2000-206F),
+ *   combining diacritics (0300-036F).
+ *
+ * Characters in supplementary planes (U+10000+) such as emoji or math
+ * symbols are NOT in Amiri and crash fontkit with a null glyph.
+ *
+ * Roboto covers Basic Latin (0020-007E) and Latin Extended. Same principle:
+ * Arabic chars in Roboto → null glyph → crash.
+ */
+function cleanForAmiri(text) {
+  const s = safeStr(text).replace(/﻿/g, ''); // strip BOM
+  if (!s) return '';
+  let out = '';
+  for (const ch of s) {
+    const cp = ch.codePointAt(0);
+    if (cp === undefined) continue;
+    // Allow newlines and carriage returns
+    if (cp === 0x0A || cp === 0x0D) { out += ch; continue; }
+    // Reject control characters
+    if (cp < 0x20) continue;
+    // Reject supplementary plane (U+10000+) — emoji, math, etc. not in Amiri
+    if (cp > 0xFFFF) continue;
+    // Allow known Amiri ranges
+    if (
+      cp <= 0x024F ||                        // Basic Latin + Latin Extended
+      (cp >= 0x0300 && cp <= 0x036F) ||      // Combining Diacritical Marks
+      (cp >= 0x0600 && cp <= 0x06FF) ||      // Arabic
+      (cp >= 0x0750 && cp <= 0x077F) ||      // Arabic Supplement
+      (cp >= 0x08A0 && cp <= 0x08FF) ||      // Arabic Extended-A
+      (cp >= 0x2000 && cp <= 0x206F) ||      // General Punctuation (spaces, dashes)
+      (cp >= 0x25A0 && cp <= 0x25FF) ||      // Geometric Shapes (bullets etc.)
+      (cp >= 0xFB50 && cp <= 0xFDFF) ||      // Arabic Presentation Forms-A (incl. ﷺ ﴿ ﴾)
+      (cp >= 0xFE70 && cp <= 0xFEFF)         // Arabic Presentation Forms-B
+    ) {
+      out += ch;
+    }
+    // Characters outside these ranges are silently dropped
+  }
+  return out;
+}
+
+function cleanForRoboto(text) {
+  const s = safeStr(text).replace(/﻿/g, '');
+  if (!s) return '';
+  let out = '';
+  for (const ch of s) {
+    const cp = ch.codePointAt(0);
+    if (cp === undefined) continue;
+    if (cp === 0x0A || cp === 0x0D) { out += ch; continue; }
+    if (cp < 0x20) continue;
+    if (cp > 0xFFFF) continue;
+    // Roboto: Latin only — reject Arabic/RTL characters
+    if (cp >= 0x0600 && cp <= 0x06FF)   continue; // Arabic
+    if (cp >= 0x0750 && cp <= 0x077F)   continue; // Arabic Supplement
+    if (cp >= 0x08A0 && cp <= 0x08FF)   continue; // Arabic Extended-A
+    if (cp >= 0xFB50 && cp <= 0xFEFF)   continue; // Arabic Presentation Forms
+    out += ch;
+  }
+  return out;
+}
+
 function stripHtml(html) {
   const s = safeStr(html);
   if (!s) return '';
@@ -68,11 +135,19 @@ function stripHtml(html) {
 }
 
 function pdfAlign(ta, dir) {
+  // Never justify RTL (Arabic/Urdu): pdfmake's justification algorithm
+  // measures glyph widths in a way that crashes when Arabic shaping produces
+  // null glyph positions for some character combinations.
+  if (dir === 'rtl') {
+    if (ta === 'center') return 'center';
+    if (ta === 'left')   return 'left';
+    return 'right';
+  }
   if (ta === 'center')  return 'center';
   if (ta === 'left')    return 'left';
   if (ta === 'justify') return 'justify';
   if (ta === 'right')   return 'right';
-  return dir === 'ltr' ? 'justify' : 'right';
+  return 'justify'; // LTR default
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -233,18 +308,18 @@ function buildFontDescriptors() {
 // ─────────────────────────────────────────────────────────────────
 
 function renderChapterHeading(block, AF) {
-  const nodes       = [];
-  const arabicTitle  = safeStr(block.arabicTitle);
-  const urduSubtitle = safeStr(block.urduSubtitle);
+  const nodes        = [];
+  const arabicTitle  = cleanForAmiri(block.arabicTitle);
+  const urduSubtitle = cleanForAmiri(block.urduSubtitle);
   if (arabicTitle)  nodes.push({ text: arabicTitle,  font: AF, fontSize: 22, bold: true, alignment: 'center', margin: [0, 20, 0, urduSubtitle ? 4 : 14] });
   if (urduSubtitle) nodes.push({ text: urduSubtitle, font: AF, fontSize: 17, bold: true, alignment: 'center', margin: [0, 0, 0, 14] });
   return nodes;
 }
 
 function renderHadith(block, AF) {
-  const num    = safeStr(block.number);
-  const arabic = (num ? `﴿${num}﴾ ` : '') + safeStr(block.arabicMatn);
-  const urdu   = safeStr(block.urduTranslation);
+  const num    = cleanForAmiri(block.number);
+  const arabic = cleanForAmiri((num ? `﴿${num}﴾ ` : '') + safeStr(block.arabicMatn));
+  const urdu   = cleanForAmiri(block.urduTranslation);
   return {
     table: {
       widths: ['50%', '50%'],
@@ -259,17 +334,17 @@ function renderHadith(block, AF) {
 }
 
 function renderFiqh(block, AF) {
-  const heading = safeStr(block.heading) || 'فقہ الحدیث:';
+  const heading = cleanForAmiri(block.heading) || 'فقہ الحدیث:';
   const nodes   = [{ text: heading, font: AF, fontSize: 15, bold: true, alignment: 'right', margin: [0, 8, 0, 4] }];
   const points  = Array.isArray(block.points) ? block.points : [];
   points.forEach((pt, i) => {
-    nodes.push({ text: `(${i + 1}) ` + safeStr(pt), font: AF, fontSize: 13, alignment: 'right', margin: [0, 2, 0, 2] });
+    nodes.push({ text: `(${i + 1}) ` + cleanForAmiri(pt), font: AF, fontSize: 13, alignment: 'right', margin: [0, 2, 0, 2] });
   });
   return nodes;
 }
 
 function renderReference(block, AF) {
-  const content = stripHtml(block.content);
+  const content = cleanForAmiri(stripHtml(block.content));
   if (!content) return [];
   return [
     { canvas: [{ type: 'line', x1: 330, y1: 0, x2: 481, y2: 0, lineWidth: 0.8, lineColor: '#555' }], margin: [0, 8, 0, 3] },
@@ -279,8 +354,8 @@ function renderReference(block, AF) {
 
 function renderVerse(block, AF) {
   const nodes      = [];
-  const arabicText  = safeStr(block.arabicText);
-  const urduText    = safeStr(block.urduText);
+  const arabicText  = cleanForAmiri(block.arabicText);
+  const urduText    = cleanForAmiri(block.urduText);
   if (arabicText) nodes.push({ text: arabicText, font: AF, fontSize: 14, alignment: 'center', margin: [0, 10, 0, urduText ? 4 : 10] });
   if (urduText)   nodes.push({ text: urduText,   font: AF, fontSize: 14, alignment: 'center', margin: [0, 0, 0, 10] });
   return nodes;
@@ -288,7 +363,8 @@ function renderVerse(block, AF) {
 
 function renderFreeText(block, AF, LF) {
   const dir     = safeStr(block.direction) || 'rtl';
-  const content = stripHtml(block.content);
+  const raw     = stripHtml(block.content);
+  const content = dir === 'ltr' ? cleanForRoboto(raw) : cleanForAmiri(raw);
   const font    = dir === 'ltr' ? LF : AF;
   const size    = Math.max(8, Math.min(48, Number(block.fontSize) || 13));
   return {
@@ -332,7 +408,7 @@ function buildContent(blocks, AF, LF) {
 // ─────────────────────────────────────────────────────────────────
 
 function makeHeader(doc, AF) {
-  const name = stripHtml(doc.headerRight || doc.name || '');
+  const name = cleanForAmiri(stripHtml(doc.headerRight || doc.name || ''));
   const pos  = doc.showPageNumber !== false
     ? (safeStr(doc.pageNumberPosition) || 'header-right')
     : 'none';
@@ -354,7 +430,7 @@ function makeFooter(doc, AF) {
     ? (safeStr(doc.pageNumberPosition) || 'header-right')
     : 'none';
   const hairline = doc.footerHairline !== false;
-  const center   = stripHtml(doc.footerCenter || '');
+  const center   = cleanForAmiri(stripHtml(doc.footerCenter || ''));
   return (pg) => {
     try {
       const ct    = pos === 'footer-center' ? String(pg) : center;
