@@ -151,6 +151,103 @@ function pdfAlign(ta, dir) {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// GPOS null-anchor patch
+//
+// @foliojs-fork/fontkit@1.9.1 GPOSProcessor.getAnchor() crashes with
+// "Cannot read properties of null (reading 'xCoordinate')" when a
+// mark-to-base or mark-to-mark GPOS lookup returns a null anchor for
+// a specific (base glyph, mark class) pair that the font has not defined.
+// This happens with some Arabic diacritic + base combinations in Amiri.
+//
+// Fix: patch GPOSProcessor.prototype.getAnchor to return {x:0, y:0}
+// for a null anchor (= place the mark at the default position instead
+// of the precisely-defined offset — safe, visible, doesn't crash).
+//
+// We get the prototype by opening the Amiri font once via fontkit.create(),
+// then traversing font._layoutEngine.engine.GPOSProcessor to the prototype.
+// Because JavaScript prototype lookup is dynamic, patching the prototype
+// after the fact fixes ALL existing AND future GPOSProcessor instances.
+// ─────────────────────────────────────────────────────────────────
+
+let _gposPatched = false;
+
+function patchFontkitGPOS() {
+  if (_gposPatched) return;
+  try {
+    const fk        = require('@foliojs-fork/fontkit');
+    const amiriPath = AMIRI_NORMAL_CANDIDATES.find(fileOk);
+    if (!amiriPath) {
+      console.warn('[PDF][GPOS] patch deferred — Amiri not found yet');
+      return;
+    }
+    const font = fk.create(fs.readFileSync(amiriPath));
+    const le   = font._layoutEngine;                      // triggers [cache] getter
+    const gp   = le && le.engine && le.engine.GPOSProcessor;
+    if (!gp) {
+      console.warn('[PDF][GPOS] patch skipped — no GPOSProcessor in Amiri layout engine');
+      return;
+    }
+    const proto = Object.getPrototypeOf(gp);
+    if (!proto || typeof proto.getAnchor !== 'function') {
+      console.warn('[PDF][GPOS] patch skipped — getAnchor not on prototype');
+      return;
+    }
+    if (proto.__getAnchorPatched) { _gposPatched = true; return; }
+    const _orig = proto.getAnchor;
+    proto.getAnchor = function safeGetAnchor(anchor) {
+      if (anchor == null) return { x: 0, y: 0 };
+      return _orig.call(this, anchor);
+    };
+    proto.__getAnchorPatched = true;
+    _gposPatched = true;
+    console.log('[PDF][GPOS] GPOSProcessor.prototype.getAnchor patched — null anchors safe');
+  } catch (e) {
+    console.error('[PDF][GPOS] patch error (non-fatal):', e.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Harakat stripper — fallback for GPOS crash recovery
+//
+// Arabic combining marks (harakat / tashkeel) are the primary trigger
+// for GPOS null-anchor crashes. If the prototype patch above fails for
+// any reason, generatePDF catches xCoordinate errors and retries with
+// harakat stripped. Text remains readable; only vowel mark positioning
+// is lost.
+// ─────────────────────────────────────────────────────────────────
+// U+0610-061A  Arabic Sign / Extended marks
+// U+064B-065F  Harakat (fatha, damma, kasra, shadda, sukun, etc.)
+// U+0670       Arabic Letter Superscript Alef
+// U+06D6-06DC  Quranic annotation signs
+// U+06DF-06E4  More Quranic marks
+// U+06E7-06E8  Arabic sign above/below
+// U+06EA-06ED  Arabic musical signs / poetic marks
+const RE_HARAKAT = /[ؐ-ًؚ-ٰٟۖ-ۜ۟-۪ۤۧۨ-ۭ]/g;
+
+function stripHarakat(text) {
+  if (!text) return text;
+  return typeof text === 'string' ? text.replace(RE_HARAKAT, '') : text;
+}
+
+function stripDocHarakat(doc) {
+  if (!doc) return doc;
+  const d = Object.assign({}, doc);
+  if (Array.isArray(d.blocks)) {
+    d.blocks = d.blocks.map(b => {
+      if (!b || typeof b !== 'object') return b;
+      const n = Object.assign({}, b);
+      ['arabicTitle', 'urduSubtitle', 'arabicMatn', 'urduTranslation',
+       'arabicText', 'urduText', 'content', 'heading'].forEach(k => {
+        if (typeof n[k] === 'string') n[k] = stripHarakat(n[k]);
+      });
+      if (Array.isArray(n.points)) n.points = n.points.map(stripHarakat);
+      return n;
+    });
+  }
+  return d;
+}
+
+// ─────────────────────────────────────────────────────────────────
 // VFS extraction via vm sandbox
 //
 // pdfmake/build/vfs_fonts.js is a UMD module. In Node.js its factory calls
@@ -446,23 +543,7 @@ function makeFooter(doc, AF) {
 // Main export
 // ─────────────────────────────────────────────────────────────────
 
-async function generatePDF(doc) {
-  if (!doc || typeof doc !== 'object') throw new Error('[PDF] Invalid document data.');
-
-  const desc = buildFontDescriptors();
-
-  if (!desc.Amiri) {
-    throw new Error(
-      '[PDF] Amiri font not found. Checked: ' + AMIRI_NORMAL_CANDIDATES.join(', ')
-    );
-  }
-  if (!desc.Roboto) {
-    throw new Error(
-      '[PDF] Roboto font not found (VFS extraction also failed). ' +
-      'Checked: ' + ROBOTO_SPECS[0].paths.join(', ')
-    );
-  }
-
+async function _buildPDFBuffer(desc, doc) {
   const AF         = 'Amiri';
   const LF         = 'Roboto';
   const blockCount = Array.isArray(doc.blocks) ? doc.blocks.length : 0;
@@ -504,6 +585,39 @@ async function generatePDF(doc) {
       reject(err);
     }
   });
+}
+
+async function generatePDF(doc) {
+  if (!doc || typeof doc !== 'object') throw new Error('[PDF] Invalid document data.');
+
+  // Layer 1: patch GPOSProcessor.prototype.getAnchor before any font opens.
+  // No-op after first successful patch. Non-fatal if it can't run yet.
+  patchFontkitGPOS();
+
+  const desc = buildFontDescriptors();
+
+  if (!desc.Amiri) {
+    throw new Error(
+      '[PDF] Amiri font not found. Checked: ' + AMIRI_NORMAL_CANDIDATES.join(', ')
+    );
+  }
+  if (!desc.Roboto) {
+    throw new Error(
+      '[PDF] Roboto font not found (VFS extraction also failed). ' +
+      'Checked: ' + ROBOTO_SPECS[0].paths.join(', ')
+    );
+  }
+
+  // Layer 2: build PDF; on GPOS null-anchor escape, strip harakat and retry.
+  try {
+    return await _buildPDFBuffer(desc, doc);
+  } catch (e) {
+    if (e && typeof e.message === 'string' && e.message.includes('xCoordinate')) {
+      console.warn('[PDF] GPOS null-anchor escaped patch — retrying with harakat stripped');
+      return await _buildPDFBuffer(desc, stripDocHarakat(doc));
+    }
+    throw e;
+  }
 }
 
 module.exports = { generatePDF };
