@@ -1,7 +1,7 @@
-const Groq      = require('groq-sdk');
 const rateLimit = require('express-rate-limit');
-
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// groq-sdk is required lazily inside textToPdfFormat so a missing/broken
+// groq-sdk installation does NOT prevent the module from loading.
+// textToPdfGenerate (the PDF download handler) never uses groq-sdk.
 
 // ── Rate limiter: 10 requests / minute per IP ──────────────────
 const textToPdfLimiter = rateLimit({
@@ -155,6 +155,10 @@ async function textToPdfFormat(req, res) {
       return res.status(400).json({ error: 'Text is required.' });
     if (text.length > 10000)
       return res.status(400).json({ error: 'Text too long (max 10,000 characters).' });
+
+    // Lazy-loaded so a missing groq-sdk doesn't break the entire module at startup.
+    const Groq = require('groq-sdk');
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
     const response = await groq.chat.completions.create({
       model:       'llama-3.3-70b-versatile',
