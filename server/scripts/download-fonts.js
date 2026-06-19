@@ -1,11 +1,14 @@
 'use strict';
 /**
- * Downloads Amiri Arabic TTF fonts into server/fonts/.
- * TTF is used deliberately — woff2 requires WebAssembly (wawoff2) which
- * may hang on Hostinger shared hosting. TTF is parsed by fontkit natively.
+ * Downloads Amiri and Roboto Arabic/Latin TTF fonts into server/fonts/.
  *
- * Each font has multiple fallback URLs tried in order.
- * Script is non-fatal: always exits 0 so it never breaks deployment.
+ * TTF is used deliberately — woff2 requires WebAssembly (wawoff2) which
+ * hangs on Hostinger shared hosting. TTF is parsed by fontkit natively.
+ *
+ * Each font has multiple fallback CDN URLs tried in order.
+ * Non-fatal: always exits 0 so it never blocks deployment.
+ * If ALL downloads fail for a font, the server falls back to VFS extraction
+ * (Roboto) or throws a clear error (Amiri) — both handled in pdfGeneratorMake.
  */
 
 const https = require('https');
@@ -13,10 +16,11 @@ const http  = require('http');
 const fs    = require('fs');
 const path  = require('path');
 
-const FONTS_DIR = path.join(__dirname, '../fonts');
-const MIN_VALID_SIZE = 10000; // 10 KB — any real TTF is larger
+const FONTS_DIR     = path.join(__dirname, '../fonts');
+const MIN_VALID_SIZE = 10000; // any real TTF is > 10 KB
 
 const FONTS = [
+  // ── Amiri (Arabic / Urdu) ───────────────────────────────────────
   {
     filename: 'Amiri-Regular.ttf',
     urls: [
@@ -33,6 +37,39 @@ const FONTS = [
       'https://fonts.gstatic.com/s/amiri/v27/J7acnpd8CGxBHpUdtaFB.ttf',
     ],
   },
+
+  // ── Roboto (Latin) ──────────────────────────────────────────────
+  // Saved as pdfmake VFS key names so extractFromVFS cache hits work.
+  {
+    filename: 'Roboto-Regular.ttf',
+    urls: [
+      'https://cdn.jsdelivr.net/npm/@expo-google-fonts/roboto/Roboto_400Regular.ttf',
+      'https://cdn.jsdelivr.net/npm/@fontsource/roboto/files/roboto-latin-400-normal.ttf',
+      'https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/static/Roboto-Regular.ttf',
+    ],
+  },
+  {
+    filename: 'Roboto-Medium.ttf',
+    urls: [
+      'https://cdn.jsdelivr.net/npm/@expo-google-fonts/roboto/Roboto_700Bold.ttf',
+      'https://cdn.jsdelivr.net/npm/@fontsource/roboto/files/roboto-latin-700-normal.ttf',
+      'https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/static/Roboto-Bold.ttf',
+    ],
+  },
+  {
+    filename: 'Roboto-Italic.ttf',
+    urls: [
+      'https://cdn.jsdelivr.net/npm/@expo-google-fonts/roboto/Roboto_400Regular_Italic.ttf',
+      'https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/static/Roboto-Italic.ttf',
+    ],
+  },
+  {
+    filename: 'Roboto-MediumItalic.ttf',
+    urls: [
+      'https://cdn.jsdelivr.net/npm/@expo-google-fonts/roboto/Roboto_700Bold_Italic.ttf',
+      'https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/static/Roboto-BoldItalic.ttf',
+    ],
+  },
 ];
 
 function downloadOne(url, dest, redirects) {
@@ -40,8 +77,8 @@ function downloadOne(url, dest, redirects) {
   return new Promise(function(resolve, reject) {
     if (redirects > 5) return reject(new Error('Too many redirects'));
     var proto = url.startsWith('https') ? https : http;
-    var tmp = dest + '.tmp';
-    var file = fs.createWriteStream(tmp);
+    var tmp   = dest + '.tmp';
+    var file  = fs.createWriteStream(tmp);
     proto.get(url, function(res) {
       if (res.statusCode === 301 || res.statusCode === 302) {
         file.close();
@@ -68,23 +105,13 @@ function downloadOne(url, dest, redirects) {
           } catch (e) { reject(e); }
         });
       });
-      res.on('error', function(e) {
-        file.close();
-        try { fs.unlinkSync(tmp); } catch (_) {}
-        reject(e);
-      });
-    }).on('error', function(e) {
-      file.close();
-      try { fs.unlinkSync(tmp); } catch (_) {}
-      reject(e);
-    });
+      res.on('error', function(e) { file.close(); try { fs.unlinkSync(tmp); } catch (_) {} reject(e); });
+    }).on('error', function(e) { file.close(); try { fs.unlinkSync(tmp); } catch (_) {} reject(e); });
   });
 }
 
 async function downloadFont(filename, urls) {
   var dest = path.join(FONTS_DIR, filename);
-
-  // Already downloaded and valid
   try {
     if (fs.existsSync(dest) && fs.statSync(dest).size > MIN_VALID_SIZE) {
       console.log('[fonts] already present: ' + filename + ' (' + fs.statSync(dest).size + ' bytes)');
@@ -94,33 +121,30 @@ async function downloadFont(filename, urls) {
 
   for (var i = 0; i < urls.length; i++) {
     try {
-      console.log('[fonts] trying URL ' + (i + 1) + '/' + urls.length + ': ' + urls[i]);
+      console.log('[fonts] trying (' + (i + 1) + '/' + urls.length + '): ' + urls[i]);
       await downloadOne(urls[i], dest);
       return true;
     } catch (e) {
-      console.warn('[fonts] URL ' + (i + 1) + ' failed: ' + e.message);
+      console.warn('[fonts] failed: ' + e.message);
     }
   }
-  console.error('[fonts] All URLs failed for ' + filename + ' — PDF will use Roboto fallback for Arabic.');
+  console.error('[fonts] All URLs failed for ' + filename);
   return false;
 }
 
 async function main() {
-  try {
-    fs.mkdirSync(FONTS_DIR, { recursive: true });
-  } catch (_) {}
+  try { fs.mkdirSync(FONTS_DIR, { recursive: true }); } catch (_) {}
 
   var ok = 0;
   for (var i = 0; i < FONTS.length; i++) {
-    var f = FONTS[i];
+    var f       = FONTS[i];
     var success = await downloadFont(f.filename, f.urls);
     if (success) ok++;
   }
-
-  console.log('[fonts] ' + ok + '/' + FONTS.length + ' Arabic TTF fonts ready.');
+  console.log('[fonts] ' + ok + '/' + FONTS.length + ' fonts ready in server/fonts/');
 }
 
 main().catch(function(e) {
-  console.error('[fonts] fatal error (non-fatal for deploy):', e.message);
+  console.error('[fonts] fatal (non-fatal for deploy):', e.message);
   process.exit(0);
 });
