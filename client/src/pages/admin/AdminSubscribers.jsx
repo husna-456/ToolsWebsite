@@ -85,7 +85,8 @@ export default function AdminSubscribers() {
       if (sourceFilter !== 'all')  params.set('source', sourceFilter);
       const query = params.toString() ? `?${params}` : '';
 
-      const res = await fetch(`/api/admin/subscribers/export${query}`, {
+      const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const res = await fetch(`${API_BASE_URL}/api/admin/subscribers/export${query}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
       if (!res.ok) throw new Error('Export failed');
