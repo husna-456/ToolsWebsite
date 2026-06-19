@@ -31,6 +31,7 @@
     "node-tesseract-ocr": "^2.2.1",
     "nodemailer": "^8.0.8",
     "@expo-google-fonts/amiri": "^0.3.0",
+    "@expo-google-fonts/roboto": "^0.3.0",
     "@fontsource/amiri": "^5.0.0",
     "@fontsource/roboto": "^5.0.0",
     "pdfmake": "^0.2.10",
