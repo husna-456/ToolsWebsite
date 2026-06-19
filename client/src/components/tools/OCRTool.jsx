@@ -3,7 +3,7 @@ import { Upload, FileText, Copy, Check, Download, X, Loader2, AlertCircle } from
 import { useClipboard } from '@/hooks/useClipboard';
 
 const ACCEPTED = '.jpg,.jpeg,.png,.gif,.bmp,.tiff,.webp';
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
 
 async function runOCR(file, onProgress) {
   onProgress(20);
