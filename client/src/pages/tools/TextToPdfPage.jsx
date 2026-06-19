@@ -1910,7 +1910,8 @@ export default function TextToPdfPage() {
     if (!currentDoc?.blocks?.length) return;
     setGenerating(true); setPdfErr('');
     try {
-      const res = await axios.post('/api/tools/text-to-pdf/generate',
+      const base = import.meta.env.VITE_API_URL || '';
+      const res = await axios.post(`${base}/api/tools/text-to-pdf/generate`,
         { documentData: currentDoc },
         { responseType: 'arraybuffer', timeout: 120000 }
       );
