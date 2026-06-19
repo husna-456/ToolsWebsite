@@ -351,16 +351,54 @@ function buildFullHTML(doc) {
 async function generatePDF(doc) {
   const html = buildFullHTML(doc);
 
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-  });
+  const launchArgs = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--no-first-run',
+    '--no-zygote',
+    '--single-process',
+    '--disable-extensions',
+    '--disable-background-networking',
+    '--disable-default-apps',
+    '--mute-audio',
+  ];
+
+  // Allow overriding the Chrome executable via env (useful on VPS/custom installs)
+  const launchOptions = {
+    headless:  true,
+    args:      launchArgs,
+    timeout:   30000,
+  };
+  if (process.env.CHROME_BIN) {
+    launchOptions.executablePath = process.env.CHROME_BIN;
+  }
+
+  let browser;
+  try {
+    browser = await puppeteer.launch(launchOptions);
+  } catch (launchErr) {
+    console.error('Puppeteer failed to launch Chrome:', launchErr.message);
+    throw new Error(
+      'Chrome could not start on this server. ' +
+      'Set CHROME_BIN env var to a valid Chromium path, or use the client-side PDF export instead. ' +
+      `Launch error: ${launchErr.message}`
+    );
+  }
 
   try {
     const page = await browser.newPage();
     page.setDefaultNavigationTimeout(60000);
-    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 60000 });
-    await page.evaluate(() => document.fonts.ready);
+
+    // Use domcontentloaded so the page doesn't hang waiting for Google Fonts network idle
+    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+    // Give fonts up to 8s to load; proceed anyway if they time out
+    await Promise.race([
+      page.evaluate(() => document.fonts.ready),
+      new Promise(r => setTimeout(r, 8000)),
+    ]);
 
     const pdfData = await page.pdf({
       format:          'A4',

@@ -20,9 +20,9 @@ async function textToPdfGenerate(req, res) {
   try {
     const { documentData } = req.body;
     if (!documentData)
-      return res.status(400).json({ error: 'Document data is required.' });
+      return res.status(400).json({ success: false, error: 'Document data is required.' });
     if (!documentData.blocks?.length)
-      return res.status(400).json({ error: 'Document has no blocks to render.' });
+      return res.status(400).json({ success: false, error: 'Document has no blocks to render.' });
 
     const { generatePDF } = require('../services/pdfGenerator');
     const pdfBuffer = await generatePDF(documentData);
@@ -41,8 +41,12 @@ async function textToPdfGenerate(req, res) {
     });
     res.end(pdfBuffer);
   } catch (err) {
-    console.error('[textToPdfGenerate]', err.message);
-    return res.status(500).json({ error: 'PDF generation failed. Please try again.' });
+    console.error('Text-to-PDF generation failed:', err);
+    return res.status(500).json({
+      success: false,
+      error:   'PDF generation failed',
+      details: err.message,
+    });
   }
 }
 
