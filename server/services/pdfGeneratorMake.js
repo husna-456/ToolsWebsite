@@ -19,8 +19,10 @@ const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
 
-const FONTS_DIR = path.join(__dirname, '../fonts');
-const CACHE_DIR = path.join(__dirname, '../fonts/_cache');
+const FONTS_DIR   = path.join(__dirname, '../fonts');
+const CACHE_DIR   = path.join(__dirname, '../fonts/_cache');
+// @expo-google-fonts/amiri is a proper npm dependency — always present after npm install
+const EXPO_AMIRI  = path.join(__dirname, '../node_modules/@expo-google-fonts/amiri');
 
 // ─────────────────────────────────────────────────────────────────
 // Utilities
@@ -80,12 +82,14 @@ console.log('[PDF] Roboto:', ROBOTO_NORMAL || 'NOT FOUND');
 // Amiri candidates — checked fresh on every request (not cached)
 // ─────────────────────────────────────────────────────────────────
 const AMIRI_NORMAL_CANDIDATES = [
-  path.join(FONTS_DIR, 'Amiri-Regular.ttf'),
-  path.join(FONTS_DIR, 'Amiri_400Regular.ttf'),
+  path.join(FONTS_DIR,  'Amiri-Regular.ttf'),
+  path.join(FONTS_DIR,  'Amiri_400Regular.ttf'),
+  path.join(EXPO_AMIRI, 'Amiri_400Regular.ttf'),  // installed via npm
 ];
 const AMIRI_BOLD_CANDIDATES = [
-  path.join(FONTS_DIR, 'Amiri-Bold.ttf'),
-  path.join(FONTS_DIR, 'Amiri_700Bold.ttf'),
+  path.join(FONTS_DIR,  'Amiri-Bold.ttf'),
+  path.join(FONTS_DIR,  'Amiri_700Bold.ttf'),
+  path.join(EXPO_AMIRI, 'Amiri_700Bold.ttf'),     // installed via npm
 ];
 
 function resolveAmiri() {
@@ -256,12 +260,21 @@ async function generatePDF(doc) {
   // This prevents ENOENT from fontkit when stale module-level paths are used.
   const desc = buildFontDescriptors();
 
-  const AF = desc.Amiri  ? 'Amiri'  : (desc.Roboto ? 'Roboto' : null);
-  const LF = desc.Roboto ? 'Roboto' : AF;
-
-  if (!AF) {
-    throw new Error('[PDF] No fonts available. Check server logs for font extraction errors.');
+  // Amiri is REQUIRED — Roboto has no Arabic glyphs. Using Roboto for Arabic
+  // text causes fontkit to return null for every glyph, crashing with
+  // "Cannot read properties of null (reading 'xCoordinate')".
+  if (!desc.Amiri) {
+    throw new Error(
+      '[PDF] Arabic font (Amiri) not installed. ' +
+      'Add @expo-google-fonts/amiri to server/package.json and redeploy.'
+    );
   }
+  if (!desc.Roboto) {
+    throw new Error('[PDF] Roboto font not available. Check server logs for VFS extraction errors.');
+  }
+
+  const AF = 'Amiri';
+  const LF = 'Roboto';
 
   console.time('[PDF] generate');
   console.log('[PDF] fonts:', Object.keys(desc), '| ARABIC:', AF, '| LATIN:', LF, '| blocks:', doc.blocks?.length ?? 0);
