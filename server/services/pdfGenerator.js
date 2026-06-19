@@ -351,26 +351,19 @@ function buildFullHTML(doc) {
 async function generatePDF(doc) {
   const html = buildFullHTML(doc);
 
-  const launchArgs = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-gpu',
-    '--no-first-run',
-    '--no-zygote',
-    '--single-process',
-    '--disable-extensions',
-    '--disable-background-networking',
-    '--disable-default-apps',
-    '--mute-audio',
-  ];
-
-  // Allow overriding the Chrome executable via env (useful on VPS/custom installs)
+  // Safe minimal flags for Linux/Hostinger — do NOT add --single-process or --no-zygote
+  // as they are unsupported and cause Chrome to crash immediately.
   const launchOptions = {
-    headless:  true,
-    args:      launchArgs,
-    timeout:   30000,
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+    ],
   };
+
+  // Optional: point to a system Chrome if CHROME_BIN env var is set on the server
   if (process.env.CHROME_BIN) {
     launchOptions.executablePath = process.env.CHROME_BIN;
   }
@@ -379,25 +372,21 @@ async function generatePDF(doc) {
   try {
     browser = await puppeteer.launch(launchOptions);
   } catch (launchErr) {
-    console.error('Puppeteer failed to launch Chrome:', launchErr.message);
-    throw new Error(
-      'Chrome could not start on this server. ' +
-      'Set CHROME_BIN env var to a valid Chromium path, or use the client-side PDF export instead. ' +
-      `Launch error: ${launchErr.message}`
-    );
+    console.error('Text-to-PDF generation failed: Puppeteer could not launch Chrome:', launchErr);
+    throw new Error(`Chrome failed to start: ${launchErr.message}`);
   }
 
   try {
     const page = await browser.newPage();
     page.setDefaultNavigationTimeout(60000);
 
-    // Use domcontentloaded so the page doesn't hang waiting for Google Fonts network idle
+    // domcontentloaded avoids hanging while waiting for Google Fonts network idle
     await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // Give fonts up to 8s to load; proceed anyway if they time out
+    // Give fonts up to 10s to load before proceeding
     await Promise.race([
       page.evaluate(() => document.fonts.ready),
-      new Promise(r => setTimeout(r, 8000)),
+      new Promise(r => setTimeout(r, 10000)),
     ]);
 
     const pdfData = await page.pdf({
