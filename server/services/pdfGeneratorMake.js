@@ -3,87 +3,125 @@
 /**
  * Production-safe PDF generator using pdfmake (no Puppeteer / no Chrome).
  *
- * Font strategy:
- *   1. Roboto — always available, bundled inside pdfmake/build/vfs_fonts.js
- *   2. Amiri  — Arabic/Urdu Naskh; loaded from (in priority order):
- *        a. server/fonts/  (downloaded by server/scripts/download-fonts.js)
- *        b. node_modules/@fontsource/amiri/files/  (if package installed)
- *      Falls back gracefully to Roboto if Amiri is not found — PDF still
- *      generates, Arabic text is rendered as fallback glyphs rather than crash.
- *
- * This module uses pdfmake's UMD browser build (pdfmake/build/pdfmake) which
- * runs fine in Node.js and exposes getBuffer(cb) for server-side rendering.
- * Fonts are injected into pdfmake's virtual file system (vfs) — no disk paths
- * needed at runtime beyond what's already in node_modules/pdfmake.
+ * Uses pdfmake/src/printer — the documented Node.js / server-side API.
+ * Font strategy (each step is a fallback for the previous):
+ *   Roboto: pdfmake's own fonts/ dir → VFS extraction to OS temp dir
+ *   Amiri:  server/fonts/ (download-fonts.js) → @fontsource/amiri/files/
+ *           → falls back to Roboto if unavailable (PDF still generates)
  */
 
-const pdfMake  = require('pdfmake/build/pdfmake');
-const pdfFonts = require('pdfmake/build/vfs_fonts');
-const path     = require('path');
-const fs       = require('fs');
+const PdfPrinter = require('pdfmake/src/printer');
+const path = require('path');
+const fs   = require('fs');
+const os   = require('os');
 
 // ─────────────────────────────────────────────────────────────────
-// Boot pdfmake with its built-in Roboto VFS — always succeeds
+// Font resolution helpers
 // ─────────────────────────────────────────────────────────────────
-pdfMake.vfs = { ...(pdfFonts.pdfMake?.vfs || {}) };
-
-// ─────────────────────────────────────────────────────────────────
-// Amiri font loading (Arabic/Urdu)
-// ─────────────────────────────────────────────────────────────────
-const FONTS_DIR   = path.join(__dirname, '../fonts');
-const FONTSOURCE  = path.join(__dirname, '../node_modules/@fontsource/amiri/files');
-
-function readBase64(...candidates) {
-  for (const p of candidates) {
-    try {
-      if (p && fs.existsSync(p)) return fs.readFileSync(p).toString('base64');
-    } catch (_) {}
+function pickFile(...candidates) {
+  for (const f of candidates) {
+    try { if (f && fs.existsSync(f)) return f; } catch (_) {}
   }
   return null;
 }
 
-const amiriNormalB64 = readBase64(
-  path.join(FONTS_DIR,  'Amiri-Regular.woff2'),
-  path.join(FONTSOURCE, 'amiri-arabic-400-normal.woff2'),
-  path.join(FONTSOURCE, 'amiri-arabic-400-normal.woff'),
+// Find pdfmake's installed root so we can read its bundled Roboto TTFs.
+let pdfmakeRoot = null;
+try {
+  pdfmakeRoot = path.dirname(require.resolve('pdfmake/package.json'));
+} catch (_) {
+  try {
+    pdfmakeRoot = path.dirname(path.dirname(require.resolve('pdfmake/src/printer')));
+  } catch (_2) {}
+}
+const PDFMAKE_FONTS = pdfmakeRoot ? path.join(pdfmakeRoot, 'fonts') : null;
+
+// If pdfmake ships without a fonts/ dir, extract Roboto from vfs_fonts.js.
+function extractFromVFS(fontFilename) {
+  const dest = path.join(os.tmpdir(), `_pdfmake_${fontFilename}`);
+  if (pickFile(dest)) return dest;
+  try {
+    const vfs = require('pdfmake/build/vfs_fonts');
+    const b64 = vfs?.pdfMake?.vfs?.[fontFilename];
+    if (!b64) return null;
+    fs.writeFileSync(dest, Buffer.from(b64, 'base64'));
+    console.log(`[PDF] extracted ${fontFilename} from VFS → ${dest}`);
+    return dest;
+  } catch (e) {
+    console.warn('[PDF] VFS extraction failed:', e.message);
+    return null;
+  }
+}
+
+// ── Roboto (Latin / English) ──────────────────────────────────────
+const robotoNormal = pickFile(
+  PDFMAKE_FONTS && path.join(PDFMAKE_FONTS, 'Roboto-Regular.ttf'),
+) || extractFromVFS('Roboto-Regular.ttf');
+
+const robotoBold = pickFile(
+  PDFMAKE_FONTS && path.join(PDFMAKE_FONTS, 'Roboto-Medium.ttf'),
+) || extractFromVFS('Roboto-Medium.ttf') || robotoNormal;
+
+const robotoItalic = pickFile(
+  PDFMAKE_FONTS && path.join(PDFMAKE_FONTS, 'Roboto-Italic.ttf'),
+) || extractFromVFS('Roboto-Italic.ttf') || robotoNormal;
+
+const robotoBoldItalic = pickFile(
+  PDFMAKE_FONTS && path.join(PDFMAKE_FONTS, 'Roboto-MediumItalic.ttf'),
+) || extractFromVFS('Roboto-MediumItalic.ttf') || robotoNormal;
+
+// ── Amiri (Arabic / Urdu) ─────────────────────────────────────────
+const SERVER_FONTS     = path.join(__dirname, '../fonts');
+const FONTSOURCE_AMIRI = path.join(__dirname, '../node_modules/@fontsource/amiri/files');
+
+const amiriNormal = pickFile(
+  path.join(SERVER_FONTS,     'Amiri-Regular.woff2'),
+  path.join(FONTSOURCE_AMIRI, 'amiri-arabic-400-normal.woff2'),
+  path.join(FONTSOURCE_AMIRI, 'amiri-arabic-400-normal.woff'),
 );
-const amiriBoldB64 = readBase64(
-  path.join(FONTS_DIR,  'Amiri-Bold.woff2'),
-  path.join(FONTSOURCE, 'amiri-arabic-700-normal.woff2'),
-  path.join(FONTSOURCE, 'amiri-arabic-700-normal.woff'),
-) || amiriNormalB64;
+const amiriBold = pickFile(
+  path.join(SERVER_FONTS,     'Amiri-Bold.woff2'),
+  path.join(FONTSOURCE_AMIRI, 'amiri-arabic-700-normal.woff2'),
+  path.join(FONTSOURCE_AMIRI, 'amiri-arabic-700-normal.woff'),
+) || amiriNormal;
 
-const HAS_AMIRI = !!amiriNormalB64;
+// ── Font diagnostics ──────────────────────────────────────────────
+console.log('[PDF] Roboto:', robotoNormal || 'NOT FOUND');
+console.log('[PDF] Amiri: ', amiriNormal  || 'NOT FOUND — using Roboto fallback');
 
-if (HAS_AMIRI) {
-  pdfMake.vfs['Amiri-Regular.woff2'] = amiriNormalB64;
-  pdfMake.vfs['Amiri-Bold.woff2']    = amiriBoldB64 || amiriNormalB64;
-  console.log('[PDF] Amiri Arabic font loaded into VFS.');
-} else {
-  console.warn('[PDF] Amiri font not found — Arabic/Urdu text will use Roboto fallback.');
-  console.warn('[PDF] Run: cd server && node scripts/download-fonts.js');
+if (!robotoNormal) {
+  console.error('[PDF] CRITICAL: Roboto font not found. pdfmake may not be installed correctly.');
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Font definitions passed to every createPdf() call
+// Build font descriptor — omit fonts that weren't found
 // ─────────────────────────────────────────────────────────────────
-const FONT_DEFS = {
-  Roboto: {
-    normal:      'Roboto-Regular.ttf',
-    bold:        'Roboto-Medium.ttf',
-    italics:     'Roboto-Italic.ttf',
-    bolditalics: 'Roboto-MediumItalic.ttf',
-  },
-};
-if (HAS_AMIRI) {
-  FONT_DEFS.Amiri = {
-    normal: 'Amiri-Regular.woff2',
-    bold:   'Amiri-Bold.woff2',
+const fontDescriptors = {};
+
+if (robotoNormal) {
+  fontDescriptors.Roboto = {
+    normal:      robotoNormal,
+    bold:        robotoBold,
+    italics:     robotoItalic,
+    bolditalics: robotoBoldItalic,
   };
 }
 
-const ARABIC_FONT = HAS_AMIRI ? 'Amiri'  : 'Roboto';
-const LATIN_FONT  = 'Roboto';
+if (amiriNormal) {
+  fontDescriptors.Amiri = {
+    normal: amiriNormal,
+    bold:   amiriBold || amiriNormal,
+  };
+}
+
+const ARABIC_FONT = fontDescriptors.Amiri  ? 'Amiri'  : 'Roboto';
+const LATIN_FONT  = fontDescriptors.Roboto ? 'Roboto' : ARABIC_FONT;
+
+// PdfPrinter is instantiated once at module load.
+// If no fonts are found at all, we create a no-op that returns an error.
+const printer = Object.keys(fontDescriptors).length > 0
+  ? new PdfPrinter(fontDescriptors)
+  : null;
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
@@ -116,9 +154,8 @@ function pdfAlign(ta, dir) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Block renderers → pdfmake content nodes
+// Block renderers
 // ─────────────────────────────────────────────────────────────────
-
 function renderChapterHeading(block) {
   const nodes = [];
   if (block.arabicTitle) {
@@ -271,28 +308,46 @@ function makeFooter(doc) {
 // Main export
 // ─────────────────────────────────────────────────────────────────
 async function generatePDF(doc) {
-  console.time('[PDF] pdfmake total');
-  console.log('[PDF] blocks:', doc.blocks?.length ?? 0, '| arabic font:', ARABIC_FONT);
+  if (!printer) {
+    throw new Error('[PDF] No fonts available — pdfmake cannot generate PDF. Check server logs.');
+  }
+
+  console.time('[PDF] generate');
+  console.log('[PDF] blocks:', doc.blocks?.length ?? 0, '| arabic:', ARABIC_FONT);
 
   const docDefinition = {
-    pageSize:    'A4',
-    pageMargins: [57, 71, 57, 71],
+    pageSize:     'A4',
+    pageMargins:  [57, 71, 57, 71],
     defaultStyle: { font: ARABIC_FONT, fontSize: 13 },
-    fonts:  FONT_DEFS,
-    header: makeHeader(doc),
-    footer: makeFooter(doc),
+    header:  makeHeader(doc),
+    footer:  makeFooter(doc),
     content: buildContent(doc.blocks || []),
   };
 
   return new Promise((resolve, reject) => {
+    // 30-second hard timeout — prevents 504 gateway errors
+    const timer = setTimeout(() => reject(new Error('[PDF] generation timed out')), 30000);
+
     try {
-      pdfMake.createPdf(docDefinition).getBuffer((buf) => {
-        console.timeEnd('[PDF] pdfmake total');
+      const pdfDoc = printer.createPdfKitDocument(docDefinition);
+      const chunks = [];
+      pdfDoc.on('data',  (chunk) => chunks.push(chunk));
+      pdfDoc.on('end',   () => {
+        clearTimeout(timer);
+        const buf = Buffer.concat(chunks);
+        console.timeEnd('[PDF] generate');
         console.log('[PDF] done, bytes:', buf.length);
         resolve(buf);
       });
+      pdfDoc.on('error', (err) => {
+        clearTimeout(timer);
+        console.error('[PDF] stream error:', err.message);
+        reject(err);
+      });
+      pdfDoc.end();
     } catch (err) {
-      console.error('[PDF] pdfmake error:', err.message);
+      clearTimeout(timer);
+      console.error('[PDF] build error:', err.message);
       reject(err);
     }
   });
