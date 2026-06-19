@@ -380,6 +380,7 @@ async function generatePDF(doc) {
   }
 
   let browser;
+  let page;
   try {
     browser = await puppeteer.launch({
       headless: true,
@@ -396,48 +397,24 @@ async function generatePDF(doc) {
       ],
     });
     console.log('[PDF] browser launched');
-  } catch (launchErr) {
-    console.error('[PDF] launch failed:', {
-      message:    launchErr.message,
-      code:       launchErr.code,
-      chromePath: executablePath,
-      tmpdir:     os.tmpdir(),
-    });
-    try { fs.rmSync(tempPath, { recursive: true, force: true }); } catch (_) {}
-    throw new Error(`Chrome launch failed: ${launchErr.message}`);
-  }
 
-  try {
-    const page = await browser.newPage();
+    page = await browser.newPage();
+    page.setDefaultTimeout(60000);
     page.setDefaultNavigationTimeout(60000);
-    page.setDefaultTimeout(120000);
 
-    // Abort Google Fonts CDN requests immediately.
-    // On Hostinger's Node.js hosting outbound requests to fonts.googleapis.com
-    // and fonts.gstatic.com hang indefinitely (server firewall / no CDN access),
-    // causing page.setContent() to wait until its timeout fires.
-    // Aborting them lets DOMContentLoaded fire in milliseconds; the PDF falls
-    // back to whatever system/local fonts are available — same as production
-    // without this change (fonts were never loading anyway on the server).
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const url = req.url();
-      if (url.includes('fonts.googleapis.com') || url.includes('fonts.gstatic.com')) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
+    // NOTE: setRequestInterception is intentionally NOT used here.
+    // Enabling it in Puppeteer v25 triggers an internal navigation before
+    // the main frame is stable, causing "Requesting main frame too early!"
+    // when setContent is called immediately after.
+    // Google Fonts CDN requests that can't resolve on Hostinger are handled
+    // by domcontentloaded (which fires without waiting for stylesheets) and
+    // the short font-wait timeout below.
 
     console.time('[PDF] setContent');
     await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 60000 });
     console.timeEnd('[PDF] setContent');
 
-    // Give locally-available fonts up to 5 s; proceed regardless.
-    await Promise.race([
-      page.evaluate(() => document.fonts.ready),
-      new Promise(r => setTimeout(r, 5000)),
-    ]);
+    await page.emulateMediaType('screen');
 
     console.log('[PDF] rendering PDF...');
     console.time('[PDF] pdf');
@@ -448,24 +425,22 @@ async function generatePDF(doc) {
       displayHeaderFooter: true,
       headerTemplate:      buildHeaderTemplate(doc),
       footerTemplate:      buildFooterTemplate(doc),
-      timeout:             120000,
     });
     console.timeEnd('[PDF] pdf');
 
     const buf = Buffer.isBuffer(pdfData) ? pdfData : Buffer.from(pdfData);
     console.log('[PDF] done, bytes:', buf.length);
     return buf;
-  } catch (pageErr) {
-    console.error('[PDF] page/render error:', {
-      message: pageErr.message,
-      code:    pageErr.code,
-      stack:   pageErr.stack,
+  } catch (err) {
+    console.error('[PDF] generation error:', {
+      message: err.message,
+      code:    err.code,
+      stack:   err.stack,
     });
-    throw new Error(`PDF render failed: ${pageErr.message}`);
+    throw new Error(`PDF render failed: ${err.message}`);
   } finally {
-    // browser.close() inside try/catch so its exception never replaces the
-    // real error and never skips the cleanup below.
-    try { await browser.close(); } catch (_) {}
+    try { if (page && !page.isClosed()) await page.close(); } catch (_) {}
+    try { if (browser) await browser.close(); } catch (_) {}
     try { fs.rmSync(tempPath, { recursive: true, force: true }); } catch (_) {}
   }
 }
