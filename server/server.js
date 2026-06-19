@@ -5,6 +5,16 @@ const rateLimit  = require('express-rate-limit');
 const connectDB  = require('./config/db');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 
+// ── Process-level error guards ────────────────────────────────
+// Prevent a single failed request (e.g. Puppeteer crash) from taking the
+// entire Node.js process down and causing Hostinger's proxy to return 503.
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught Exception — server kept alive:', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled Rejection — server kept alive:', reason);
+});
+
 const app = express();
 
 // ── Database ─────────────────────────────────────────────────
@@ -13,18 +23,40 @@ connectDB();
 // ── Background jobs ───────────────────────────────────────────
 require('./jobs/cleanup');
 
+// ── CORS ──────────────────────────────────────────────────────
+// Function-based origin check works regardless of NODE_ENV value.
+// Array-based cors({ origin: [...] }) silently rejects if NODE_ENV
+// is unset or wrong, causing Hostinger to return 503 with no CORS headers.
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  'https://globaltechtool.com',
+  'https://www.globaltechtool.com',
+  'https://tools-website-rosy-seven.vercel.app',
+  // keep dev origins so local testing still works
+  'http://localhost:5173',
+  'http://localhost:5174',
+].filter(Boolean);
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, curl, same-origin)
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    console.warn('[CORS] Blocked origin:', origin);
+    return callback(new Error('Not allowed by CORS: ' + origin));
+  },
+  credentials: true,
+};
+
 // ── Security & Parsing ────────────────────────────────────────
 app.set('trust proxy', 1);
-app.use(cors({
-  origin: process.env.NODE_ENV === 'production'
-    ? [
-        'https://globaltechtool.com',
-        'https://www.globaltechtool.com',
-        'https://tools-website-rosy-seven.vercel.app',
-      ]
-    : ['http://localhost:5174', 'http://localhost:5173'],
-  credentials: true,
-}));
+
+// Handle OPTIONS preflight explicitly BEFORE all other middleware so
+// browsers always get CORS headers even when downstream routes crash.
+app.options('*', cors(corsOptions));
+app.use(cors(corsOptions));
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
