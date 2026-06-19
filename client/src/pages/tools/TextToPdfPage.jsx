@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import axios from 'axios';
 import {
   FileDown, Plus, Trash2, Edit3, Download, Upload, ArrowLeft,
   ChevronUp, ChevronDown, Eye, FileText, X, BookOpen,
@@ -1905,28 +1904,61 @@ export default function TextToPdfPage() {
     setDragOverIdx(null);
   }
 
-  // ── PDF Download ───────────────────────────────────────────
-  async function handleDownload() {
+  // ── PDF Download (client-side print — no server/Puppeteer needed) ──
+  function handleDownload() {
     if (!currentDoc?.blocks?.length) return;
     setGenerating(true); setPdfErr('');
-    try {
-      const base = import.meta.env.VITE_API_URL || '';
-      const res = await axios.post(`${base}/api/tools/text-to-pdf/generate`,
-        { documentData: currentDoc },
-        { responseType: 'arraybuffer', timeout: 120000 }
-      );
-      const blob = new Blob([res.data], { type: 'application/pdf' });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href     = url;
-      a.download = `${(currentDoc.name || 'document').replace(/[^a-zA-Z0-9\s_-]/g, '').trim().replace(/\s+/g, '_') || 'document'}.pdf`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch {
-      setPdfErr('PDF generation failed. Please try again.');
-    } finally {
+
+    const win = window.open('', '_blank', 'width=900,height=700');
+    if (!win) {
+      setPdfErr('Popup blocked — please allow popups for this site and try again.');
       setGenerating(false);
+      return;
     }
+
+    const bodyHTML = buildDocumentBodyHTML(currentDoc.blocks);
+    const docName  = (currentDoc.name || 'document').trim();
+
+    win.document.write(`<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+  <meta charset="UTF-8">
+  <title>${docName}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="${FONTS_URL}" rel="stylesheet">
+  <style>
+    @font-face {
+      font-family: 'Jameel Noori Nastaleeq';
+      src: local('Jameel Noori Nastaleeq'), local('JameelNooriNastaleeq');
+      font-display: block;
+    }
+    @page { size: A4; margin: 2.5cm 2cm; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { background: white; color: #000; }
+    * { color: #000 !important; background: transparent !important; }
+    html, body { background: white !important; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style>
+</head>
+<body>${bodyHTML}</body>
+</html>`);
+    win.document.close();
+
+    // Wait for fonts to finish loading, then trigger print
+    win.document.fonts.ready
+      .then(() => {
+        setGenerating(false);
+        win.focus();
+        win.print();
+        setTimeout(() => win.close(), 1000);
+      })
+      .catch(() => {
+        setGenerating(false);
+        win.focus();
+        win.print();
+        setTimeout(() => win.close(), 1000);
+      });
   }
 
   // ── Preview modal callback ─────────────────────────────────
