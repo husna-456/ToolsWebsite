@@ -354,27 +354,41 @@ function buildFullHTML(doc) {
 async function generatePDF(doc) {
   const html = buildFullHTML(doc);
 
-  // Unique per-request user data dir — prevents open EEXIST when a previous
-  // Chrome process left its profile directory behind after a crash.
-  const userDataDir = path.join(
+  // Unique per-request user data dir. recursive:true never throws EEXIST.
+  const tempPath = path.join(
     os.tmpdir(),
     `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   );
+  const outputPath = null; // page.pdf() returns a buffer — no output file is written
+
   try {
-    fs.mkdirSync(userDataDir, { recursive: true });
+    fs.mkdirSync(tempPath, { recursive: true });
   } catch (mkdirErr) {
-    console.error('Text-to-PDF: failed to create userDataDir:', userDataDir, mkdirErr);
+    console.error('Text-to-PDF error:', {
+      message: mkdirErr.message, stack: mkdirErr.stack,
+      code: mkdirErr.code, syscall: mkdirErr.syscall,
+      tempPath, outputPath,
+    });
     throw mkdirErr;
   }
 
   const launchOptions = {
     headless: true,
-    userDataDir,
+    // pipe: true uses stdio file-descriptors instead of a WebSocket/Unix-socket,
+    // so Chrome never creates a socket file in /tmp that could conflict.
+    pipe: true,
+    userDataDir: tempPath,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
+      // Prevents Chrome from spawning a crashpad_handler subprocess that
+      // creates a socket file at a predictable /tmp path. That socket persists
+      // after a crash and causes "open EEXIST" on the very next launch.
+      '--disable-crash-reporter',
+      '--disable-breakpad',
+      '--no-first-run',
     ],
   };
 
@@ -386,41 +400,64 @@ async function generatePDF(doc) {
   try {
     browser = await puppeteer.launch(launchOptions);
   } catch (launchErr) {
-    console.error('Text-to-PDF: Puppeteer could not launch Chrome. userDataDir:', userDataDir, launchErr);
-    try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch (_) {}
-    throw new Error(`Chrome failed to start: ${launchErr.message}`);
+    console.error('Text-to-PDF error:', {
+      message: launchErr.message, stack: launchErr.stack,
+      code: launchErr.code, syscall: launchErr.syscall, path: launchErr.path,
+      tempPath, outputPath,
+    });
+    try { fs.rmSync(tempPath, { recursive: true, force: true }); } catch (_) {}
+    throw launchErr;
   }
 
   try {
     const page = await browser.newPage();
     page.setDefaultNavigationTimeout(60000);
 
-    // domcontentloaded avoids hanging while waiting for Google Fonts network idle
-    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    // domcontentloaded fires before stylesheets/fonts load, avoiding a hang
+    // on servers where the Google Fonts CDN is slow or unreachable.
+    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    // Give fonts up to 10s to load before proceeding
+    // Allow up to 10 s for fonts to finish loading; proceed even if they don't.
     await Promise.race([
       page.evaluate(() => document.fonts.ready),
       new Promise(r => setTimeout(r, 10000)),
     ]);
 
     const pdfData = await page.pdf({
-      format:          'A4',
-      margin:          { top: '2.5cm', bottom: '2.5cm', left: '2cm', right: '2cm' },
-      printBackground: true,
+      format:              'A4',
+      margin:              { top: '2.5cm', bottom: '2.5cm', left: '2cm', right: '2cm' },
+      printBackground:     true,
       displayHeaderFooter: true,
-      headerTemplate: buildHeaderTemplate(doc),
-      footerTemplate: buildFooterTemplate(doc),
+      headerTemplate:      buildHeaderTemplate(doc),
+      footerTemplate:      buildFooterTemplate(doc),
     });
 
     return Buffer.isBuffer(pdfData) ? pdfData : Buffer.from(pdfData);
+  } catch (pageErr) {
+    console.error('Text-to-PDF error:', {
+      message: pageErr.message, stack: pageErr.stack,
+      code: pageErr.code, syscall: pageErr.syscall, path: pageErr.path,
+      tempPath, outputPath,
+    });
+    throw pageErr;
   } finally {
-    await browser.close();
-    // Remove the unique profile dir so it doesn't accumulate on disk
+    // browser.close() MUST be in its own try/catch inside finally.
+    // If it throws (Chrome already crashed), the exception would otherwise
+    // replace the original error AND skip the rmSync cleanup below.
     try {
-      fs.rmSync(userDataDir, { recursive: true, force: true });
+      await browser.close();
+    } catch (closeErr) {
+      console.error('Text-to-PDF: browser.close() failed (Chrome may have already exited):', closeErr.message);
+    }
+    // Always remove the unique profile dir regardless of what happened above.
+    try {
+      fs.rmSync(tempPath, { recursive: true, force: true });
     } catch (cleanupErr) {
-      console.error('Text-to-PDF: failed to remove userDataDir:', userDataDir, cleanupErr);
+      console.error('Text-to-PDF error:', {
+        message: cleanupErr.message, stack: cleanupErr.stack,
+        code: cleanupErr.code, syscall: cleanupErr.syscall, path: cleanupErr.path,
+        tempPath, outputPath,
+      });
     }
   }
 }
