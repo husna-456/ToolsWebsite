@@ -410,18 +410,37 @@ async function generatePDF(doc) {
   try {
     const page = await browser.newPage();
     page.setDefaultNavigationTimeout(60000);
+    page.setDefaultTimeout(120000);
 
-    // domcontentloaded fires before fonts/stylesheets finish loading,
-    // so this never hangs waiting for the Google Fonts CDN.
-    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Abort Google Fonts CDN requests immediately.
+    // On Hostinger's Node.js hosting outbound requests to fonts.googleapis.com
+    // and fonts.gstatic.com hang indefinitely (server firewall / no CDN access),
+    // causing page.setContent() to wait until its timeout fires.
+    // Aborting them lets DOMContentLoaded fire in milliseconds; the PDF falls
+    // back to whatever system/local fonts are available — same as production
+    // without this change (fonts were never loading anyway on the server).
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const url = req.url();
+      if (url.includes('fonts.googleapis.com') || url.includes('fonts.gstatic.com')) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
 
-    // Give fonts up to 10 s; proceed anyway if they don't finish in time.
+    console.time('[PDF] setContent');
+    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    console.timeEnd('[PDF] setContent');
+
+    // Give locally-available fonts up to 5 s; proceed regardless.
     await Promise.race([
       page.evaluate(() => document.fonts.ready),
-      new Promise(r => setTimeout(r, 10000)),
+      new Promise(r => setTimeout(r, 5000)),
     ]);
 
     console.log('[PDF] rendering PDF...');
+    console.time('[PDF] pdf');
     const pdfData = await page.pdf({
       format:              'A4',
       margin:              { top: '2.5cm', bottom: '2.5cm', left: '2cm', right: '2cm' },
@@ -429,7 +448,9 @@ async function generatePDF(doc) {
       displayHeaderFooter: true,
       headerTemplate:      buildHeaderTemplate(doc),
       footerTemplate:      buildFooterTemplate(doc),
+      timeout:             120000,
     });
+    console.timeEnd('[PDF] pdf');
 
     const buf = Buffer.isBuffer(pdfData) ? pdfData : Buffer.from(pdfData);
     console.log('[PDF] done, bytes:', buf.length);
