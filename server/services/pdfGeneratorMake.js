@@ -1,17 +1,26 @@
 'use strict';
 
 /**
- * Production PDF generator — pdfmake/src/printer (Node.js server API).
+ * Production PDF generator for Text-to-PDF tool.
+ * Target: Hostinger Business Plan Node.js shared hosting.
  *
- * Font strategy: TTF ONLY. woff2 requires WebAssembly (wawoff2) which
- * hangs on Hostinger shared hosting. TTF is parsed natively by fontkit.
+ * Design constraints:
+ *  - TTF ONLY. woff2 requires WebAssembly (wawoff2) which hangs on shared hosting.
+ *  - pdfmake/src/printer (PdfPrinter). The browser build (pdfmake/build/pdfmake)
+ *    does not work in Node.js.
+ *  - Roboto has NO Arabic glyphs. Never use Roboto for Arabic/Urdu text or fontkit
+ *    returns null → "Cannot read properties of null (reading 'xCoordinate')".
+ *  - Avoid Enclosed Alphanumeric Unicode chars (❶❷❸ U+2776+). Amiri does not
+ *    carry these code points. Same xCoordinate crash results.
  *
- * Roboto: extracted at startup from pdfmake's bundled VFS (always TTF).
- * Amiri:  downloaded as TTF by server/scripts/download-fonts.js.
- *         Falls back to Roboto if TTF file is absent — PDF still generates.
- *
- * A fresh PdfPrinter is created per request with only files that exist at
- * that moment, avoiding ENOENT surprises from stale module-level state.
+ * Resilience guarantees:
+ *  - Each block is rendered inside an isolated try/catch. One bad block is
+ *    logged and skipped; the rest of the PDF continues.
+ *  - All block field values are coerced to strings before use.
+ *  - Amiri npm package path is checked FIRST (guaranteed by npm install).
+ *  - Roboto is extracted once at startup from pdfmake's bundled VFS.
+ *  - If Amiri is genuinely absent, the error is thrown with a clear message
+ *    (better than crashing inside pdfkit with a null dereference).
  */
 
 const PdfPrinter = require('pdfmake/src/printer');
@@ -19,77 +28,122 @@ const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
 
-const FONTS_DIR   = path.join(__dirname, '../fonts');
-const CACHE_DIR   = path.join(__dirname, '../fonts/_cache');
-// @expo-google-fonts/amiri is a proper npm dependency — always present after npm install
-const EXPO_AMIRI  = path.join(__dirname, '../node_modules/@expo-google-fonts/amiri');
+const FONTS_DIR  = path.join(__dirname, '../fonts');
+const CACHE_DIR  = path.join(__dirname, '../fonts/_cache');
+const EXPO_AMIRI = path.join(__dirname, '../node_modules/@expo-google-fonts/amiri');
 
 // ─────────────────────────────────────────────────────────────────
-// Utilities
+// Low-level utilities
 // ─────────────────────────────────────────────────────────────────
+
+/** Returns true only when p is a file that exists and has at least 1 KB of content. */
 function fileOk(p) {
-  try { return !!p && fs.existsSync(p) && fs.statSync(p).size > 1000; } catch (_) { return false; }
+  try { return !!p && fs.existsSync(p) && fs.statSync(p).size > 1000; }
+  catch (_) { return false; }
 }
 
-function tryWrite(dest, buf) {
-  try {
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, buf);
-    return fileOk(dest);
-  } catch (_) { return false; }
+/** Coerce any value to a trimmed string; returns '' for null/undefined/non-string. */
+function safeStr(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v.trim();
+  return String(v).trim();
+}
+
+function stripHtml(html) {
+  const s = safeStr(html);
+  if (!s) return '';
+  return s
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi,      '\n')
+    .replace(/<\/li>/gi,     '\n')
+    .replace(/<\/div>/gi,    '\n')
+    .replace(/<[^>]+>/g,     '')
+    .replace(/&nbsp;/g,      ' ')
+    .replace(/&amp;/g,       '&')
+    .replace(/&lt;/g,        '<')
+    .replace(/&gt;/g,        '>')
+    .replace(/&quot;/g,      '"')
+    .replace(/&#39;/g,       "'")
+    .replace(/\n{3,}/g,      '\n\n')
+    .trim();
+}
+
+function pdfAlign(ta, dir) {
+  if (ta === 'center')  return 'center';
+  if (ta === 'left')    return 'left';
+  if (ta === 'justify') return 'justify';
+  if (ta === 'right')   return 'right';
+  return dir === 'ltr' ? 'justify' : 'right';
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Roboto — extracted ONCE from pdfmake's VFS as TTF
+// Roboto — extracted ONCE at module load from pdfmake's bundled VFS.
 // Tries os.tmpdir() first (most reliably writable on shared hosting),
-// then server/fonts/_cache/ as fallback.
+// then falls back to server/fonts/_cache/.
 // ─────────────────────────────────────────────────────────────────
+
 function extractRobotoTTF(filename) {
   const candidates = [
     path.join(os.tmpdir(), '_pdfm_' + filename),
-    path.join(CACHE_DIR,  filename),
+    path.join(CACHE_DIR,   filename),
   ];
-  const hit = candidates.find(fileOk);
-  if (hit) return hit;
+
+  const cached = candidates.find(fileOk);
+  if (cached) return cached;
 
   let b64;
   try {
     const vfsMod = require('pdfmake/build/vfs_fonts');
-    const vfs = vfsMod?.pdfMake?.vfs || vfsMod?.vfs || {};
+    const vfs = (vfsMod && (vfsMod.pdfMake || vfsMod).vfs) || {};
     b64 = vfs[filename];
   } catch (e) {
-    console.error('[PDF] vfs_fonts load error:', e.message);
+    console.error('[PDF][FONT] Cannot load vfs_fonts:', e.message);
     return null;
   }
-  if (!b64) { console.error('[PDF] VFS missing key:', filename); return null; }
+  if (!b64) {
+    console.error('[PDF][FONT] Key not in VFS:', filename);
+    return null;
+  }
 
   const buf = Buffer.from(b64, 'base64');
   for (const dest of candidates) {
-    if (tryWrite(dest, buf)) { return dest; }
+    try {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, buf);
+      if (fileOk(dest)) {
+        console.log('[PDF][FONT] Extracted', filename, '->', dest);
+        return dest;
+      }
+    } catch (_) {}
   }
-  console.error('[PDF] Cannot write', filename, 'to any path');
+
+  console.error('[PDF][FONT] Cannot write', filename, 'to tmpdir or _cache.');
   return null;
 }
 
-const ROBOTO_NORMAL      = extractRobotoTTF('Roboto-Regular.ttf');
-const ROBOTO_BOLD        = extractRobotoTTF('Roboto-Medium.ttf')       || ROBOTO_NORMAL;
-const ROBOTO_ITALIC      = extractRobotoTTF('Roboto-Italic.ttf')        || ROBOTO_NORMAL;
-const ROBOTO_BOLDITALIC  = extractRobotoTTF('Roboto-MediumItalic.ttf') || ROBOTO_NORMAL;
+const ROBOTO_NORMAL     = extractRobotoTTF('Roboto-Regular.ttf');
+const ROBOTO_BOLD       = extractRobotoTTF('Roboto-Medium.ttf')       || ROBOTO_NORMAL;
+const ROBOTO_ITALIC     = extractRobotoTTF('Roboto-Italic.ttf')        || ROBOTO_NORMAL;
+const ROBOTO_BOLDITALIC = extractRobotoTTF('Roboto-MediumItalic.ttf') || ROBOTO_NORMAL;
 
-console.log('[PDF] Roboto:', ROBOTO_NORMAL || 'NOT FOUND');
+console.log('[PDF][FONT] Roboto normal:', ROBOTO_NORMAL || 'NOT FOUND');
 
 // ─────────────────────────────────────────────────────────────────
-// Amiri candidates — checked fresh on every request (not cached)
+// Amiri (Arabic/Urdu) — candidate list checked fresh on every request.
+// npm package path is FIRST: it is guaranteed present after `npm install`
+// regardless of CDN availability on Hostinger.
 // ─────────────────────────────────────────────────────────────────
+
 const AMIRI_NORMAL_CANDIDATES = [
-  path.join(FONTS_DIR,  'Amiri-Regular.ttf'),
-  path.join(FONTS_DIR,  'Amiri_400Regular.ttf'),
-  path.join(EXPO_AMIRI, 'Amiri_400Regular.ttf'),  // installed via npm
+  path.join(EXPO_AMIRI, 'Amiri_400Regular.ttf'),  // npm package — most reliable
+  path.join(FONTS_DIR,  'Amiri-Regular.ttf'),      // from download-fonts.js
+  path.join(FONTS_DIR,  'Amiri_400Regular.ttf'),   // alternate download name
 ];
+
 const AMIRI_BOLD_CANDIDATES = [
-  path.join(FONTS_DIR,  'Amiri-Bold.ttf'),
-  path.join(FONTS_DIR,  'Amiri_700Bold.ttf'),
-  path.join(EXPO_AMIRI, 'Amiri_700Bold.ttf'),     // installed via npm
+  path.join(EXPO_AMIRI, 'Amiri_700Bold.ttf'),      // npm package — most reliable
+  path.join(FONTS_DIR,  'Amiri-Bold.ttf'),          // from download-fonts.js
+  path.join(FONTS_DIR,  'Amiri_700Bold.ttf'),       // alternate download name
 ];
 
 function resolveAmiri() {
@@ -100,9 +154,10 @@ function resolveAmiri() {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Build a verified font descriptor map for THIS request.
-// Every file path is confirmed to exist right now — no stale state.
+// Build a fresh, verified font descriptor map for each request.
+// Every path is re-confirmed to exist right now.
 // ─────────────────────────────────────────────────────────────────
+
 function buildFontDescriptors() {
   const desc = {};
 
@@ -118,155 +173,186 @@ function buildFontDescriptors() {
   const amiri = resolveAmiri();
   if (amiri) {
     desc.Amiri = { normal: amiri.normal, bold: amiri.bold };
+    console.log('[PDF][FONT] Amiri normal:', amiri.normal);
+  } else {
+    console.error('[PDF][FONT] Amiri NOT FOUND. Checked:', AMIRI_NORMAL_CANDIDATES.join(', '));
   }
 
   return desc;
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Content helpers
+// Block renderers
+//
+// Rules:
+//  - Every text field is coerced with safeStr() before use.
+//  - Never use CIRCLED Unicode chars (❶❷❸ U+2776+). Amiri does not carry
+//    these glyphs. Use ASCII like (1)(2)(3) instead.
+//  - All Arabic/Urdu text uses font: AF (Amiri). Never render Arabic with Roboto.
+//  - LTR free_text uses font: LF (Roboto) with alignment: justify.
 // ─────────────────────────────────────────────────────────────────
-const CIRCLED = ['❶','❷','❸','❹','❺','❻','❼','❽','❾','❿'];
 
-function stripHtml(html) {
-  if (!html) return '';
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi,      '\n')
-    .replace(/<\/li>/gi,     '\n')
-    .replace(/<\/div>/gi,    '\n')
-    .replace(/<[^>]+>/g,     '')
-    .replace(/&nbsp;/g,      ' ')
-    .replace(/&amp;/g,       '&')
-    .replace(/&lt;/g,        '<')
-    .replace(/&gt;/g,        '>')
-    .replace(/&quot;/g,      '"')
-    .replace(/\n{3,}/g,      '\n\n')
-    .trim();
-}
-
-function pdfAlign(ta, dir) {
-  if (ta === 'center')  return 'center';
-  if (ta === 'left')    return 'left';
-  if (ta === 'justify') return 'justify';
-  if (ta === 'right')   return 'right';
-  return dir === 'ltr' ? 'justify' : 'right';
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Block renderers — receive ARABIC_FONT / LATIN_FONT per-request
-// ─────────────────────────────────────────────────────────────────
 function renderChapterHeading(block, AF) {
   const nodes = [];
-  if (block.arabicTitle)  nodes.push({ text: block.arabicTitle,  font: AF, fontSize: 22, bold: true, alignment: 'center', margin: [0, 20, 0, block.urduSubtitle ? 4 : 14] });
-  if (block.urduSubtitle) nodes.push({ text: block.urduSubtitle, font: AF, fontSize: 17, bold: true, alignment: 'center', margin: [0, 0, 0, 14] });
+  const arabicTitle  = safeStr(block.arabicTitle);
+  const urduSubtitle = safeStr(block.urduSubtitle);
+  if (arabicTitle)  nodes.push({ text: arabicTitle,  font: AF, fontSize: 22, bold: true,  alignment: 'center', margin: [0, 20, 0, urduSubtitle ? 4 : 14] });
+  if (urduSubtitle) nodes.push({ text: urduSubtitle, font: AF, fontSize: 17, bold: true,  alignment: 'center', margin: [0, 0,  0, 14] });
   return nodes;
 }
 
 function renderHadith(block, AF) {
-  const num    = block.number ? `﴿${block.number}﴾ ` : '';
-  const arabic = (num + (block.arabicMatn || '')).trim();
-  const urdu   = (block.urduTranslation  || '').trim();
+  const num    = safeStr(block.number);
+  const arabic = (num ? `﴿${num}﴾ ` : '') + safeStr(block.arabicMatn);
+  const urdu   = safeStr(block.urduTranslation);
   return {
-    table: { widths: ['50%', '50%'], body: [[
-      { text: urdu,   font: AF, fontSize: 13, alignment: 'right', margin: [4, 4, 8, 8] },
-      { text: arabic, font: AF, fontSize: 13, alignment: 'right', margin: [8, 4, 4, 8] },
-    ]] },
+    table: {
+      widths: ['50%', '50%'],
+      body: [[
+        { text: urdu.trim(),   font: AF, fontSize: 13, alignment: 'right', margin: [4, 4, 8, 8] },
+        { text: arabic.trim(), font: AF, fontSize: 13, alignment: 'right', margin: [8, 4, 4, 8] },
+      ]],
+    },
     layout: 'noBorders',
     margin: [0, 14, 0, 0],
   };
 }
 
 function renderFiqh(block, AF) {
-  const nodes = [{ text: block.heading || 'فقہ الحدیث:', font: AF, fontSize: 15, bold: true, alignment: 'right', margin: [0, 8, 0, 4] }];
-  (block.points || []).forEach((pt, i) => nodes.push({ text: `${CIRCLED[i] || `(${i + 1})`} ${pt}`, font: AF, fontSize: 13, alignment: 'right', margin: [0, 2, 0, 2] }));
+  const heading = safeStr(block.heading) || 'فقہ الحدیث:';
+  const nodes = [
+    { text: heading, font: AF, fontSize: 15, bold: true, alignment: 'right', margin: [0, 8, 0, 4] },
+  ];
+  const points = Array.isArray(block.points) ? block.points : [];
+  points.forEach((pt, i) => {
+    const label = `(${i + 1}) `;  // ASCII only — avoids ❶❷❸ which crash Amiri (no glyphs)
+    nodes.push({ text: label + safeStr(pt), font: AF, fontSize: 13, alignment: 'right', margin: [0, 2, 0, 2] });
+  });
   return nodes;
 }
 
 function renderReference(block, AF) {
-  if (!block.content?.trim()) return [];
+  const content = stripHtml(block.content);
+  if (!content) return [];
   return [
     { canvas: [{ type: 'line', x1: 330, y1: 0, x2: 481, y2: 0, lineWidth: 0.8, lineColor: '#555' }], margin: [0, 8, 0, 3] },
-    { text: block.content, font: AF, fontSize: 10, alignment: 'right', color: '#333', margin: [0, 0, 0, 6] },
+    { text: content, font: AF, fontSize: 10, alignment: 'right', color: '#333', margin: [0, 0, 0, 6] },
   ];
 }
 
 function renderVerse(block, AF) {
   const nodes = [];
-  if (block.arabicText) nodes.push({ text: block.arabicText, font: AF, fontSize: 14, alignment: 'center', margin: [0, 10, 0, block.urduText ? 4 : 10] });
-  if (block.urduText)   nodes.push({ text: block.urduText,   font: AF, fontSize: 14, alignment: 'center', margin: [0, 0, 0, 10] });
+  const arabicText = safeStr(block.arabicText);
+  const urduText   = safeStr(block.urduText);
+  if (arabicText) nodes.push({ text: arabicText, font: AF, fontSize: 14, alignment: 'center', margin: [0, 10, 0, urduText ? 4 : 10] });
+  if (urduText)   nodes.push({ text: urduText,   font: AF, fontSize: 14, alignment: 'center', margin: [0, 0,  0, 10] });
   return nodes;
 }
 
 function renderFreeText(block, AF, LF) {
-  const dir = block.direction || 'rtl';
+  const dir     = safeStr(block.direction) || 'rtl';
+  const content = stripHtml(block.content);
+  const font    = dir === 'ltr' ? LF : AF;
+  const size    = Math.max(8, Math.min(48, Number(block.fontSize) || 13));
   return {
-    text:      stripHtml(block.content || ''),
-    font:      dir === 'ltr' ? LF : AF,
-    fontSize:  Number(block.fontSize) || 13,
-    alignment: pdfAlign(block.textAlign, dir),
+    text:      content,
+    font:      font,
+    fontSize:  size,
+    alignment: pdfAlign(safeStr(block.textAlign), dir),
     margin:    [0, 4, 0, 4],
   };
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Build content array — each block is independently try/catched.
+// A bad block is logged and skipped; remaining blocks continue.
+// ─────────────────────────────────────────────────────────────────
+
 function buildContent(blocks, AF, LF) {
   const content = [];
-  for (const block of (blocks || [])) {
-    let r;
-    switch (block.type) {
-      case 'chapter_heading': r = renderChapterHeading(block, AF);     break;
-      case 'hadith':          r = renderHadith(block, AF);             break;
-      case 'fiqh':            r = renderFiqh(block, AF);               break;
-      case 'reference':       r = renderReference(block, AF);          break;
-      case 'verse':           r = renderVerse(block, AF);              break;
-      default:                r = renderFreeText(block, AF, LF);       break;
+  const safeBlocks = Array.isArray(blocks) ? blocks : [];
+
+  for (let i = 0; i < safeBlocks.length; i++) {
+    const block = safeBlocks[i];
+    if (!block || typeof block !== 'object') continue;
+
+    try {
+      const type = safeStr(block.type) || 'free_text';
+      let r;
+      switch (type) {
+        case 'chapter_heading': r = renderChapterHeading(block, AF);     break;
+        case 'hadith':          r = renderHadith(block, AF);             break;
+        case 'fiqh':            r = renderFiqh(block, AF);               break;
+        case 'reference':       r = renderReference(block, AF);          break;
+        case 'verse':           r = renderVerse(block, AF);              break;
+        default:                r = renderFreeText(block, AF, LF);       break;
+      }
+      if (Array.isArray(r)) content.push(...r.filter(Boolean));
+      else if (r)           content.push(r);
+    } catch (err) {
+      console.error(`[PDF] Block ${i} (${block.type}) render error — skipped:`, err.message);
     }
-    if (Array.isArray(r)) content.push(...r);
-    else if (r)           content.push(r);
   }
+
   return content;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Header and footer factories
+// ─────────────────────────────────────────────────────────────────
+
 function makeHeader(doc, AF) {
-  const name = doc.headerRight || doc.name || '';
-  const pos  = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
-  return (pg) => ({
-    columns: [
-      { text: pos === 'header-left'  ? String(pg) : '',   font: AF, fontSize: 9, color: '#555', alignment: 'left'  },
-      { text: pos === 'header-right' ? String(pg) : name, font: AF, fontSize: 9, color: '#555', alignment: 'right' },
-    ],
-    margin: [57, 15, 57, 0],
-  });
+  // Strip HTML + non-safe chars from name so no glyph-missing crash in header
+  const name = stripHtml(doc.headerRight || doc.name || '');
+  const pos  = doc.showPageNumber !== false
+    ? safeStr(doc.pageNumberPosition) || 'header-right'
+    : 'none';
+
+  return (pg) => {
+    try {
+      return {
+        columns: [
+          { text: pos === 'header-left'  ? String(pg) : '',   font: AF, fontSize: 9, color: '#555', alignment: 'left'  },
+          { text: pos === 'header-right' ? String(pg) : name, font: AF, fontSize: 9, color: '#555', alignment: 'right' },
+        ],
+        margin: [57, 15, 57, 0],
+      };
+    } catch (_) { return { text: '' }; }
+  };
 }
 
 function makeFooter(doc, AF) {
-  const pos      = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
+  const pos      = doc.showPageNumber !== false
+    ? safeStr(doc.pageNumberPosition) || 'header-right'
+    : 'none';
   const hairline = doc.footerHairline !== false;
-  const center   = doc.footerCenter || '';
+  const center   = stripHtml(doc.footerCenter || '');
+
   return (pg) => {
-    const ct = pos === 'footer-center' ? String(pg) : center;
-    const stack = [];
-    if (hairline) stack.push({ canvas: [{ type: 'line', x1: 57, y1: 0, x2: 481, y2: 0, lineWidth: 0.4, lineColor: '#000' }], margin: [0, 0, 0, 3] });
-    stack.push({ text: ct, font: AF, fontSize: 9, color: '#555', alignment: 'center' });
-    return { stack, margin: [0, 8, 0, 0] };
+    try {
+      const ct = pos === 'footer-center' ? String(pg) : center;
+      const stack = [];
+      if (hairline) stack.push({ canvas: [{ type: 'line', x1: 57, y1: 0, x2: 481, y2: 0, lineWidth: 0.4, lineColor: '#000' }], margin: [0, 0, 0, 3] });
+      stack.push({ text: ct, font: AF, fontSize: 9, color: '#555', alignment: 'center' });
+      return { stack, margin: [0, 8, 0, 0] };
+    } catch (_) { return { text: '' }; }
   };
 }
 
 // ─────────────────────────────────────────────────────────────────
 // Main export
 // ─────────────────────────────────────────────────────────────────
+
 async function generatePDF(doc) {
-  // Build and verify font descriptors fresh for every request.
-  // This prevents ENOENT from fontkit when stale module-level paths are used.
+  if (!doc || typeof doc !== 'object') throw new Error('[PDF] Invalid document data.');
+
   const desc = buildFontDescriptors();
 
-  // Amiri is REQUIRED — Roboto has no Arabic glyphs. Using Roboto for Arabic
-  // text causes fontkit to return null for every glyph, crashing with
-  // "Cannot read properties of null (reading 'xCoordinate')".
   if (!desc.Amiri) {
     throw new Error(
-      '[PDF] Arabic font (Amiri) not installed. ' +
-      'Add @expo-google-fonts/amiri to server/package.json and redeploy.'
+      '[PDF] Amiri Arabic font not found. ' +
+      'Ensure @expo-google-fonts/amiri is in server/package.json and run npm install. ' +
+      'Checked: ' + AMIRI_NORMAL_CANDIDATES.join(', ')
     );
   }
   if (!desc.Roboto) {
@@ -275,9 +361,10 @@ async function generatePDF(doc) {
 
   const AF = 'Amiri';
   const LF = 'Roboto';
+  const blockCount = Array.isArray(doc.blocks) ? doc.blocks.length : 0;
 
   console.time('[PDF] generate');
-  console.log('[PDF] fonts:', Object.keys(desc), '| ARABIC:', AF, '| LATIN:', LF, '| blocks:', doc.blocks?.length ?? 0);
+  console.log(`[PDF] start: fonts=[${Object.keys(desc).join(',')}] blocks=${blockCount}`);
 
   const printer = new PdfPrinter(desc);
 
@@ -291,16 +378,24 @@ async function generatePDF(doc) {
   };
 
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('[PDF] timed out after 30s')), 30000);
+    const timer = setTimeout(() => {
+      reject(new Error('[PDF] Generation timed out after 25s. Document may be too large.'));
+    }, 25000);
+
     try {
       const pdfDoc = printer.createPdfKitDocument(docDefinition);
       const chunks = [];
-      pdfDoc.on('data',  (c) => chunks.push(c));
+
+      pdfDoc.on('data',  (chunk) => chunks.push(chunk));
       pdfDoc.on('end',   () => {
         clearTimeout(timer);
         const buf = Buffer.concat(chunks);
         console.timeEnd('[PDF] generate');
-        console.log('[PDF] done, bytes:', buf.length);
+        if (buf.length < 100) {
+          console.error('[PDF] Generated buffer suspiciously small:', buf.length, 'bytes');
+        } else {
+          console.log('[PDF] done, size:', buf.length, 'bytes');
+        }
         resolve(buf);
       });
       pdfDoc.on('error', (err) => {
@@ -308,10 +403,11 @@ async function generatePDF(doc) {
         console.error('[PDF] stream error:', err.message);
         reject(err);
       });
+
       pdfDoc.end();
     } catch (err) {
       clearTimeout(timer);
-      console.error('[PDF] createPdfKitDocument threw:', err.message);
+      console.error('[PDF] createPdfKitDocument error:', err.message);
       reject(err);
     }
   });

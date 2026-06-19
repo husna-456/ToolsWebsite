@@ -34,10 +34,15 @@ async function textToPdfGenerate(req, res) {
       .replace(/\s+/g, '_')
       .substring(0, 60) || 'document';
 
+    if (!pdfBuffer || pdfBuffer.length < 100) {
+      return res.status(500).json({ success: false, error: 'PDF generation produced empty output.' });
+    }
+
     res.set({
       'Content-Type':        'application/pdf',
       'Content-Disposition': `attachment; filename="${rawName}.pdf"`,
       'Content-Length':       pdfBuffer.length,
+      'Cache-Control':        'no-store',
     });
     res.end(pdfBuffer);
   } catch (err) {
