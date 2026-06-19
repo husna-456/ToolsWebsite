@@ -350,66 +350,6 @@ function buildFullHTML(doc) {
 </html>`;
 }
 
-// ── Chrome executable resolution ─────────────────────────────────
-// Puppeteer v22+ stores Chrome in ~/.cache/puppeteer/ (not node_modules).
-// On some hosts (e.g. Hostinger) $HOME is unset or set to '.', so Puppeteer's
-// default cache path becomes a relative '.cache/puppeteer' that resolves to a
-// different absolute location at install time vs runtime → Chrome not found.
-// install-chrome.js downloads Chrome to server/.cache/puppeteer using an
-// absolute __dirname path, so we probe that location explicitly here.
-function resolveChrome() {
-  // 1. Explicit env override always wins
-  if (process.env.CHROME_BIN && fs.existsSync(process.env.CHROME_BIN)) {
-    console.log('[PDF] using CHROME_BIN:', process.env.CHROME_BIN);
-    return process.env.CHROME_BIN;
-  }
-
-  // 2. Puppeteer's default bundled Chrome (works on local dev and any host
-  //    where $HOME is correctly set to a stable absolute path)
-  try {
-    const p = puppeteer.executablePath();
-    console.log('[PDF] puppeteer default path:', p, '| exists:', !!(p && fs.existsSync(p)));
-    if (p && fs.existsSync(p)) return p;
-  } catch (e) {
-    console.log('[PDF] puppeteer.executablePath() threw:', e.message);
-  }
-
-  // 3. Local cache installed by server/install-chrome.js (production path).
-  //    Uses __dirname for an absolute path that is host-independent.
-  //    Temporarily override PUPPETEER_CACHE_DIR so executablePath() resolves
-  //    against this directory, then restore the original value.
-  const localCacheDir = path.join(__dirname, '..', '.cache', 'puppeteer');
-  const savedCache = process.env.PUPPETEER_CACHE_DIR;
-  try {
-    process.env.PUPPETEER_CACHE_DIR = localCacheDir;
-    const p = puppeteer.executablePath();
-    console.log('[PDF] local cache path:', p, '| exists:', !!(p && fs.existsSync(p)));
-    if (p && fs.existsSync(p)) {
-      // Leave PUPPETEER_CACHE_DIR set so launch() also uses this dir
-      return p;
-    }
-  } catch (e) {
-    console.log('[PDF] local cache check threw:', e.message);
-  }
-  // Restore original value when Chrome not found in local cache
-  if (savedCache === undefined) delete process.env.PUPPETEER_CACHE_DIR;
-  else process.env.PUPPETEER_CACHE_DIR = savedCache;
-
-  // 4. Common system Chromium paths (Debian/Ubuntu/CentOS)
-  const systemPaths = [
-    '/usr/bin/chromium-browser',
-    '/usr/bin/chromium',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/google-chrome',
-    '/snap/bin/chromium',
-  ];
-  for (const p of systemPaths) {
-    if (fs.existsSync(p)) { console.log('[PDF] using system Chrome:', p); return p; }
-  }
-
-  console.log('[PDF] no Chrome found — Puppeteer will use its default (may fail)');
-  return null;
-}
 
 // ── Main entry point ─────────────────────────────────────────────
 async function generatePDF(doc) {
@@ -429,39 +369,30 @@ async function generatePDF(doc) {
     throw new Error(`Temp dir error: ${mkdirErr.message}`);
   }
 
-  const chromePath = resolveChrome();
-  console.log('[PDF] chrome path:', chromePath || '(puppeteer default)');
+  console.log('[PDF] executablePath:', puppeteer.executablePath());
   console.log('[PDF] tmpdir:', os.tmpdir(), '| profile:', tempPath);
-
-  // NOTE: pipe:true was removed. It routes CDP over file-descriptors 3/4
-  // (--remote-debugging-pipe). On Hostinger and many VPS hosts the process
-  // manager closes non-standard FDs before spawning children, so Chrome
-  // silently exits every time → same "Target closed" error on every click.
-  // Default WebSocket mode (random port) works correctly on all hosts.
-  const launchOptions = {
-    headless: true,
-    userDataDir: tempPath,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-crash-reporter',  // stops crashpad socket creation in /tmp
-      '--disable-breakpad',
-      '--no-first-run',
-    ],
-  };
-  if (chromePath) launchOptions.executablePath = chromePath;
 
   let browser;
   try {
-    browser = await puppeteer.launch(launchOptions);
+    browser = await puppeteer.launch({
+      headless: 'new',
+      executablePath: puppeteer.executablePath(),
+      userDataDir: tempPath,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-crash-reporter',
+        '--disable-breakpad',
+        '--no-first-run',
+      ],
+    });
     console.log('[PDF] browser launched');
   } catch (launchErr) {
     console.error('[PDF] launch failed:', {
       message: launchErr.message,
       code:    launchErr.code,
-      chrome:  chromePath,
       tmpdir:  os.tmpdir(),
     });
     try { fs.rmSync(tempPath, { recursive: true, force: true }); } catch (_) {}
