@@ -8,7 +8,7 @@
     "client": "cd client && npm run dev",
     "build": "echo \"No build needed\"",
     "start": "cd server && npm start",
-    "postinstall": "cd server && npm install",
+    "postinstall": "cd server && npm install && node install-chrome.js",
     "install:all": "cd server && npm install"
   },
   "devDependencies": {
