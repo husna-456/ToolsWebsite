@@ -369,31 +369,42 @@ async function generatePDF(doc) {
     throw new Error(`Temp dir error: ${mkdirErr.message}`);
   }
 
-  console.log('[PDF] executablePath:', puppeteer.executablePath());
+  let executablePath;
+  try {
+    executablePath = await puppeteer.executablePath();
+  } catch (err) {
+    console.error('[PDF] executablePath resolve failed:', err);
+  }
+  console.log('[PDF] executablePath:', executablePath);
   console.log('[PDF] tmpdir:', os.tmpdir(), '| profile:', tempPath);
+
+  const launchOptions = {
+    headless: true,
+    userDataDir: tempPath,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-crash-reporter',
+      '--disable-breakpad',
+      '--no-first-run',
+    ],
+  };
+  if (executablePath && typeof executablePath === 'string') {
+    launchOptions.executablePath = executablePath;
+  }
 
   let browser;
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      executablePath: puppeteer.executablePath(),
-      userDataDir: tempPath,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-crash-reporter',
-        '--disable-breakpad',
-        '--no-first-run',
-      ],
-    });
+    browser = await puppeteer.launch(launchOptions);
     console.log('[PDF] browser launched');
   } catch (launchErr) {
     console.error('[PDF] launch failed:', {
-      message: launchErr.message,
-      code:    launchErr.code,
-      tmpdir:  os.tmpdir(),
+      message:    launchErr.message,
+      code:       launchErr.code,
+      chromePath: executablePath,
+      tmpdir:     os.tmpdir(),
     });
     try { fs.rmSync(tempPath, { recursive: true, force: true }); } catch (_) {}
     throw new Error(`Chrome launch failed: ${launchErr.message}`);
