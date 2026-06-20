@@ -426,23 +426,26 @@ function pdfPageShell(doc, pageNum) {
   );
 }
 
-// ── Block grouping: hadith+fiqh+reference kept together ──────────────
+// ── Block grouping for pagination ────────────────────────────────────
+// Each block is its own pagination unit so none is forced to exceed the
+// page height. Hadith gets a 22px top margin. Fiqh and reference follow
+// as separate units and flow naturally to the next page if needed.
 function pdfGroupBlocks(blocks) {
   const parts = [];
   let i = 0;
   while (i < blocks.length) {
     const b = blocks[i];
     if (b.type === 'hadith') {
+      parts.push(`<div data-pdf-block style="margin-top:22px;">${renderHadithTableHTML(b)}</div>`);
       i++;
-      let fiqhHTML = '';
-      while (i < blocks.length && blocks[i].type === 'fiqh') { fiqhHTML += renderFiqhHTML(blocks[i]); i++; }
-      let refHTML  = '';
-      if (i < blocks.length && blocks[i].type === 'reference') { refHTML = renderReferenceHTML(blocks[i]); i++; }
-      parts.push(
-        `<div data-pdf-block style="margin-top:22px;margin-bottom:0;">` +
-        renderHadithTableHTML(b) + fiqhHTML + refHTML +
-        `</div>`
-      );
+      while (i < blocks.length && blocks[i].type === 'fiqh') {
+        parts.push(`<div data-pdf-block>${renderFiqhHTML(blocks[i])}</div>`);
+        i++;
+      }
+      if (i < blocks.length && blocks[i].type === 'reference') {
+        parts.push(`<div data-pdf-block>${renderReferenceHTML(blocks[i])}</div>`);
+        i++;
+      }
       continue;
     }
     parts.push(`<div data-pdf-block>${renderBlockHTML(b)}</div>`);
@@ -471,11 +474,11 @@ function pdfPaginate(doc, container) {
     const page = wrap.firstElementChild;
     container.appendChild(page);
     pages.push(page);
-    console.log(`[PDF_PAGE_BREAK] page=${pages.length} contentH=${PL.contentH}`);
     return page.querySelector('[data-pdf-content]');
   };
 
   let zone = newPage();
+  console.log(`[PDF_CONTENT_AREA] contentTop=${PL.contentTop} contentH=${PL.contentH}`);
 
   while (staging.firstElementChild) {
     const block = staging.firstElementChild;
@@ -485,11 +488,12 @@ function pdfPaginate(doc, container) {
     if (zone.scrollHeight > zone.clientHeight + 1) {
       zone.removeChild(block);
       if (!zone.hasChildNodes()) {
-        // Block alone is taller than the content zone — force it in, open next page
+        // Block alone is taller than one content zone — force it and continue on next page
         zone.appendChild(block);
-        console.warn(`[PDF_BLOCK_OVERFLOW] page=${pages.length}`);
+        console.warn(`[PDF_BLOCK_TOO_TALL] page=${pages.length} block.type=${block.dataset?.pdfBlock || '?'}`);
         zone = newPage();
       } else {
+        console.log(`[PDF_PAGE_BREAK] fromPage=${pages.length} → page ${pages.length + 1}`);
         zone = newPage();
         zone.appendChild(block);
       }
