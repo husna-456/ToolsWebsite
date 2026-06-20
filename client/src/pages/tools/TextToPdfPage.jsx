@@ -283,7 +283,7 @@ function decorativeHeaderHTML(doc) {
   return (
     `<div style="display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px;padding-bottom:4px;">` +
     (showPN
-      ? `<span style="${badge}padding:0 10px;min-width:28px;text-align:center;">ص ۱</span>`
+      ? `<span style="${badge}padding:0 10px;min-width:28px;text-align:center;visibility:hidden;">0</span>`
       : `<span style="${badge}padding:0 10px;opacity:0;">·</span>`) +
     `<div style="flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center;padding:0 4px;min-width:0;">` +
     `<svg width="100%" height="22" viewBox="0 0 400 22" preserveAspectRatio="xMidYMid meet">` +
@@ -311,12 +311,13 @@ function decorativeHeaderHTML(doc) {
 function buildA4PageHTML(doc) {
   const blocks = doc.blocks || [];
   const pnPos  = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
-  const hRight = pnPos === 'header-right'  ? 'ص ۱' : (doc.headerRight  || '');
-  const hCtr   = pnPos === 'header-center' ? 'ص ۱' : (doc.headerCenter || doc.name || '');
-  const hLeft  = pnPos === 'header-left'   ? 'ص ۱' : (doc.headerLeft   || '');
-  const fRight = pnPos === 'footer-right'  ? 'ص ۱' : (doc.footerRight  || '');
-  const fCtr   = pnPos === 'footer-center' ? 'ص ۱' : (doc.footerCenter || '');
-  const fLeft  = pnPos === 'footer-left'   ? 'ص ۱' : (doc.footerLeft   || '');
+  // Page number slots are left empty — jsPDF overlays the correct number on every page
+  const hRight = pnPos === 'header-right'  ? '' : (doc.headerRight  || '');
+  const hCtr   = pnPos === 'header-center' ? '' : (doc.headerCenter || doc.name || '');
+  const hLeft  = pnPos === 'header-left'   ? '' : (doc.headerLeft   || '');
+  const fRight = pnPos === 'footer-right'  ? '' : (doc.footerRight  || '');
+  const fCtr   = pnPos === 'footer-center' ? '' : (doc.footerCenter || '');
+  const fLeft  = pnPos === 'footer-left'   ? '' : (doc.footerLeft   || '');
   const hff    = `'${doc.headerFontFamily || 'Noto Naskh Arabic'}',serif`;
   const fff    = `'${doc.footerFontFamily || 'Noto Naskh Arabic'}',serif`;
   const hfs    = doc.headerFontSize || 10;
@@ -1978,7 +1979,7 @@ export default function TextToPdfPage() {
   // ── PDF Download (frontend capture — exact visual match) ────────
   // Renders the same A4 HTML as the preview into a hidden off-screen div,
   // captures it with html2canvas at 2× scale, and pages it into a jsPDF PDF.
-  // No backend call — the browser renders fonts (incl. system JNN) exactly.
+  // Page numbers are added by jsPDF on every page — NOT embedded in the image.
   async function handleDownload() {
     if (!currentDoc?.blocks?.length) return;
     setGenerating(true); setPdfErr('');
@@ -1989,19 +1990,19 @@ export default function TextToPdfPage() {
         import('jspdf'),
       ]);
 
-      // Build hidden A4 container — same HTML as preview
+      // Build hidden A4 container — same HTML as preview (page numbers excluded from image)
       container = document.createElement('div');
       container.style.cssText = 'position:fixed;left:-10000px;top:0;z-index:-1;';
       container.innerHTML = buildA4PageHTML(currentDoc);
       document.body.appendChild(container);
 
-      // Wait for web fonts + give Nastaleeq shaping engine time to run
+      // Wait for web fonts + give Nastaleeq shaping engine time to settle
       await document.fonts.ready;
       await new Promise(r => setTimeout(r, 400));
 
-      const SCALE      = 2;
-      const pageEl     = container.firstElementChild; // the white 794px A4 div
-      const canvas     = await html2canvas(pageEl, {
+      const SCALE     = 2;
+      const pageEl    = container.firstElementChild; // the white 794px A4 div
+      const canvas    = await html2canvas(pageEl, {
         scale:           SCALE,
         useCORS:         true,
         allowTaint:      false,
@@ -2010,17 +2011,43 @@ export default function TextToPdfPage() {
       });
 
       // A4 in PDF points: 595.28 × 841.89
-      const PDF_W      = 595.28;
-      const PDF_H      = 841.89;
-      const PAGE_H_PX  = Math.round(1123 * SCALE); // one A4 page in canvas pixels
+      const PDF_W     = 595.28;
+      const PDF_H     = 841.89;
+      const PAGE_H_PX = Math.round(1123 * SCALE); // one A4 page height in canvas pixels
+
+      // Smart page-break: scan upward from the nominal break point for the
+      // whitest row (between paragraphs) to avoid slicing through a glyph.
+      function findBreak(nominalY) {
+        if (nominalY >= canvas.height) return nominalY;
+        const ctx2d = canvas.getContext('2d');
+        const w = canvas.width;
+        const lookUp = Math.min(100 * SCALE, nominalY); // search up to 100css-px above
+        const top  = nominalY - lookUp;
+        const { data } = ctx2d.getImageData(0, top, w, lookUp);
+        let bestRow = lookUp - 1; // default: nominal break
+        let bestWhites = -1;
+        for (let row = lookUp - 1; row >= 0; row--) {
+          let whites = 0;
+          const base = row * w * 4;
+          for (let px = 0; px < w; px++) {
+            const i = base + px * 4;
+            if (data[i] > 248 && data[i + 1] > 248 && data[i + 2] > 248) whites++;
+          }
+          if (whites > bestWhites) { bestWhites = whites; bestRow = row; }
+          if (whites >= w * 0.99) break; // found a fully white row — done
+        }
+        return top + bestRow;
+      }
 
       const pdf = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
-      let yOffset = 0, pageNum = 0;
+      let yOffset = 0, totalPages = 0;
 
       while (yOffset < canvas.height) {
-        const sliceH = Math.min(PAGE_H_PX, canvas.height - yOffset);
+        const nominalEnd = yOffset + PAGE_H_PX;
+        const breakY     = nominalEnd < canvas.height ? findBreak(nominalEnd) : nominalEnd;
+        const sliceH     = Math.min(Math.max(breakY - yOffset, 1), canvas.height - yOffset);
 
-        // Draw this page's slice into a fresh canvas (white-pad the last page)
+        // Draw this slice into a full A4-height canvas (white-pad remainder)
         const pg = document.createElement('canvas');
         pg.width  = canvas.width;
         pg.height = PAGE_H_PX;
@@ -2029,11 +2056,42 @@ export default function TextToPdfPage() {
         ctx.fillRect(0, 0, pg.width, pg.height);
         ctx.drawImage(canvas, 0, yOffset, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
 
-        if (pageNum > 0) pdf.addPage();
+        if (totalPages > 0) pdf.addPage();
         pdf.addImage(pg.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, PDF_W, PDF_H);
 
-        yOffset += PAGE_H_PX;
-        pageNum++;
+        yOffset += sliceH;
+        totalPages++;
+      }
+
+      console.log(`[PDF_PAGE_COUNT] ${totalPages}`);
+
+      // ── Page number overlay — added by jsPDF on EVERY page ──────────
+      // Numbers are plain English digits (1, 2, 3…) positioned according
+      // to the Page tab setting. Not embedded in the image so all pages get one.
+      const pnPos = currentDoc.showPageNumber !== false
+        ? (currentDoc.pageNumberPosition || 'header-right')
+        : 'none';
+
+      if (pnPos !== 'none') {
+        // A4 content margins: 76px left/right = 57pt, 40px top/bottom = 30pt
+        const isFooter  = pnPos.startsWith('footer');
+        const numY      = isFooter ? PDF_H - 14 : 26;          // pt from top
+        const posEnd    = pnPos.split('-').pop();               // 'right' | 'center' | 'left'
+        const numX      = posEnd === 'right'  ? PDF_W - 58     // inside right margin
+                        : posEnd === 'center' ? PDF_W / 2
+                        :                       58;             // inside left margin
+        const numAlign  = posEnd === 'right'  ? 'right'
+                        : posEnd === 'center' ? 'center'
+                        :                       'left';
+
+        pdf.setFontSize(10);
+        pdf.setTextColor(85, 85, 85); // #555 — matches header/footer colour
+
+        for (let p = 1; p <= totalPages; p++) {
+          pdf.setPage(p);
+          pdf.text(String(p), numX, numY, { align: numAlign });
+          console.log(`[PDF_PAGE_NUMBER_RENDERED] page=${p}`);
+        }
       }
 
       const fname = (currentDoc.name || 'document')
