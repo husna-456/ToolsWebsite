@@ -283,8 +283,8 @@ function decorativeHeaderHTML(doc) {
   return (
     `<div style="display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px;padding-bottom:4px;">` +
     (showPN
-      ? `<span style="${badge}padding:0 10px;min-width:28px;text-align:center;visibility:hidden;">0</span>`
-      : `<span style="${badge}padding:0 10px;opacity:0;">·</span>`) +
+      ? `<span style="${badge}padding:0 10px;min-width:28px;text-align:center;opacity:0;border-color:transparent;"> </span>`
+      : `<span style="${badge}padding:0 10px;opacity:0;border-color:transparent;"> </span>`) +
     `<div style="flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center;padding:0 4px;min-width:0;">` +
     `<svg width="100%" height="22" viewBox="0 0 400 22" preserveAspectRatio="xMidYMid meet">` +
     `<g transform="translate(200,11)"><line x1="0" y1="-6" x2="0" y2="6" stroke="#000" stroke-width="0.8"/><line x1="-5.2" y1="-3" x2="5.2" y2="3" stroke="#000" stroke-width="0.8"/><line x1="-5.2" y1="3" x2="5.2" y2="-3" stroke="#000" stroke-width="0.8"/><circle cx="0" cy="0" r="2.5" fill="none" stroke="#000" stroke-width="0.7"/></g>` +
@@ -1994,8 +1994,10 @@ export default function TextToPdfPage() {
       ]);
 
       // Build hidden A4 container — same HTML as preview (page numbers excluded from image)
+      // Must be position:fixed at (0,0) so html2canvas can correctly measure element bounds.
+      // z-index:-1 keeps it behind all visible UI elements.
       container = document.createElement('div');
-      container.style.cssText = 'position:fixed;left:-10000px;top:0;z-index:-1;';
+      container.style.cssText = 'position:fixed;left:0;top:0;z-index:-1;pointer-events:none;width:794px;';
       container.innerHTML = buildA4PageHTML(currentDoc);
       document.body.appendChild(container);
 
@@ -2018,18 +2020,20 @@ export default function TextToPdfPage() {
       const PDF_H     = 841.89;
       const PAGE_H_PX = Math.round(1123 * SCALE); // one A4 page height in canvas pixels
 
-      // Smart page-break: scan upward from the nominal break point for the
-      // whitest row (between paragraphs) to avoid slicing through a glyph.
+      // Smart page-break: scan a window of ±200css-px around the nominal break
+      // and pick the whitest row to avoid slicing through a glyph.
       function findBreak(nominalY) {
         if (nominalY >= canvas.height) return nominalY;
-        const ctx2d = canvas.getContext('2d');
-        const w = canvas.width;
-        const lookUp = Math.min(100 * SCALE, nominalY); // search up to 100css-px above
-        const top  = nominalY - lookUp;
-        const { data } = ctx2d.getImageData(0, top, w, lookUp);
-        let bestRow = lookUp - 1; // default: nominal break
+        const ctx2d  = canvas.getContext('2d');
+        const w      = canvas.width;
+        const lookUp   = Math.min(200 * SCALE, nominalY);
+        const lookDown = Math.min(50 * SCALE, canvas.height - nominalY);
+        const scanTop  = nominalY - lookUp;
+        const scanH    = lookUp + lookDown;
+        const { data } = ctx2d.getImageData(0, scanTop, w, scanH);
+        let bestRow = lookUp; // default: nominal break
         let bestWhites = -1;
-        for (let row = lookUp - 1; row >= 0; row--) {
+        for (let row = 0; row < scanH; row++) {
           let whites = 0;
           const base = row * w * 4;
           for (let px = 0; px < w; px++) {
@@ -2037,9 +2041,9 @@ export default function TextToPdfPage() {
             if (data[i] > 248 && data[i + 1] > 248 && data[i + 2] > 248) whites++;
           }
           if (whites > bestWhites) { bestWhites = whites; bestRow = row; }
-          if (whites >= w * 0.99) break; // found a fully white row — done
+          if (whites >= w * 0.99) break; // fully white row — no need to scan further
         }
-        return top + bestRow;
+        return scanTop + bestRow;
       }
 
       const pdf = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
