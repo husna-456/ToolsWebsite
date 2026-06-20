@@ -14,21 +14,6 @@ import api from '@/services/api';
 // ── Constants ───────────────────────────────────────────────────
 const LS_KEY = 'htbk_docs_v3';
 
-const PDF_PAGE_TEMPLATE = {
-  cssWidth: 794,
-  cssHeight: 1123,
-  pdfWidth: 595.28,
-  pdfHeight: 841.89,
-  marginTop: 40,
-  marginRight: 76,
-  marginBottom: 40,
-  marginLeft: 76,
-  headerHeight: 48,
-  headerGap: 8,
-  footerGap: 16,
-  footerHeight: 24,
-};
-
 // Expanded Google Fonts URL — English, Urdu, and Arabic professional fonts
 const FONTS_URL =
   'https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;700' +
@@ -296,120 +281,153 @@ function buildDocumentBodyHTML(blocks) {
   return parts.join('\n');
 }
 
-// ── Frontend PDF export helpers ─────────────────────────────────
-// Pure-HTML equivalents of React components used in the preview,
-// so handleDownload can render the same layout in a hidden div.
+// ══════════════════════════════════════════════════════════════════════
+// PDF EXPORT ENGINE v2.0 — Production Grade
+// Font-first DOM pagination + per-page html2canvas capture.
+// Block render functions (renderFreeTextHTML etc.) are shared with the
+// editor preview, guaranteeing visual parity between screen and PDF.
+// ══════════════════════════════════════════════════════════════════════
 
-function decorativeHeaderHTML(doc) {
-  const ff    = `'${doc.headerFontFamily || 'Noto Naskh Arabic'}',serif`;
-  const fs    = doc.headerFontSize || 10;
+// A4 page geometry — CSS pixels at 96 dpi ↔ PDF points
+const PL = {
+  cssW: 794,  cssH: 1123,
+  ptW:  595.28, ptH: 841.89,
+  mTop: 40, mRight: 76, mBottom: 40, mLeft: 76,
+  hdrH: 48,    // header zone (fits 36px badge + 6px padding top & bottom)
+  hdrGap: 10,  // gap: header bottom → content top
+  ftrH: 24,    // footer zone
+  ftrGap: 14,  // gap: content bottom → footer top
+};
+PL.contentW   = PL.cssW  - PL.mLeft - PL.mRight;              // 642 px
+PL.contentTop = PL.mTop  + PL.hdrH  + PL.hdrGap;             //  98 px from top
+PL.contentBot = PL.cssH  - PL.mBottom - PL.ftrH - PL.ftrGap; // 1045 px from top
+PL.contentH   = PL.contentBot - PL.contentTop;                 //  947 px
+PL.pt         = PL.ptW   / PL.cssW;                            // ~0.7497 pt/px
+
+// ── Decorative header: [page-num badge] [──SVG──] [title badge] ──────
+function pdfDecorativeHeader(doc, pageNum) {
+  const ff       = `'${doc.headerFontFamily || 'Noto Naskh Arabic'}',serif`;
+  const fs       = doc.headerFontSize || 10;
+  const showPN   = doc.showPageNumber !== false;
+  const pnPos    = doc.pageNumberPosition || 'header-right';
+  const showLP   = showPN && pnPos.startsWith('header');
+  const title    = doc.headerRight || doc.name || '';
+
+  const B = [
+    'display:inline-flex',
+    'align-items:center',
+    'justify-content:center',
+    'border:1.2px solid #1a1a1a',
+    'border-radius:999px',
+    `font-family:${ff}`,
+    `font-size:${fs}px`,
+    'height:36px',
+    'box-sizing:border-box',
+    'color:#1a1a1a',
+    'white-space:nowrap',
+  ].join(';');
+
+  const leftBadge = showLP
+    ? `<span style="${B};flex-shrink:0;padding:0 14px;min-width:42px;text-align:center;">${pageNum}</span>`
+    : `<span style="${B};flex-shrink:0;padding:0 14px;opacity:0;border-color:transparent;"> </span>`;
+
+  const rightBadge = title
+    ? `<span style="${B};flex-shrink:1;max-width:240px;padding:0 16px;overflow:hidden;direction:rtl;">${title}</span>`
+    : `<span style="${B};flex-shrink:0;padding:0 14px;opacity:0;border-color:transparent;"> </span>`;
+
+  const svg =
+    `<svg width="100%" height="30" viewBox="0 0 400 22" preserveAspectRatio="xMidYMid meet">` +
+    `<g transform="translate(200,11)">` +
+    `<line x1="0" y1="-6" x2="0" y2="6" stroke="#1a1a1a" stroke-width="0.8"/>` +
+    `<line x1="-5.2" y1="-3" x2="5.2" y2="3" stroke="#1a1a1a" stroke-width="0.8"/>` +
+    `<line x1="-5.2" y1="3" x2="5.2" y2="-3" stroke="#1a1a1a" stroke-width="0.8"/>` +
+    `<circle cx="0" cy="0" r="2.5" fill="none" stroke="#1a1a1a" stroke-width="0.7"/></g>` +
+    `<path d="M208 11 Q218 7 228 11 Q238 15 248 11 Q258 7 268 11 Q278 15 288 11" fill="none" stroke="#1a1a1a" stroke-width="0.7"/>` +
+    `<path d="M218 8 Q220 3 224 5" fill="none" stroke="#1a1a1a" stroke-width="0.6"/>` +
+    `<path d="M238 14 Q242 19 246 17" fill="none" stroke="#1a1a1a" stroke-width="0.6"/>` +
+    `<path d="M258 8 Q260 3 264 5" fill="none" stroke="#1a1a1a" stroke-width="0.6"/>` +
+    `<path d="M278 14 Q282 19 286 17" fill="none" stroke="#1a1a1a" stroke-width="0.6"/>` +
+    `<line x1="288" y1="11" x2="396" y2="11" stroke="#1a1a1a" stroke-width="0.4"/>` +
+    `<path d="M192 11 Q182 7 172 11 Q162 15 152 11 Q142 7 132 11 Q122 15 112 11" fill="none" stroke="#1a1a1a" stroke-width="0.7"/>` +
+    `<path d="M182 8 Q180 3 176 5" fill="none" stroke="#1a1a1a" stroke-width="0.6"/>` +
+    `<path d="M162 14 Q158 19 154 17" fill="none" stroke="#1a1a1a" stroke-width="0.6"/>` +
+    `<path d="M142 8 Q140 3 136 5" fill="none" stroke="#1a1a1a" stroke-width="0.6"/>` +
+    `<path d="M122 14 Q118 19 114 17" fill="none" stroke="#1a1a1a" stroke-width="0.6"/>` +
+    `<line x1="112" y1="11" x2="4" y2="11" stroke="#1a1a1a" stroke-width="0.4"/>` +
+    `</svg>`;
+
+  return (
+    `<div style="display:flex;flex-direction:row;align-items:center;justify-content:space-between;` +
+    `gap:8px;height:${PL.hdrH}px;box-sizing:border-box;padding:6px 0;">` +
+    leftBadge +
+    `<div style="flex:1;min-width:0;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:0 4px;">${svg}</div>` +
+    rightBadge +
+    `</div>`
+  );
+}
+
+// ── Plain (non-decorative) header ────────────────────────────────────
+function pdfPlainHeader(doc, pageNum) {
+  const hff    = `'${doc.headerFontFamily || 'Noto Naskh Arabic'}',serif`;
+  const hfs    = doc.headerFontSize || 10;
   const showPN = doc.showPageNumber !== false;
-  const name  = doc.headerRight || doc.name || '';
-  const badge = `display:inline-flex;align-items:center;justify-content:center;border:1px solid #000;border-radius:999px;font-family:${ff};font-size:${fs}px;height:36px;box-sizing:border-box;color:#000;flex-shrink:0;white-space:nowrap;`;
+  const pnPos  = showPN ? (doc.pageNumberPosition || 'header-right') : 'none';
+  const right  = pnPos === 'header-right'  ? String(pageNum) : (doc.headerRight  || '');
+  const center = pnPos === 'header-center' ? String(pageNum) : (doc.headerCenter || doc.name || '');
+  const left   = pnPos === 'header-left'   ? String(pageNum) : (doc.headerLeft   || '');
   return (
-    `<div style="display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;">` +
-    (showPN
-      ? `<span data-pdf-page-num style="${badge}padding:0 12px;min-width:36px;text-align:center;"> </span>`
-      : `<span style="${badge}padding:0 12px;opacity:0;border-color:transparent;"> </span>`) +
-    `<div style="flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center;padding:0 4px;min-width:0;">` +
-    `<svg width="100%" height="28" viewBox="0 0 400 22" preserveAspectRatio="xMidYMid meet">` +
-    `<g transform="translate(200,11)"><line x1="0" y1="-6" x2="0" y2="6" stroke="#000" stroke-width="0.8"/><line x1="-5.2" y1="-3" x2="5.2" y2="3" stroke="#000" stroke-width="0.8"/><line x1="-5.2" y1="3" x2="5.2" y2="-3" stroke="#000" stroke-width="0.8"/><circle cx="0" cy="0" r="2.5" fill="none" stroke="#000" stroke-width="0.7"/></g>` +
-    `<path d="M208 11 Q218 7 228 11 Q238 15 248 11 Q258 7 268 11 Q278 15 288 11" fill="none" stroke="#000" stroke-width="0.7"/>` +
-    `<path d="M218 8 Q220 3 224 5" fill="none" stroke="#000" stroke-width="0.6"/>` +
-    `<path d="M238 14 Q242 19 246 17" fill="none" stroke="#000" stroke-width="0.6"/>` +
-    `<path d="M258 8 Q260 3 264 5" fill="none" stroke="#000" stroke-width="0.6"/>` +
-    `<path d="M278 14 Q282 19 286 17" fill="none" stroke="#000" stroke-width="0.6"/>` +
-    `<line x1="288" y1="11" x2="396" y2="11" stroke="#000" stroke-width="0.4"/>` +
-    `<path d="M192 11 Q182 7 172 11 Q162 15 152 11 Q142 7 132 11 Q122 15 112 11" fill="none" stroke="#000" stroke-width="0.7"/>` +
-    `<path d="M182 8 Q180 3 176 5" fill="none" stroke="#000" stroke-width="0.6"/>` +
-    `<path d="M162 14 Q158 19 154 17" fill="none" stroke="#000" stroke-width="0.6"/>` +
-    `<path d="M142 8 Q140 3 136 5" fill="none" stroke="#000" stroke-width="0.6"/>` +
-    `<path d="M122 14 Q118 19 114 17" fill="none" stroke="#000" stroke-width="0.6"/>` +
-    `<line x1="112" y1="11" x2="4" y2="11" stroke="#000" stroke-width="0.4"/>` +
-    `</svg></div>` +
-    `<span style="${badge}padding:0 16px;text-align:center;direction:rtl;flex-shrink:1;max-width:45%;overflow:hidden;">${name || ' '}</span>` +
+    `<div style="display:flex;justify-content:space-between;align-items:center;` +
+    `height:${PL.hdrH}px;box-sizing:border-box;padding:4px 0;` +
+    `font-family:${hff};font-size:${hfs}px;color:#555;direction:rtl;">` +
+    `<span>${right}</span><span>${center}</span><span>${left}</span>` +
     `</div>`
   );
 }
 
-// Builds the full A4 white-page HTML string (header + content + footer).
-// Uses the same render functions as the preview, so PDF = what you see.
-function buildA4PageHTML(doc) {
-  const blocks = doc.blocks || [];
-  const pnPos  = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
-  // Page number slots are left empty — jsPDF overlays the correct number on every page
-  const hRight = pnPos === 'header-right'  ? '' : (doc.headerRight  || '');
-  const hCtr   = pnPos === 'header-center' ? '' : (doc.headerCenter || doc.name || '');
-  const hLeft  = pnPos === 'header-left'   ? '' : (doc.headerLeft   || '');
-  const fRight = pnPos === 'footer-right'  ? '' : (doc.footerRight  || '');
-  const fCtr   = pnPos === 'footer-center' ? '' : (doc.footerCenter || '');
-  const fLeft  = pnPos === 'footer-left'   ? '' : (doc.footerLeft   || '');
-  const hff    = `'${doc.headerFontFamily || 'Noto Naskh Arabic'}',serif`;
-  const fff    = `'${doc.footerFontFamily || 'Noto Naskh Arabic'}',serif`;
-  const hfs    = doc.headerFontSize || 10;
-  const ffs    = doc.footerFontSize || 9;
-
-  const headerHTML = doc.headerStyle === 'decorative'
-    ? decorativeHeaderHTML(doc)
-    : `<div style="display:flex;justify-content:space-between;font-family:${hff};font-size:${hfs}px;color:#555;direction:rtl;margin-bottom:16px;padding-bottom:6px;"><span>${hRight}</span><span>${hCtr}</span><span>${hLeft}</span></div>`;
-
-  const footerHTML =
-    `<div style="margin-top:32px;">` +
-    (doc.footerHairline !== false ? `<div style="width:100%;height:0.5px;background:#000;margin-bottom:4px;"></div>` : '') +
-    `<div style="display:flex;justify-content:space-between;font-family:${fff};font-size:${ffs}px;color:#555;direction:rtl;"><span>${fRight}</span><span>${fCtr}</span><span>${fLeft}</span></div>` +
-    `</div>`;
-
-  return (
-    `<div style="background:white;width:794px;padding:40px 76px;box-sizing:border-box;">` +
-    headerHTML +
-    buildDocumentBodyHTML(blocks) +
-    footerHTML +
-    `</div>`
-  );
-}
-
-// ── Language detection ──────────────────────────────────────────
-function buildPDFHeaderHTML(doc) {
-  const pnPos  = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
-  const hRight = pnPos === 'header-right'  ? '' : (doc.headerRight  || '');
-  const hCtr   = pnPos === 'header-center' ? '' : (doc.headerCenter || doc.name || '');
-  const hLeft  = pnPos === 'header-left'   ? '' : (doc.headerLeft   || '');
-  const hff    = `'${doc.headerFontFamily || 'Noto Naskh Arabic'}',serif`;
-  const hfs    = doc.headerFontSize || 10;
-
-  return doc.headerStyle === 'decorative'
-    ? decorativeHeaderHTML(doc)
-    : `<div style="display:flex;justify-content:space-between;font-family:${hff};font-size:${hfs}px;color:#555;direction:rtl;margin-bottom:16px;padding-bottom:6px;"><span>${hRight}</span><span>${hCtr}</span><span>${hLeft}</span></div>`;
-}
-
-function buildPDFFooterHTML(doc) {
-  const pnPos  = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
-  const fRight = pnPos === 'footer-right'  ? '' : (doc.footerRight  || '');
-  const fCtr   = pnPos === 'footer-center' ? '' : (doc.footerCenter || '');
-  const fLeft  = pnPos === 'footer-left'   ? '' : (doc.footerLeft   || '');
+// ── Footer (with optional page number) ──────────────────────────────
+function pdfFooter(doc, pageNum) {
   const fff    = `'${doc.footerFontFamily || 'Noto Naskh Arabic'}',serif`;
   const ffs    = doc.footerFontSize || 9;
-
+  const showPN = doc.showPageNumber !== false;
+  const pnPos  = showPN ? (doc.pageNumberPosition || 'header-right') : 'none';
+  const right  = pnPos === 'footer-right'  ? String(pageNum) : (doc.footerRight  || '');
+  const center = pnPos === 'footer-center' ? String(pageNum) : (doc.footerCenter || '');
+  const left   = pnPos === 'footer-left'   ? String(pageNum) : (doc.footerLeft   || '');
+  const hl     = doc.footerHairline !== false
+    ? `<div style="width:100%;height:0.5px;background:#1a1a1a;margin-bottom:4px;"></div>` : '';
   return (
-    `<div>` +
-    (doc.footerHairline !== false ? `<div style="width:100%;height:0.5px;background:#000;margin-bottom:4px;"></div>` : '') +
-    `<div style="display:flex;justify-content:space-between;font-family:${fff};font-size:${ffs}px;color:#555;direction:rtl;"><span>${fRight}</span><span>${fCtr}</span><span>${fLeft}</span></div>` +
+    `<div style="height:${PL.ftrH}px;box-sizing:border-box;">` +
+    hl +
+    `<div style="display:flex;justify-content:space-between;align-items:center;` +
+    `font-family:${fff};font-size:${ffs}px;color:#555;direction:rtl;">` +
+    `<span>${right}</span><span>${center}</span><span>${left}</span>` +
+    `</div></div>`
+  );
+}
+
+// ── Complete A4 page shell ───────────────────────────────────────────
+// Contains positioned header, empty content zone, and footer.
+// Content zone is filled by the pagination engine.
+function pdfPageShell(doc, pageNum) {
+  const hdr = doc.headerStyle === 'decorative'
+    ? pdfDecorativeHeader(doc, pageNum)
+    : pdfPlainHeader(doc, pageNum);
+  const ftr = pdfFooter(doc, pageNum);
+  return (
+    `<div data-pdf-page style="background:#fff;width:${PL.cssW}px;height:${PL.cssH}px;` +
+    `box-sizing:border-box;position:relative;overflow:hidden;-webkit-font-smoothing:antialiased;">` +
+    `<div data-pdf-header style="position:absolute;left:${PL.mLeft}px;right:${PL.mRight}px;` +
+    `top:${PL.mTop}px;height:${PL.hdrH}px;box-sizing:border-box;overflow:hidden;">${hdr}</div>` +
+    `<div data-pdf-content style="position:absolute;left:${PL.mLeft}px;right:${PL.mRight}px;` +
+    `top:${PL.contentTop}px;height:${PL.contentH}px;box-sizing:border-box;overflow:hidden;"></div>` +
+    `<div data-pdf-footer style="position:absolute;left:${PL.mLeft}px;right:${PL.mRight}px;` +
+    `bottom:${PL.mBottom}px;height:${PL.ftrH}px;box-sizing:border-box;">${ftr}</div>` +
     `</div>`
   );
 }
 
-function buildPDFPageShellHTML(doc) {
-  const t = PDF_PAGE_TEMPLATE;
-  return (
-    `<div data-pdf-page style="background:white;width:${t.cssWidth}px;height:${t.cssHeight}px;box-sizing:border-box;position:relative;overflow:hidden;">` +
-    `<div data-pdf-header style="position:absolute;left:${t.marginLeft}px;right:${t.marginRight}px;top:${t.marginTop}px;height:${t.headerHeight}px;box-sizing:border-box;overflow:hidden;">${buildPDFHeaderHTML(doc)}</div>` +
-    `<div data-pdf-content style="position:absolute;left:${t.marginLeft}px;right:${t.marginRight}px;top:${t.marginTop + t.headerHeight + t.headerGap}px;bottom:${t.marginBottom + t.footerHeight + t.footerGap}px;box-sizing:border-box;overflow:hidden;"></div>` +
-    `<div data-pdf-footer style="position:absolute;left:${t.marginLeft}px;right:${t.marginRight}px;bottom:${t.marginBottom}px;height:${t.footerHeight}px;box-sizing:border-box;">${buildPDFFooterHTML(doc)}</div>` +
-    `</div>`
-  );
-}
-
-function buildPDFBlockGroupsHTML(blocks) {
+// ── Block grouping: hadith+fiqh+reference kept together ──────────────
+function pdfGroupBlocks(blocks) {
   const parts = [];
   let i = 0;
   while (i < blocks.length) {
@@ -418,94 +436,105 @@ function buildPDFBlockGroupsHTML(blocks) {
       i++;
       let fiqhHTML = '';
       while (i < blocks.length && blocks[i].type === 'fiqh') { fiqhHTML += renderFiqhHTML(blocks[i]); i++; }
-      let refHTML = '';
+      let refHTML  = '';
       if (i < blocks.length && blocks[i].type === 'reference') { refHTML = renderReferenceHTML(blocks[i]); i++; }
       parts.push(
-        `<div data-pdf-block style="margin-top:22px;margin-bottom:0;break-inside:avoid;page-break-inside:avoid;">` +
-        `<div style="break-inside:avoid;page-break-inside:avoid;">${renderHadithTableHTML(b)}</div>` +
-        (fiqhHTML ? `<div style="break-before:avoid;page-break-before:avoid;">${fiqhHTML}</div>` : '') +
-        (refHTML  ? `<div style="break-before:avoid;page-break-before:avoid;">${refHTML}</div>`  : '') +
+        `<div data-pdf-block style="margin-top:22px;margin-bottom:0;">` +
+        renderHadithTableHTML(b) + fiqhHTML + refHTML +
         `</div>`
       );
       continue;
     }
-    parts.push(`<div data-pdf-block style="break-inside:avoid;page-break-inside:avoid;">${renderBlockHTML(b)}</div>`);
+    parts.push(`<div data-pdf-block>${renderBlockHTML(b)}</div>`);
     i++;
   }
-  return parts.join('\n');
+  return parts.join('');
 }
 
-function paginatePDFPages(doc, container) {
+// ── Pagination engine ────────────────────────────────────────────────
+// Greedy fill: move blocks from staging into the content zone one by one.
+// Overflow check (scrollHeight > clientHeight) triggers a new page.
+// Must be called AFTER fonts are loaded (handleDownload ensures this).
+function pdfPaginate(doc, container) {
   const staging = document.createElement('div');
-  staging.style.cssText = `position:absolute;left:-99999px;top:0;width:${PDF_PAGE_TEMPLATE.cssWidth - PDF_PAGE_TEMPLATE.marginLeft - PDF_PAGE_TEMPLATE.marginRight}px;visibility:hidden;`;
-  staging.innerHTML = buildPDFBlockGroupsHTML(doc.blocks || []);
+  staging.style.cssText =
+    `position:absolute;left:-99999px;top:0;width:${PL.contentW}px;visibility:hidden;`;
+  staging.innerHTML = pdfGroupBlocks(doc.blocks || []);
   container.appendChild(staging);
 
   const pages = [];
-  const makePage = () => {
+  let pageNum = 1;
+
+  const newPage = () => {
     const wrap = document.createElement('div');
-    wrap.innerHTML = buildPDFPageShellHTML(doc);
+    wrap.innerHTML = pdfPageShell(doc, pageNum++);
     const page = wrap.firstElementChild;
     container.appendChild(page);
     pages.push(page);
-    console.log(`[PDF_HEADER_RENDERED] page=${pages.length}`);
+    console.log(`[PDF_PAGE_BREAK] page=${pages.length} contentH=${PL.contentH}`);
     return page.querySelector('[data-pdf-content]');
   };
 
-  let content = makePage();
+  let zone = newPage();
+
   while (staging.firstElementChild) {
-    const node = staging.firstElementChild;
-    content.appendChild(node);
-    if (content.scrollHeight > content.clientHeight + 1) {
-      content.removeChild(node);
-      if (!content.children.length) {
-        content.appendChild(node);
+    const block = staging.firstElementChild;
+    zone.appendChild(block);
+    void zone.offsetHeight; // force layout reflow
+
+    if (zone.scrollHeight > zone.clientHeight + 1) {
+      zone.removeChild(block);
+      if (!zone.hasChildNodes()) {
+        // Block alone is taller than the content zone — force it in, open next page
+        zone.appendChild(block);
         console.warn(`[PDF_BLOCK_OVERFLOW] page=${pages.length}`);
-        content = makePage();
+        zone = newPage();
       } else {
-        console.log(`[PDF_PAGE_BREAK] fromPage=${pages.length} reason=overflow`);
-        content = makePage();
-        content.appendChild(node);
+        zone = newPage();
+        zone.appendChild(block);
       }
     }
   }
 
-  if (staging.parentNode) staging.parentNode.removeChild(staging);
-  if (pages.length > 1) {
-    const lastContent = pages[pages.length - 1].querySelector('[data-pdf-content]');
-    if (lastContent && !lastContent.children.length) {
-      container.removeChild(pages.pop());
-    }
-  }
+  staging.remove();
+  // Drop empty trailing page
+  const lastZone = pages.length > 0
+    ? pages[pages.length - 1].querySelector('[data-pdf-content]') : null;
+  if (pages.length > 1 && lastZone && !lastZone.hasChildNodes()) pages.pop().remove();
+
   return pages;
 }
 
-function getPDFPageNumberSlot(doc) {
-  const t = PDF_PAGE_TEMPLATE;
-  const pnPos = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
-  if (pnPos === 'none') return null;
+// ── Per-page capture ─────────────────────────────────────────────────
+// html2canvas requires the element to be near the viewport origin (0,0).
+// Pages are placed there one at a time to avoid off-viewport rendering bugs.
+async function pdfCapturePage(html2canvas, pageEl) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText =
+    `position:fixed;left:0;top:0;z-index:-1;pointer-events:none;` +
+    `width:${PL.cssW}px;height:${PL.cssH}px;overflow:hidden;`;
+  document.body.appendChild(wrap);
+  wrap.appendChild(pageEl);
+  void pageEl.offsetHeight;
 
-  // Page number is stamped into left badge HTML (data-pdf-page-num) — no jsPDF overlay needed
-  if (doc.headerStyle === 'decorative' && pnPos.startsWith('header')) {
-    return null;
-  }
+  const canvas = await html2canvas(pageEl, {
+    scale:           2,
+    useCORS:         true,
+    allowTaint:      false,
+    backgroundColor: '#ffffff',
+    logging:         false,
+    width:           PL.cssW,
+    height:          PL.cssH,
+    windowWidth:     PL.cssW,
+    windowHeight:    PL.cssH,
+    scrollX:         0,
+    scrollY:         0,
+    imageTimeout:    15000,
+  });
 
-  const isFooter = pnPos.startsWith('footer');
-  const posEnd = pnPos.split('-').pop();
-  const x = posEnd === 'right'
-    ? t.cssWidth - t.marginRight
-    : posEnd === 'center'
-      ? t.cssWidth / 2
-      : t.marginLeft;
-  // Header text baseline ≈ marginTop + 11px
-  // Footer text baseline ≈ (cssHeight - marginBottom - footerHeight) + 12px
-  const y = isFooter
-    ? t.cssHeight - t.marginBottom - t.footerHeight + 12
-    : t.marginTop + 11;
-  const align = posEnd === 'right' ? 'right' : posEnd === 'center' ? 'center' : 'left';
-  return { x, y, align };
+  document.body.removeChild(wrap);
+  return canvas;
 }
-
 function detectScriptLanguage(text) {
   if (!text) return 'ur';
   const stripped = text.replace(/<[^>]*>/g, '').replace(/\s/g, '');
@@ -2139,121 +2168,74 @@ export default function TextToPdfPage() {
     setDragOverIdx(null);
   }
 
-  // ── PDF Download ─────────────────────────────────────────────────
+  // ── PDF Download ──────────────────────────────────────────────────
   async function handleDownload() {
-    console.log('[PDF_EXPORT_REAL_HANDLER_RUNNING]');
-    console.log('[PDF_PAGE_NUMBER_FIX_ACTIVE]');
-    console.log('[PDF_EXPORT_MODE]', 'frontend-per-page-v6-fonts-first');
+    console.log('[PDF v2.0] Export started');
     if (!currentDoc?.blocks?.length) return;
     setGenerating(true); setPdfErr('');
-    let paginationContainer = null;
+    let root = null;
     try {
       const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
         import('html2canvas'),
         import('jspdf'),
       ]);
 
-      // Pagination happens off-screen (left of viewport, no z-index tricks)
-      paginationContainer = document.createElement('div');
-      paginationContainer.style.cssText =
-        `position:fixed;left:-${PDF_PAGE_TEMPLATE.cssWidth + 20}px;top:0;pointer-events:none;width:${PDF_PAGE_TEMPLATE.cssWidth}px;`;
-      document.body.appendChild(paginationContainer);
+      root = document.createElement('div');
+      root.style.cssText = 'position:fixed;left:-9999px;top:0;pointer-events:none;';
+      document.body.appendChild(root);
 
-      // Wait for fonts BEFORE paginating — JNN metrics differ from fallback font,
-      // so block heights measured without fonts loaded cause wrong page breaks.
+      // ① Force-load every font used in this document so block heights
+      //    measured during pagination use the real font metrics (not fallback).
+      const fontsNeeded = new Set([
+        'Jameel Noori Nastaleeq', 'Noto Naskh Arabic',
+        currentDoc.headerFontFamily, currentDoc.footerFontFamily,
+        ...(currentDoc.blocks || []).map(b => b.fontFamily),
+      ].filter(Boolean));
+
+      const warmup = document.createElement('div');
+      warmup.style.cssText = 'position:absolute;opacity:0;left:0;top:0;';
+      warmup.innerHTML = [...fontsNeeded].map((f, idx) =>
+        `<div style="font-family:'${f}',serif;font-size:16px;direction:rtl;position:absolute;top:${idx * 24}px;">بسم اللہ الرحمن الرحیم ابتث</div>`
+      ).join('');
+      root.appendChild(warmup);
       await document.fonts.ready;
-      await new Promise(r => setTimeout(r, 350));
+      await new Promise(r => setTimeout(r, 500)); // extra settle for Nastaleeq shaping
+      root.removeChild(warmup);
 
-      const pages = paginatePDFPages(currentDoc, paginationContainer);
+      console.log(`[PDF v2.0] Fonts loaded: ${[...fontsNeeded].join(', ')}`);
 
-      // Stamp page numbers into decorative header badges (before capture so html2canvas picks them up)
-      const _pnPos = currentDoc.pageNumberPosition || 'header-right';
-      if (currentDoc.headerStyle === 'decorative' && currentDoc.showPageNumber !== false && _pnPos.startsWith('header')) {
-        pages.forEach((pageEl, idx) => {
-          const numEl = pageEl.querySelector('[data-pdf-page-num]');
-          if (numEl) {
-            numEl.textContent = String(idx + 1);
-            console.log(`[PDF_PAGE_NUMBER] page=${idx + 1} x=badge y=badge`);
-          }
-        });
-      }
-      console.log(`[PDF_CONTENT_AREA] startY=${PDF_PAGE_TEMPLATE.marginTop + PDF_PAGE_TEMPLATE.headerHeight + PDF_PAGE_TEMPLATE.headerGap} endY=${PDF_PAGE_TEMPLATE.cssHeight - PDF_PAGE_TEMPLATE.marginBottom - PDF_PAGE_TEMPLATE.footerHeight - PDF_PAGE_TEMPLATE.footerGap}`);
+      // ② Paginate with accurate font metrics
+      root.style.cssText =
+        `position:fixed;left:-${PL.cssW + 20}px;top:0;pointer-events:none;width:${PL.cssW}px;`;
+      const pages = pdfPaginate(currentDoc, root);
+      console.log(`[PDF v2.0] ${pages.length} pages | contentTop=${PL.contentTop} contentH=${PL.contentH}`);
 
-      // Short wait for layout to settle after badge stamping
-      await new Promise(r => setTimeout(r, 100));
+      // ③ Let layout settle
+      await new Promise(r => setTimeout(r, 150));
 
-      const SCALE = 2;
+      // ④ Capture each page and build PDF
       const pdf = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
-      const totalPages = pages.length;
-      const pageNumberSlot = getPDFPageNumberSlot(currentDoc);
-      const pt = PDF_PAGE_TEMPLATE.pdfWidth / PDF_PAGE_TEMPLATE.cssWidth;
-
-      // Each page is captured in its OWN container at viewport origin (0,0).
-      // Putting all pages in one stacked container causes pages 2+ to be
-      // off-viewport, which breaks html2canvas — headers and margins disappear.
-      for (let idx = 0; idx < totalPages; idx++) {
-        const pageEl = pages[idx];
-
-        const captureWrap = document.createElement('div');
-        captureWrap.style.cssText =
-          `position:fixed;left:0;top:0;z-index:-1;pointer-events:none;` +
-          `width:${PDF_PAGE_TEMPLATE.cssWidth}px;overflow:hidden;`;
-        document.body.appendChild(captureWrap);
-        captureWrap.appendChild(pageEl); // move out of paginationContainer
-        console.log(`[PDF_HEADER_BOX] page=${idx + 1} x=${PDF_PAGE_TEMPLATE.marginLeft} y=${PDF_PAGE_TEMPLATE.marginTop} w=${PDF_PAGE_TEMPLATE.cssWidth - PDF_PAGE_TEMPLATE.marginLeft - PDF_PAGE_TEMPLATE.marginRight} h=${PDF_PAGE_TEMPLATE.headerHeight}`);
-
-        const canvas = await html2canvas(pageEl, {
-          scale:        SCALE,
-          useCORS:      true,
-          allowTaint:   false,
-          backgroundColor: '#ffffff',
-          logging:      false,
-          width:        PDF_PAGE_TEMPLATE.cssWidth,
-          height:       PDF_PAGE_TEMPLATE.cssHeight,
-          windowWidth:  PDF_PAGE_TEMPLATE.cssWidth,
-          windowHeight: PDF_PAGE_TEMPLATE.cssHeight,
-          scrollX:      0,
-          scrollY:      0,
-        });
-
-        document.body.removeChild(captureWrap); // also removes pageEl
-
-        if (idx > 0) pdf.addPage();
-        pdf.addImage(
-          canvas.toDataURL('image/jpeg', 0.94), 'JPEG',
-          0, 0, PDF_PAGE_TEMPLATE.pdfWidth, PDF_PAGE_TEMPLATE.pdfHeight
-        );
-        console.log(`[PDF_HEADER_RENDERED] page=${idx + 1}`);
+      for (let i = 0; i < pages.length; i++) {
+        const canvas = await pdfCapturePage(html2canvas, pages[i]);
+        if (i > 0) pdf.addPage();
+        pdf.addImage(canvas.toDataURL('image/jpeg', 0.97), 'JPEG', 0, 0, PL.ptW, PL.ptH);
+        console.log(`[PDF v2.0] Captured page ${i + 1}/${pages.length}`);
       }
 
-      console.log(`[PDF_PAGE_COUNT] ${totalPages}`);
-
-      // Plain digit page numbers (1, 2, 3) on every page via jsPDF overlay
-      if (pageNumberSlot) {
-        pdf.setFontSize(10);
-        pdf.setTextColor(85, 85, 85);
-        for (let p = 1; p <= totalPages; p++) {
-          pdf.setPage(p);
-          pdf.text(String(p), pageNumberSlot.x * pt, pageNumberSlot.y * pt,
-                   { align: pageNumberSlot.align });
-          console.log(`[PDF_PAGE_NUMBER_RENDERED] page=${p} number=${p}`);
-        }
-      }
-
+      // ⑤ Save file
       const fname = (currentDoc.name || 'document')
         .replace(/[^a-zA-Z0-9\s_-]/g, '').trim().replace(/\s+/g, '_') || 'document';
       pdf.save(`${fname}.pdf`);
+      console.log(`[PDF v2.0] Saved: ${fname}.pdf`);
 
     } catch (err) {
-      console.error('[PDF]', err);
+      console.error('[PDF v2.0]', err);
       setPdfErr('PDF generation failed. Please try again.');
     } finally {
-      if (paginationContainer && document.body.contains(paginationContainer))
-        document.body.removeChild(paginationContainer);
+      if (root && document.body.contains(root)) document.body.removeChild(root);
       setGenerating(false);
     }
   }
-
   // ── Preview modal callback ─────────────────────────────────
   function handlePreviewAction(action, data) {
     if (action === 'download') handleDownload();
