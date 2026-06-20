@@ -29,10 +29,8 @@ const PdfPrinter = require('pdfmake/src/printer');
 const cheerio    = require('cheerio');
 const path = require('path');
 const fs   = require('fs');
-const vm   = require('vm');
 
-const FONTS_DIR = path.join(__dirname, '../fonts');
-const CACHE_DIR = path.join(__dirname, '../fonts/_cache');
+const FR = require('./FontRegistry');   // central font registry + resolution
 
 // ─────────────────────────────────────────────────────────────────
 // Utilities
@@ -176,7 +174,7 @@ function patchFontkitGPOS() {
   if (_gposPatched) return;
   try {
     const fk        = require('@foliojs-fork/fontkit');
-    const amiriPath = AMIRI_NORMAL_CANDIDATES.find(fileOk);
+    const amiriPath = FR.getAmiriPath();
     if (!amiriPath) {
       console.warn('[PDF][GPOS] patch deferred — Amiri not found yet');
       return;
@@ -249,314 +247,27 @@ function stripDocHarakat(doc) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// VFS extraction via vm sandbox
-//
-// pdfmake/build/vfs_fonts.js is a UMD module. In Node.js its factory calls
-// require('pdfmake/build/pdfmake') and sets vfs on that object. We can't
-// reliably load pdfmake/build/pdfmake (it's a browser webpack bundle), so
-// instead we run vfs_fonts.js in a vm sandbox and intercept the require to
-// return a plain mock object. The factory then sets mock.vfs = { ... }.
-// This avoids browser globals entirely.
-//
-// Loaded once; result is cached in _vfsData for the process lifetime.
+// Font resolution — delegates to FontRegistry (central source of truth)
 // ─────────────────────────────────────────────────────────────────
 
-let _vfsData = null;
-
-function loadVFS() {
-  if (_vfsData !== null) return _vfsData;
-  try {
-    const vfsPath = require.resolve('pdfmake/build/vfs_fonts');
-    const code    = fs.readFileSync(vfsPath, 'utf8');
-    const mock    = {};
-    vm.runInNewContext(code, {
-      exports: {},
-      module:  { exports: {} },
-      require: (id) => {
-        if (id === 'pdfmake/build/pdfmake') return mock;
-        throw new Error('vfs sandbox blocked: ' + id);
-      },
-    }, { timeout: 15000, filename: 'vfs_fonts.js' });
-    _vfsData = mock.vfs || {};
-    console.log('[PDF][FONT] VFS loaded via vm, font count:', Object.keys(_vfsData).length);
-  } catch (e) {
-    console.error('[PDF][FONT] VFS vm load failed:', e.message);
-    _vfsData = {};
-  }
-  return _vfsData;
-}
-
-function extractFromVFS(vfsKey, destPath) {
-  if (fileOk(destPath)) return destPath;
-  try {
-    const b64 = loadVFS()[vfsKey];
-    if (!b64) { console.error('[PDF][FONT] VFS key missing:', vfsKey); return null; }
-    fs.mkdirSync(path.dirname(destPath), { recursive: true });
-    fs.writeFileSync(destPath, Buffer.from(b64, 'base64'));
-    if (fileOk(destPath)) { console.log('[PDF][FONT] VFS extracted:', vfsKey); return destPath; }
-  } catch (e) {
-    console.error('[PDF][FONT] VFS extract error:', vfsKey, e.message);
-  }
-  return null;
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Comprehensive font registry
-//
-// All TTF files are committed in server/fonts/ — no npm packages needed.
-// Each entry: pdfmake key → { normal, bold, italics, bolditalics }
-// The first path that satisfies fileOk() is used per style.
-// Non-normal styles fall back to normal if not found.
-// If normal is not found the font is omitted (not registered).
-//
-// script:   'arabic'|'urdu'|'latin'  — used to choose text cleaner
-// fallback: pdfmake key to use when this font is not available
-// ─────────────────────────────────────────────────────────────────
-
-function fd(file) { return path.join(FONTS_DIR, file); }
-
-const FONT_REGISTRY = {
-  // ── Arabic-script fonts ──────────────────────────────────────────
-  Amiri: {
-    script: 'arabic', fallback: 'NotoNaskhArabic',
-    normal:      [ fd('Amiri-Regular.ttf')      ],
-    bold:        [ fd('Amiri-Bold.ttf')         ],
-    italics:     [ fd('Amiri-Italic.ttf')       ],
-    bolditalics: [ fd('Amiri-BoldItalic.ttf')   ],
-  },
-  NotoNaskhArabic: {
-    script: 'arabic', fallback: 'Amiri',
-    normal:      [ fd('NotoNaskhArabic-Regular.ttf') ],
-    bold:        [ fd('NotoNaskhArabic-Bold.ttf')    ],
-  },
-  ScheherazadeNew: {
-    script: 'arabic', fallback: 'Amiri',
-    normal:      [ fd('ScheherazadeNew-Regular.ttf') ],
-    bold:        [ fd('ScheherazadeNew-Bold.ttf')    ],
-  },
-  Cairo: {
-    script: 'arabic', fallback: 'NotoNaskhArabic',
-    normal:      [ fd('Cairo-Regular.ttf') ],
-    bold:        [ fd('Cairo-Bold.ttf')    ],
-  },
-  Tajawal: {
-    script: 'arabic', fallback: 'NotoNaskhArabic',
-    normal:      [ fd('Tajawal-Regular.ttf') ],
-    bold:        [ fd('Tajawal-Bold.ttf')    ],
-  },
-  ReemKufi: {
-    script: 'arabic', fallback: 'NotoNaskhArabic',
-    normal:      [ fd('ReemKufi-Regular.ttf') ],
-  },
-  Lateef: {
-    script: 'arabic', fallback: 'Amiri',
-    normal:      [ fd('Lateef-Regular.ttf') ],
-  },
-
-  // ── Urdu-script fonts ────────────────────────────────────────────
-  NotoNastaliqUrdu: {
-    script: 'urdu', fallback: 'Amiri',
-    normal:      [ fd('NotoNastaliqUrdu-Regular.ttf') ],
-    bold:        [ fd('NotoNastaliqUrdu-Bold.ttf')    ],
-  },
-
-  // ── Latin fonts ───────────────────────────────────────────────────
-  Roboto: {
-    script: 'latin', fallback: 'OpenSans',
-    normal:      [ fd('Roboto-Regular.ttf')    ],
-    bold:        [ fd('Roboto-Bold.ttf')       ],
-    italics:     [ fd('Roboto-Italic.ttf')     ],
-    bolditalics: [ fd('Roboto-BoldItalic.ttf') ],
-  },
-  OpenSans: {
-    script: 'latin', fallback: 'Roboto',
-    normal:      [ fd('OpenSans-Regular.ttf')    ],
-    bold:        [ fd('OpenSans-Bold.ttf')       ],
-    italics:     [ fd('OpenSans-Italic.ttf')     ],
-    bolditalics: [ fd('OpenSans-BoldItalic.ttf') ],
-  },
-  Lato: {
-    script: 'latin', fallback: 'Roboto',
-    normal:      [ fd('Lato-Regular.ttf')    ],
-    bold:        [ fd('Lato-Bold.ttf')       ],
-    italics:     [ fd('Lato-Italic.ttf')     ],
-    bolditalics: [ fd('Lato-BoldItalic.ttf') ],
-  },
-  Poppins: {
-    script: 'latin', fallback: 'Roboto',
-    normal:      [ fd('Poppins-Regular.ttf')    ],
-    bold:        [ fd('Poppins-Bold.ttf')       ],
-    italics:     [ fd('Poppins-Italic.ttf')     ],
-    bolditalics: [ fd('Poppins-BoldItalic.ttf') ],
-  },
-  Inter: {
-    script: 'latin', fallback: 'Roboto',
-    normal:      [ fd('Inter-Regular.ttf') ],
-    bold:        [ fd('Inter-Bold.ttf')    ],
-  },
-  Montserrat: {
-    script: 'latin', fallback: 'Roboto',
-    normal:      [ fd('Montserrat-Regular.ttf')    ],
-    bold:        [ fd('Montserrat-Bold.ttf')       ],
-    italics:     [ fd('Montserrat-Italic.ttf')     ],
-    bolditalics: [ fd('Montserrat-BoldItalic.ttf') ],
-  },
-  Merriweather: {
-    script: 'latin', fallback: 'Lora',
-    normal:      [ fd('Merriweather-Regular.ttf')    ],
-    bold:        [ fd('Merriweather-Bold.ttf')       ],
-    italics:     [ fd('Merriweather-Italic.ttf')     ],
-    bolditalics: [ fd('Merriweather-BoldItalic.ttf') ],
-  },
-  Lora: {
-    script: 'latin', fallback: 'Merriweather',
-    normal:      [ fd('Lora-Regular.ttf')    ],
-    bold:        [ fd('Lora-Bold.ttf')       ],
-    italics:     [ fd('Lora-Italic.ttf')     ],
-    bolditalics: [ fd('Lora-BoldItalic.ttf') ],
-  },
-  PlayfairDisplay: {
-    script: 'latin', fallback: 'Merriweather',
-    normal:      [ fd('PlayfairDisplay-Regular.ttf')    ],
-    bold:        [ fd('PlayfairDisplay-Bold.ttf')       ],
-    italics:     [ fd('PlayfairDisplay-Italic.ttf')     ],
-    bolditalics: [ fd('PlayfairDisplay-BoldItalic.ttf') ],
-  },
-  EBGaramond: {
-    script: 'latin', fallback: 'Lora',
-    normal:      [ fd('EBGaramond-Regular.ttf')    ],
-    bold:        [ fd('EBGaramond-Bold.ttf')       ],
-    italics:     [ fd('EBGaramond-Italic.ttf')     ],
-    bolditalics: [ fd('EBGaramond-BoldItalic.ttf') ],
-  },
-};
-
-// ── Editor font name (value from FONT_GROUPS) → pdfmake key ─────
-// System fonts map to nearest available equivalent.
-// "Jameel Noori Nastaleeq" → NotoNastaliqUrdu (no free TTF for JNN).
-const EDITOR_FONT_TO_KEY = {
-  // Arabic
-  'Amiri':              'Amiri',
-  'Noto Naskh Arabic':  'NotoNaskhArabic',
-  'Scheherazade New':   'ScheherazadeNew',
-  'Cairo':              'Cairo',
-  'Tajawal':            'Tajawal',
-  'Reem Kufi':          'ReemKufi',
-  'Lateef':             'Lateef',
-  // Urdu
-  'Noto Nastaliq Urdu':     'NotoNastaliqUrdu',
-  'Jameel Noori Nastaleeq': 'NotoNastaliqUrdu',
-  // Latin (web fonts)
-  'Roboto':            'Roboto',
-  'Open Sans':         'OpenSans',
-  'Lato':              'Lato',
-  'Poppins':           'Poppins',
-  'Inter':             'Inter',
-  'Montserrat':        'Montserrat',
-  'Merriweather':      'Merriweather',
-  'Lora':              'Lora',
-  'Playfair Display':  'PlayfairDisplay',
-  'EB Garamond':       'EBGaramond',
-  // Latin (system font fallbacks — mapped to nearest free equivalent)
-  'Times New Roman':   'Lora',
-  'Georgia':           'Merriweather',
-  'Garamond':          'EBGaramond',
-  'Arial':             'OpenSans',
-  'Verdana':           'OpenSans',
-  'Trebuchet MS':      'OpenSans',
-};
-
-// ── Resolve a single font style from candidate paths ─────────────
-function resolveStyle(candidates) {
-  if (!Array.isArray(candidates)) return null;
-  return candidates.find(fileOk) || null;
-}
-
-// ── Amiri candidates — also used by patchFontkitGPOS ─────────────
-const AMIRI_NORMAL_CANDIDATES = FONT_REGISTRY.Amiri.normal;
-
-// ── Build PdfPrinter font descriptor map ─────────────────────────
-// Resolves all registered fonts. Missing normal = font omitted.
-// Missing bold/italic = falls back to normal (pdfmake accepts this).
-// Returns { available: Set<key>, desc: { [key]: {normal,bold,...} } }
-function buildFontDescriptors() {
-  const desc      = {};
-  const available = new Set();
-
-  for (const [key, def] of Object.entries(FONT_REGISTRY)) {
-    const normal = resolveStyle(def.normal);
-    if (!normal) {
-      console.warn(`[PDF][FONT] ${key}: normal TTF not found — font skipped`);
-      continue;
-    }
-    const bold        = resolveStyle(def.bold)        || normal;
-    const italics     = resolveStyle(def.italics)     || normal;
-    const bolditalics = resolveStyle(def.bolditalics) || bold;
-    desc[key]         = { normal, bold, italics, bolditalics };
-    available.add(key);
-    console.log(`[PDF][FONT] ${key}: ok (${path.basename(normal)})`);
-  }
-
-  // Roboto VFS fallback: extract from pdfmake's bundled VFS if no file found
-  if (!available.has('Roboto')) {
-    const vfsFallbacks = {
-      normal:      extractFromVFS('Roboto-Regular.ttf',      path.join(CACHE_DIR,'Roboto-Regular.ttf')),
-      bold:        extractFromVFS('Roboto-Medium.ttf',       path.join(CACHE_DIR,'Roboto-Medium.ttf')),
-      italics:     extractFromVFS('Roboto-Italic.ttf',       path.join(CACHE_DIR,'Roboto-Italic.ttf')),
-      bolditalics: extractFromVFS('Roboto-MediumItalic.ttf', path.join(CACHE_DIR,'Roboto-MediumItalic.ttf')),
-    };
-    if (vfsFallbacks.normal) {
-      desc.Roboto = {
-        normal:      vfsFallbacks.normal,
-        bold:        vfsFallbacks.bold        || vfsFallbacks.normal,
-        italics:     vfsFallbacks.italics     || vfsFallbacks.normal,
-        bolditalics: vfsFallbacks.bolditalics || vfsFallbacks.bold || vfsFallbacks.normal,
-      };
-      available.add('Roboto');
-      console.log('[PDF][FONT] Roboto: ok via VFS');
-    }
-  }
-
-  return { desc, available };
-}
-
-// ── Resolve editor font name → registered pdfmake key ────────────
-// Returns the key if available, or walks the fallback chain.
-// If all fallbacks fail, returns the script-appropriate last-resort.
+// Resolve editor font name → available pdfmake key.
+// Uses FontRegistry.resolveEditorFont (EDITOR_FONT_TO_KEY + fallback chain).
+// If nothing found, falls back to a script-appropriate last resort so the
+// PDF always generates rather than crashing.
 function resolveFont(editorName, available, script) {
-  const mapped = EDITOR_FONT_TO_KEY[editorName] || editorName;
-
-  // Walk fallback chain
-  let key = mapped;
-  const seen = new Set();
-  while (key && !seen.has(key)) {
-    if (available.has(key)) return key;
-    seen.add(key);
-    key = FONT_REGISTRY[key]?.fallback;
-  }
-
-  // Last resort by script
-  if (script === 'latin') {
-    for (const k of ['Roboto','OpenSans','Lato']) {
-      if (available.has(k)) return k;
-    }
-  }
-  if (script === 'urdu') {
-    for (const k of ['NotoNastaliqUrdu','Amiri']) {
-      if (available.has(k)) return k;
-    }
-  }
-  // arabic or unknown
-  for (const k of ['NotoNaskhArabic','Amiri','ScheherazadeNew']) {
-    if (available.has(k)) return k;
-  }
-  // Absolute last resort — pick anything
+  const k = FR.resolveEditorFont(editorName, available);
+  if (k) return k;
+  // Last resort — only reached when the selected font AND its entire
+  // fallback chain are missing from server/fonts/
+  if (script === 'urdu')   { for (const x of ['NotoNastaliqUrdu','Amiri'])                    if (available.has(x)) return x; }
+  if (script === 'arabic') { for (const x of ['NotoNaskhArabic','Amiri','ScheherazadeNew'])   if (available.has(x)) return x; }
+  if (script === 'latin')  { for (const x of ['Roboto','OpenSans','Lato','Poppins','Inter']) if (available.has(x)) return x; }
   return [...available][0] || 'Roboto';
 }
 
-// ── Is this a RTL (Arabic/Urdu) font key? ────────────────────────
 function isRtlFont(key) {
-  return FONT_REGISTRY[key]?.script === 'arabic' || FONT_REGISTRY[key]?.script === 'urdu';
+  const s = FR.scriptOf(key);
+  return s === 'arabic' || s === 'urdu';
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -612,21 +323,14 @@ function pxToPt(cssVal) {
   return m ? Math.round(parseFloat(m[1]) * 0.75) : 0;
 }
 
-// Resolve CSS font-family string → registered pdfmake key using the
-// same name → key mapping as the editor.
+// Resolve CSS font-family string → registered pdfmake key.
+// Parses the first name from a CSS font-family list, then delegates to
+// FontRegistry for EDITOR_FONT_TO_KEY lookup + fallback chain.
 function resolveInlineFont(cssFontFamily, available) {
   if (!cssFontFamily) return null;
   const name = cssFontFamily.replace(/^['"]|['"].*$/g, '').split(',')[0].trim();
   if (!name) return null;
-  const startKey = EDITOR_FONT_TO_KEY[name] || name;
-  let k = startKey;
-  const seen = new Set();
-  while (k && !seen.has(k)) {
-    if (available.has(k)) return k;
-    seen.add(k);
-    k = FONT_REGISTRY[k]?.fallback;
-  }
-  return null;
+  return FR.resolveEditorFont(name, available);
 }
 
 // Parse rich contentEditable HTML → pdfmake inline text array.
@@ -885,24 +589,34 @@ function renderFreeText(block, fctx) {
   const dir    = safeStr(block.direction) || 'rtl';
   const isLtr  = dir === 'ltr';
 
-  // Resolve block-level font from block.fontFamily
   const editorFont = safeStr(block.fontFamily);
-  const script     = isLtr ? 'latin' : 'arabic';
-  const fontKey    = editorFont ? fctx.res(editorFont, script) : (isLtr ? fctx.LF : fctx.NAF);
 
-  // Editor preview wraps content at font-size:16px (12pt)
-  const defaultPt = 12;
+  // Detect script from the user-selected font so last-resort picks the
+  // right script group if the font is somehow missing.
+  let script;
+  if (isLtr) {
+    script = 'latin';
+  } else if (editorFont) {
+    const key = FR.EDITOR_FONT_TO_KEY[editorFont] || editorFont;
+    script = FR.scriptOf(key) || 'urdu';
+  } else {
+    script = 'urdu'; // matches preview default: 'Jameel Noori Nastaleeq'
+  }
 
-  // Parse rich HTML — inline bold/italic/font/size/color are preserved
+  // Resolve block font. Preview default for RTL is 'Jameel Noori Nastaleeq'
+  // = NotoNastaliqUrdu (fctx.NUF). NOT Noto Naskh Arabic (fctx.NAF).
+  const fontKey = editorFont
+    ? fctx.res(editorFont, script)
+    : (isLtr ? fctx.LF : fctx.NUF);
+
+  // Preview hardcodes font-size: 16px (= 12pt). Per-character size changes
+  // are stored as inline <span style="font-size:..."> inside block.content.
   const inlines = htmlToInlines(safeStr(block.content), {
-    font:      fontKey,
-    fontSize:  defaultPt,
-    available: fctx.available,
+    font: fontKey, fontSize: 12, available: fctx.available,
   });
 
   if (!inlines.length) return null;
 
-  // Read block-level layout from saved properties (set by FreeTextEditor.handleSave)
   const lineHeight = Math.max(0.8, Math.min(5.0,
     parseFloat(block.lineHeight) || (isLtr ? 1.6 : 2.0)
   ));
@@ -1051,7 +765,7 @@ async function generatePDF(doc) {
   // Layer 1: patch GPOSProcessor.prototype.getAnchor before any font opens.
   patchFontkitGPOS();
 
-  const fontData = buildFontDescriptors();
+  const fontData = FR.getFontData();          // cached — loaded once at startup
   const { available } = fontData;
 
   // Need at least one Arabic font and one Latin font to render the document.
