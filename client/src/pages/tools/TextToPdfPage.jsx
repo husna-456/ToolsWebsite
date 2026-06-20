@@ -1981,6 +1981,9 @@ export default function TextToPdfPage() {
   // captures it with html2canvas at 2× scale, and pages it into a jsPDF PDF.
   // Page numbers are added by jsPDF on every page — NOT embedded in the image.
   async function handleDownload() {
+    console.log('[PDF_EXPORT_REAL_HANDLER_RUNNING]');
+    console.log('[PDF_PAGE_NUMBER_FIX_ACTIVE]');
+    console.log('[PDF_EXPORT_MODE]', 'frontend-html2canvas-jspdf');
     if (!currentDoc?.blocks?.length) return;
     setGenerating(true); setPdfErr('');
     let container = null;
