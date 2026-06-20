@@ -26,6 +26,7 @@
  */
 
 const PdfPrinter = require('pdfmake/src/printer');
+const cheerio    = require('cheerio');
 const path = require('path');
 const fs   = require('fs');
 const vm   = require('vm');
@@ -559,41 +560,257 @@ function isRtlFont(key) {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// CSS / HTML parsing utilities
+// Converts rich contentEditable innerHTML → pdfmake inline arrays
+// preserving bold, italic, underline, font-family, font-size, color.
+// ─────────────────────────────────────────────────────────────────
+
+function cssColorToHex(color) {
+  if (!color) return null;
+  const c = color.trim();
+  if (c === 'transparent' || c === 'inherit' || c === 'initial') return null;
+  if (c.startsWith('#')) {
+    return c.length === 4
+      ? '#' + c[1]+c[1]+c[2]+c[2]+c[3]+c[3]
+      : c.slice(0, 7);
+  }
+  const m = c.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (m) return '#' + [m[1],m[2],m[3]].map(n => parseInt(n).toString(16).padStart(2,'0')).join('');
+  return null;
+}
+
+function cssSizeToPt(sizeStr) {
+  if (!sizeStr) return null;
+  const m = sizeStr.trim().match(/^([\d.]+)\s*(px|pt|em|rem)?$/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (isNaN(n) || n <= 0) return null;
+  const unit = (m[2] || 'px').toLowerCase();
+  if (unit === 'pt')  return n;
+  if (unit === 'px')  return n * 0.75;         // 96 dpi: 1pt = 4/3px
+  if (unit === 'em' || unit === 'rem') return n * 12;
+  return n;
+}
+
+function parseCssDecls(styleStr) {
+  const obj = {};
+  if (!styleStr) return obj;
+  for (const decl of styleStr.split(';')) {
+    const i = decl.indexOf(':');
+    if (i < 0) continue;
+    const k = decl.slice(0, i).trim().toLowerCase();
+    const v = decl.slice(i + 1).trim();
+    if (k && v) obj[k] = v;
+  }
+  return obj;
+}
+
+// Convert CSS px margin value → pdfmake points
+function pxToPt(cssVal) {
+  if (!cssVal) return 0;
+  const m = String(cssVal).match(/^([\d.]+)\s*px$/i);
+  return m ? Math.round(parseFloat(m[1]) * 0.75) : 0;
+}
+
+// Resolve CSS font-family string → registered pdfmake key using the
+// same name → key mapping as the editor.
+function resolveInlineFont(cssFontFamily, available) {
+  if (!cssFontFamily) return null;
+  const name = cssFontFamily.replace(/^['"]|['"].*$/g, '').split(',')[0].trim();
+  if (!name) return null;
+  const startKey = EDITOR_FONT_TO_KEY[name] || name;
+  let k = startKey;
+  const seen = new Set();
+  while (k && !seen.has(k)) {
+    if (available.has(k)) return k;
+    seen.add(k);
+    k = FONT_REGISTRY[k]?.fallback;
+  }
+  return null;
+}
+
+// Parse rich contentEditable HTML → pdfmake inline text array.
+// Preserves: bold, italic, underline, strikethrough, font-family,
+// font-size, color, background from element tags and inline styles.
+//
+// base = { font, fontSize, available, bold?, italics?, ... }
+function htmlToInlines(html, base) {
+  if (!html || !html.trim()) return [];
+
+  const $ = cheerio.load(`<body>${html}</body>`, { decodeEntities: false });
+  const result = [];
+
+  const BLOCK_TAGS = new Set(['div','p','h1','h2','h3','h4','h5','h6',
+                               'blockquote','pre','li','td','th','tr','table']);
+
+  function pushText(raw, styles) {
+    if (!raw) return;
+    let text = raw
+      .replace(/[​‌‍﻿]/g, '')  // zero-width chars
+      .replace(/[\uD800-\uDFFF]/g, '');             // loose surrogates
+    // Remove supplementary plane chars (emoji etc.) that many fonts lack
+    try { text = text.replace(/[\u{10000}-\u{10FFFF}]/gu, ''); } catch (_) {}
+    if (!text) return;
+    const inline = { text };
+    if (styles.font)       inline.font       = styles.font;
+    if (styles.fontSize)   inline.fontSize   = styles.fontSize;
+    if (styles.bold)       inline.bold       = true;
+    if (styles.italics)    inline.italics    = true;
+    if (styles.color)      inline.color      = styles.color;
+    if (styles.background) inline.background = styles.background;
+    if (styles.decoration) inline.decoration = styles.decoration;
+    result.push(inline);
+  }
+
+  function walk(node, inh) {
+    if (node.type === 'text') { pushText(node.data, inh); return; }
+    if (node.type !== 'tag') return;
+
+    const tag = node.name.toLowerCase();
+    if (tag === 'style' || tag === 'script') return;
+    if (tag === 'br') { result.push({ text: '\n' }); return; }
+
+    const next = { ...inh };
+
+    // Semantic formatting tags
+    if (tag === 'b' || tag === 'strong')                  next.bold       = true;
+    if (tag === 'i' || tag === 'em')                      next.italics    = true;
+    if (tag === 'u')                                       next.decoration = 'underline';
+    if (tag === 's' || tag === 'del' || tag === 'strike') next.decoration = 'lineThrough';
+
+    // <font face="..."> produced by document.execCommand('fontName', …)
+    if (tag === 'font') {
+      const face = $(node).attr('face');
+      if (face) {
+        const k = resolveInlineFont(face, inh.available);
+        if (k) next.font = k;
+      }
+      const fc = $(node).attr('color');
+      if (fc) { const hex = cssColorToHex(fc); if (hex) next.color = hex; }
+    }
+
+    // Inline style attribute
+    const styleAttr = $(node).attr('style');
+    if (styleAttr) {
+      const css = parseCssDecls(styleAttr);
+      if (css['font-family']) {
+        const k = resolveInlineFont(css['font-family'], inh.available);
+        if (k) next.font = k;
+      }
+      if (css['font-size']) {
+        const pt = cssSizeToPt(css['font-size']);
+        if (pt && pt >= 4) next.fontSize = Math.max(4, Math.min(96, pt));
+      }
+      if (css['font-weight']) {
+        const fw = css['font-weight'];
+        if (fw === 'bold' || fw === 'bolder' || Number(fw) >= 600) next.bold = true;
+        else if (fw === 'normal' || fw === 'lighter' || Number(fw) <= 400) delete next.bold;
+      }
+      if (css['font-style'] === 'italic' || css['font-style'] === 'oblique') next.italics = true;
+      const td = css['text-decoration'];
+      if (td) {
+        if (td.includes('underline'))    next.decoration = 'underline';
+        if (td.includes('line-through')) next.decoration = 'lineThrough';
+        if (td === 'none')               delete next.decoration;
+      }
+      if (css['color']) {
+        const hex = cssColorToHex(css['color']);
+        if (hex && hex.toLowerCase() !== '#000000') next.color = hex;
+      }
+      if (css['background-color']) {
+        const hex = cssColorToHex(css['background-color']);
+        if (hex && hex.toLowerCase() !== '#ffffff') next.background = hex;
+      }
+    }
+
+    const isBlock = BLOCK_TAGS.has(tag);
+    const startIdx = result.length;
+
+    // Paragraph break before block-level element
+    if (isBlock && result.length > 0) {
+      const prev = result[result.length - 1];
+      if (prev && typeof prev.text === 'string' && !prev.text.endsWith('\n')) {
+        result.push({ text: '\n' });
+      }
+    }
+
+    for (const child of (node.children || [])) walk(child, next);
+
+    // Paragraph break after block-level element
+    if (isBlock && result.length > startIdx) {
+      const last = result[result.length - 1];
+      if (last && typeof last.text === 'string' && !last.text.endsWith('\n')) {
+        result.push({ text: '\n' });
+      }
+    }
+  }
+
+  $('body').contents().each((_, node) => walk(node, base));
+
+  // Trim trailing newline tokens
+  while (result.length > 0 && result[result.length - 1].text === '\n') result.pop();
+
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Block renderers
-//
-// All renderers receive a font context (fctx):
-//   fctx.NAF  — default Arabic pdfmake key (NotoNaskhArabic or fallback)
-//   fctx.NUF  — default Urdu pdfmake key   (NotoNastaliqUrdu or fallback)
-//   fctx.LF   — default Latin pdfmake key  (Roboto or fallback)
-//   fctx.AF   — Amiri key (for Amiri-specific content if available)
-//   fctx.res  — resolveFont(editorName, script) → pdfmake key
-//
-// Structured blocks (chapter_heading, fiqh, verse) match frontend defaults:
-//   Arabic fields  → NAF (NotoNaskhArabic, same as editor)
-//   Urdu fields    → NUF (NotoNastaliqUrdu ≈ Jameel Noori Nastaleeq shape)
+// Each reads the block's rich HTML fields, converts them to pdfmake
+// inline arrays, and matches the preview sizes shown in the editor.
 // ─────────────────────────────────────────────────────────────────
 
 function renderChapterHeading(block, fctx) {
-  const nodes        = [];
-  const arabicTitle  = cleanForAmiri(block.arabicTitle);
-  const urduSubtitle = cleanForAmiri(block.urduSubtitle);
-  if (arabicTitle)  nodes.push({ text: arabicTitle,  font: fctx.NAF, fontSize: 22, bold: true, alignment: 'center', margin: [0, 20, 0, urduSubtitle ? 4 : 14] });
-  if (urduSubtitle) nodes.push({ text: urduSubtitle, font: fctx.NUF, fontSize: 17, bold: true, alignment: 'center', margin: [0, 0, 0, 14] });
+  const nodes = [];
+
+  // Editor preview: arabicTitle at 27px (≈20pt), Urdu at 22px (≈17pt)
+  const arabicInlines = htmlToInlines(safeStr(block.arabicTitle), {
+    font: fctx.NAF, fontSize: 20, bold: true, available: fctx.available,
+  });
+  if (arabicInlines.length) {
+    nodes.push({
+      text: arabicInlines, alignment: 'center', lineHeight: 1.6,
+      margin: [0, 20, 0, 4],
+    });
+  }
+
+  const urduInlines = htmlToInlines(safeStr(block.urduSubtitle), {
+    font: fctx.NUF, fontSize: 17, bold: true, available: fctx.available,
+  });
+  if (urduInlines.length) {
+    nodes.push({
+      text: urduInlines, alignment: 'center', lineHeight: 1.8,
+      margin: [0, 0, 0, 14],
+    });
+  }
+
+  if (!nodes.length) return null;
+  if (nodes.length === 1) nodes[0].margin[3] = 14;
   return nodes;
 }
 
 function renderHadith(block, fctx) {
-  // Arabic column: honour block.arabicFont (user-selected in Hadith editor)
   const arabicKey = block.arabicFont ? fctx.res(block.arabicFont, 'arabic') : fctx.NAF;
-  const num    = cleanForAmiri(block.number);
-  const arabic = cleanForAmiri((num ? `﴿${num}﴾ ` : '') + safeStr(block.arabicMatn));
-  const urdu   = cleanForAmiri(block.urduTranslation);
+
+  // Editor preview: Arabic/Urdu at 18px (≈14pt), lineHeight 1.8/2.0
+  const numStr = safeStr(block.number).trim();
+  const matnInlines = htmlToInlines(safeStr(block.arabicMatn), {
+    font: arabicKey, fontSize: 14, available: fctx.available,
+  });
+  const arabicInlines = numStr
+    ? [{ text: `﴿${numStr}﴾ `, font: arabicKey, fontSize: 14 }, ...matnInlines]
+    : matnInlines;
+
+  const urduInlines = htmlToInlines(safeStr(block.urduTranslation), {
+    font: fctx.NUF, fontSize: 14, available: fctx.available,
+  });
+
+  const EMPTY = [{ text: ' ' }];
   return {
     table: {
       widths: ['50%', '50%'],
       body: [[
-        { text: urdu.trim(),   font: fctx.NUF,  fontSize: 13, alignment: 'right', margin: [4, 4, 8, 8] },
-        { text: arabic.trim(), font: arabicKey,  fontSize: 13, alignment: 'right', margin: [8, 4, 4, 8] },
+        { text: urduInlines.length   ? urduInlines   : EMPTY, font: fctx.NUF,  fontSize: 14, alignment: 'right', lineHeight: 2.0, margin: [4, 4, 8, 8] },
+        { text: arabicInlines.length ? arabicInlines : EMPTY, font: arabicKey, fontSize: 14, alignment: 'right', lineHeight: 1.9, margin: [8, 4, 4, 8] },
       ]],
     },
     layout: 'noBorders',
@@ -602,50 +819,101 @@ function renderHadith(block, fctx) {
 }
 
 function renderFiqh(block, fctx) {
-  const heading = cleanForAmiri(block.heading) || 'فقہ الحدیث:';
-  const nodes   = [{ text: heading, font: fctx.NAF, fontSize: 15, bold: true, alignment: 'right', margin: [0, 8, 0, 4] }];
-  const points  = Array.isArray(block.points) ? block.points : [];
+  // Editor preview: heading at 20px (≈15pt), points at 17px (≈13pt)
+  const headingInlines = htmlToInlines(safeStr(block.heading || 'فقہ الحدیث:'), {
+    font: fctx.NAF, fontSize: 15, bold: true, available: fctx.available,
+  });
+  const nodes = [{
+    text: headingInlines.length
+      ? headingInlines
+      : [{ text: 'فقہ الحدیث:', font: fctx.NAF, fontSize: 15, bold: true }],
+    alignment: 'right', lineHeight: 1.6, margin: [0, 8, 0, 4],
+  }];
+
+  const points = Array.isArray(block.points) ? block.points : [];
   points.forEach((pt, i) => {
-    nodes.push({ text: `(${i + 1}) ` + cleanForAmiri(pt), font: fctx.NUF, fontSize: 13, alignment: 'right', margin: [0, 2, 0, 2] });
+    const ptInlines = htmlToInlines(safeStr(pt), {
+      font: fctx.NUF, fontSize: 13, available: fctx.available,
+    });
+    nodes.push({
+      text: [
+        { text: `(${i + 1}) `, font: fctx.NUF, fontSize: 13 },
+        ...(ptInlines.length ? ptInlines : [{ text: ' ', font: fctx.NUF }]),
+      ],
+      alignment: 'right', lineHeight: 2.0, margin: [0, 2, 0, 2],
+    });
   });
   return nodes;
 }
 
 function renderReference(block, fctx) {
-  const content = cleanForAmiri(stripHtml(block.content));
-  if (!content) return [];
+  // Editor preview: 13px (≈10pt)
+  const inlines = htmlToInlines(safeStr(block.content), {
+    font: fctx.NAF, fontSize: 10, available: fctx.available,
+  });
+  if (!inlines.length) return [];
   return [
     { canvas: [{ type: 'line', x1: 330, y1: 0, x2: 481, y2: 0, lineWidth: 0.8, lineColor: '#555' }], margin: [0, 8, 0, 3] },
-    { text: content, font: fctx.NAF, fontSize: 10, alignment: 'right', color: '#333', margin: [0, 0, 0, 6] },
+    { text: inlines, alignment: 'right', lineHeight: 1.5, color: '#333', margin: [0, 0, 0, 6] },
   ];
 }
 
 function renderVerse(block, fctx) {
-  const nodes      = [];
-  const arabicText = cleanForAmiri(block.arabicText);
-  const urduText   = cleanForAmiri(block.urduText);
-  if (arabicText) nodes.push({ text: arabicText, font: fctx.NAF, fontSize: 14, alignment: 'center', margin: [0, 10, 0, urduText ? 4 : 10] });
-  if (urduText)   nodes.push({ text: urduText,   font: fctx.NUF, fontSize: 14, alignment: 'center', margin: [0, 0, 0, 10] });
+  // Editor preview: 18px (≈14pt)
+  const nodes = [];
+
+  const arabicInlines = htmlToInlines(safeStr(block.arabicText), {
+    font: fctx.NAF, fontSize: 14, available: fctx.available,
+  });
+  if (arabicInlines.length) {
+    nodes.push({ text: arabicInlines, alignment: 'center', lineHeight: 1.8, margin: [0, 10, 0, 4] });
+  }
+
+  const urduInlines = htmlToInlines(safeStr(block.urduText), {
+    font: fctx.NUF, fontSize: 14, available: fctx.available,
+  });
+  if (urduInlines.length) {
+    nodes.push({ text: urduInlines, alignment: 'center', lineHeight: 2.0, margin: [0, 0, 0, 10] });
+  }
+
+  if (!nodes.length) return null;
+  if (nodes.length === 1) nodes[0].margin = [0, 10, 0, 10];
   return nodes;
 }
 
 function renderFreeText(block, fctx) {
-  const dir       = safeStr(block.direction) || 'rtl';
-  const isLtr     = dir === 'ltr';
-  const raw       = stripHtml(block.content);
-  // Resolve per-block font; fall back to NAF (RTL) or LF (LTR)
+  const dir    = safeStr(block.direction) || 'rtl';
+  const isLtr  = dir === 'ltr';
+
+  // Resolve block-level font from block.fontFamily
   const editorFont = safeStr(block.fontFamily);
   const script     = isLtr ? 'latin' : 'arabic';
-  const fontKey    = editorFont ? fctx.res(editorFont, script)
-                                : (isLtr ? fctx.LF : fctx.NAF);
-  const content    = isRtlFont(fontKey) ? cleanForAmiri(raw) : cleanForRoboto(raw);
-  const size       = Math.max(8, Math.min(48, Number(block.fontSize) || 13));
-  return {
-    text:      content,
+  const fontKey    = editorFont ? fctx.res(editorFont, script) : (isLtr ? fctx.LF : fctx.NAF);
+
+  // Editor preview wraps content at font-size:16px (12pt)
+  const defaultPt = 12;
+
+  // Parse rich HTML — inline bold/italic/font/size/color are preserved
+  const inlines = htmlToInlines(safeStr(block.content), {
     font:      fontKey,
-    fontSize:  size,
-    alignment: pdfAlign(safeStr(block.textAlign), dir),
-    margin:    [0, 4, 0, 4],
+    fontSize:  defaultPt,
+    available: fctx.available,
+  });
+
+  if (!inlines.length) return null;
+
+  // Read block-level layout from saved properties (set by FreeTextEditor.handleSave)
+  const lineHeight = Math.max(0.8, Math.min(5.0,
+    parseFloat(block.lineHeight) || (isLtr ? 1.6 : 2.0)
+  ));
+  const mt = pxToPt(block.marginTop)    || 4;
+  const mb = pxToPt(block.marginBottom) || 4;
+
+  return {
+    text:       inlines,
+    alignment:  pdfAlign(safeStr(block.textAlign), dir),
+    lineHeight: lineHeight,
+    margin:     [0, mt, 0, mb],
   };
 }
 
@@ -683,7 +951,7 @@ function buildContent(blocks, fctx) {
 function makeHeader(doc, fctx) {
   const hFont = fctx.res(safeStr(doc.headerFontFamily) || 'Noto Naskh Arabic', 'arabic');
   const hSize = Math.max(7, Math.min(18, Number(doc.headerFontSize) || 9));
-  const name  = cleanForAmiri(stripHtml(doc.headerRight || doc.name || ''));
+  const name  = stripHtml(doc.headerRight || doc.name || '');
   const pos   = doc.showPageNumber !== false
     ? (safeStr(doc.pageNumberPosition) || 'header-right')
     : 'none';
@@ -707,7 +975,7 @@ function makeFooter(doc, fctx) {
     ? (safeStr(doc.pageNumberPosition) || 'header-right')
     : 'none';
   const hairline = doc.footerHairline !== false;
-  const center   = cleanForAmiri(stripHtml(doc.footerCenter || ''));
+  const center   = stripHtml(doc.footerCenter || '');
   return (pg) => {
     try {
       const ct    = pos === 'footer-center' ? String(pg) : center;
