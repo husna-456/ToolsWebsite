@@ -14,6 +14,21 @@ import api from '@/services/api';
 // ── Constants ───────────────────────────────────────────────────
 const LS_KEY = 'htbk_docs_v3';
 
+const PDF_PAGE_TEMPLATE = {
+  cssWidth: 794,
+  cssHeight: 1123,
+  pdfWidth: 595.28,
+  pdfHeight: 841.89,
+  marginTop: 40,
+  marginRight: 76,
+  marginBottom: 40,
+  marginLeft: 76,
+  headerHeight: 34,
+  headerGap: 16,
+  footerGap: 24,
+  footerHeight: 24,
+};
+
 // Expanded Google Fonts URL — English, Urdu, and Arabic professional fonts
 const FONTS_URL =
   'https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;700' +
@@ -343,6 +358,143 @@ function buildA4PageHTML(doc) {
 }
 
 // ── Language detection ──────────────────────────────────────────
+function buildPDFHeaderHTML(doc) {
+  const pnPos  = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
+  const hRight = pnPos === 'header-right'  ? '' : (doc.headerRight  || '');
+  const hCtr   = pnPos === 'header-center' ? '' : (doc.headerCenter || doc.name || '');
+  const hLeft  = pnPos === 'header-left'   ? '' : (doc.headerLeft   || '');
+  const hff    = `'${doc.headerFontFamily || 'Noto Naskh Arabic'}',serif`;
+  const hfs    = doc.headerFontSize || 10;
+
+  return doc.headerStyle === 'decorative'
+    ? decorativeHeaderHTML(doc)
+    : `<div style="display:flex;justify-content:space-between;font-family:${hff};font-size:${hfs}px;color:#555;direction:rtl;margin-bottom:16px;padding-bottom:6px;"><span>${hRight}</span><span>${hCtr}</span><span>${hLeft}</span></div>`;
+}
+
+function buildPDFFooterHTML(doc) {
+  const pnPos  = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
+  const fRight = pnPos === 'footer-right'  ? '' : (doc.footerRight  || '');
+  const fCtr   = pnPos === 'footer-center' ? '' : (doc.footerCenter || '');
+  const fLeft  = pnPos === 'footer-left'   ? '' : (doc.footerLeft   || '');
+  const fff    = `'${doc.footerFontFamily || 'Noto Naskh Arabic'}',serif`;
+  const ffs    = doc.footerFontSize || 9;
+
+  return (
+    `<div>` +
+    (doc.footerHairline !== false ? `<div style="width:100%;height:0.5px;background:#000;margin-bottom:4px;"></div>` : '') +
+    `<div style="display:flex;justify-content:space-between;font-family:${fff};font-size:${ffs}px;color:#555;direction:rtl;"><span>${fRight}</span><span>${fCtr}</span><span>${fLeft}</span></div>` +
+    `</div>`
+  );
+}
+
+function buildPDFPageShellHTML(doc) {
+  const t = PDF_PAGE_TEMPLATE;
+  return (
+    `<div data-pdf-page style="background:white;width:${t.cssWidth}px;height:${t.cssHeight}px;box-sizing:border-box;position:relative;overflow:hidden;">` +
+    `<div data-pdf-header style="position:absolute;left:${t.marginLeft}px;right:${t.marginRight}px;top:${t.marginTop}px;height:${t.headerHeight}px;box-sizing:border-box;">${buildPDFHeaderHTML(doc)}</div>` +
+    `<div data-pdf-content style="position:absolute;left:${t.marginLeft}px;right:${t.marginRight}px;top:${t.marginTop + t.headerHeight + t.headerGap}px;bottom:${t.marginBottom + t.footerHeight + t.footerGap}px;box-sizing:border-box;overflow:hidden;"></div>` +
+    `<div data-pdf-footer style="position:absolute;left:${t.marginLeft}px;right:${t.marginRight}px;bottom:${t.marginBottom}px;height:${t.footerHeight}px;box-sizing:border-box;">${buildPDFFooterHTML(doc)}</div>` +
+    `</div>`
+  );
+}
+
+function buildPDFBlockGroupsHTML(blocks) {
+  const parts = [];
+  let i = 0;
+  while (i < blocks.length) {
+    const b = blocks[i];
+    if (b.type === 'hadith') {
+      i++;
+      let fiqhHTML = '';
+      while (i < blocks.length && blocks[i].type === 'fiqh') { fiqhHTML += renderFiqhHTML(blocks[i]); i++; }
+      let refHTML = '';
+      if (i < blocks.length && blocks[i].type === 'reference') { refHTML = renderReferenceHTML(blocks[i]); i++; }
+      parts.push(
+        `<div data-pdf-block style="margin-top:22px;margin-bottom:0;break-inside:avoid;page-break-inside:avoid;">` +
+        `<div style="break-inside:avoid;page-break-inside:avoid;">${renderHadithTableHTML(b)}</div>` +
+        (fiqhHTML ? `<div style="break-before:avoid;page-break-before:avoid;">${fiqhHTML}</div>` : '') +
+        (refHTML  ? `<div style="break-before:avoid;page-break-before:avoid;">${refHTML}</div>`  : '') +
+        `</div>`
+      );
+      continue;
+    }
+    parts.push(`<div data-pdf-block style="break-inside:avoid;page-break-inside:avoid;">${renderBlockHTML(b)}</div>`);
+    i++;
+  }
+  return parts.join('\n');
+}
+
+function paginatePDFPages(doc, container) {
+  const staging = document.createElement('div');
+  staging.style.cssText = `position:absolute;left:-99999px;top:0;width:${PDF_PAGE_TEMPLATE.cssWidth - PDF_PAGE_TEMPLATE.marginLeft - PDF_PAGE_TEMPLATE.marginRight}px;visibility:hidden;`;
+  staging.innerHTML = buildPDFBlockGroupsHTML(doc.blocks || []);
+  container.appendChild(staging);
+
+  const pages = [];
+  const makePage = () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = buildPDFPageShellHTML(doc);
+    const page = wrap.firstElementChild;
+    container.appendChild(page);
+    pages.push(page);
+    console.log(`[PDF_HEADER_RENDERED] page=${pages.length}`);
+    return page.querySelector('[data-pdf-content]');
+  };
+
+  let content = makePage();
+  while (staging.firstElementChild) {
+    const node = staging.firstElementChild;
+    content.appendChild(node);
+    if (content.scrollHeight > content.clientHeight + 1) {
+      content.removeChild(node);
+      if (!content.children.length) {
+        content.appendChild(node);
+        console.warn(`[PDF_BLOCK_OVERFLOW] page=${pages.length}`);
+        content = makePage();
+      } else {
+        content = makePage();
+        content.appendChild(node);
+      }
+    }
+  }
+
+  if (staging.parentNode) staging.parentNode.removeChild(staging);
+  if (pages.length > 1) {
+    const lastContent = pages[pages.length - 1].querySelector('[data-pdf-content]');
+    if (lastContent && !lastContent.children.length) {
+      container.removeChild(pages.pop());
+    }
+  }
+  return pages;
+}
+
+function getPDFPageNumberSlot(doc) {
+  const t = PDF_PAGE_TEMPLATE;
+  const pnPos = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
+  if (pnPos === 'none') return null;
+
+  if (doc.headerStyle === 'decorative' && pnPos.startsWith('header')) {
+    // Badge total width ≈ 2(border) + 20(padding) + 28(min-width) = 50px
+    // Badge center x = marginLeft + 25; center y = marginTop + (headerHeight/2)
+    return { x: t.marginLeft + 25, y: t.marginTop + Math.round(t.headerHeight / 2), align: 'center' };
+  }
+
+  const isFooter = pnPos.startsWith('footer');
+  const posEnd = pnPos.split('-').pop();
+  const x = posEnd === 'right'
+    ? t.cssWidth - t.marginRight
+    : posEnd === 'center'
+      ? t.cssWidth / 2
+      : t.marginLeft;
+  // Header text baseline ≈ marginTop + 11px
+  // Footer text baseline ≈ (cssHeight - marginBottom - footerHeight) + 12px
+  const y = isFooter
+    ? t.cssHeight - t.marginBottom - t.footerHeight + 12
+    : t.marginTop + 11;
+  const align = posEnd === 'right' ? 'right' : posEnd === 'center' ? 'center' : 'left';
+  return { x, y, align };
+}
+
 function detectScriptLanguage(text) {
   if (!text) return 'ur';
   const stripped = text.replace(/<[^>]*>/g, '').replace(/\s/g, '');
@@ -1976,138 +2128,85 @@ export default function TextToPdfPage() {
     setDragOverIdx(null);
   }
 
-  // ── PDF Download (frontend capture — exact visual match) ────────
-  // Renders the same A4 HTML as the preview into a hidden off-screen div,
-  // captures it with html2canvas at 2× scale, and pages it into a jsPDF PDF.
-  // Page numbers are added by jsPDF on every page — NOT embedded in the image.
+  // ── PDF Download ─────────────────────────────────────────────────
   async function handleDownload() {
     console.log('[PDF_EXPORT_REAL_HANDLER_RUNNING]');
     console.log('[PDF_PAGE_NUMBER_FIX_ACTIVE]');
-    console.log('[PDF_EXPORT_MODE]', 'frontend-html2canvas-jspdf');
+    console.log('[PDF_EXPORT_MODE]', 'frontend-per-page-v4');
     if (!currentDoc?.blocks?.length) return;
     setGenerating(true); setPdfErr('');
-    let container = null;
+    let paginationContainer = null;
     try {
       const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
         import('html2canvas'),
         import('jspdf'),
       ]);
 
-      // Build hidden A4 container — same HTML as preview (page numbers excluded from image)
-      // Must be position:fixed at (0,0) so html2canvas can correctly measure element bounds.
-      // z-index:-1 keeps it behind all visible UI elements.
-      container = document.createElement('div');
-      container.style.cssText = 'position:fixed;left:0;top:0;z-index:-1;pointer-events:none;width:794px;';
-      container.innerHTML = buildA4PageHTML(currentDoc);
-      document.body.appendChild(container);
+      // Pagination happens off-screen (left of viewport, no z-index tricks)
+      paginationContainer = document.createElement('div');
+      paginationContainer.style.cssText =
+        `position:fixed;left:-${PDF_PAGE_TEMPLATE.cssWidth + 20}px;top:0;pointer-events:none;width:${PDF_PAGE_TEMPLATE.cssWidth}px;`;
+      document.body.appendChild(paginationContainer);
+      const pages = paginatePDFPages(currentDoc, paginationContainer);
 
-      // Wait for web fonts + give Nastaleeq shaping engine time to settle
+      // Wait for fonts + Nastaleeq shaping
       await document.fonts.ready;
       await new Promise(r => setTimeout(r, 400));
 
-      const SCALE     = 2;
-      const pageEl    = container.firstElementChild; // the white 794px A4 div
-      const canvas    = await html2canvas(pageEl, {
-        scale:           SCALE,
-        useCORS:         true,
-        allowTaint:      false,
-        backgroundColor: '#ffffff',
-        logging:         false,
-      });
-
-      // A4 in PDF points: 595.28 × 841.89
-      const PDF_W     = 595.28;
-      const PDF_H     = 841.89;
-      const PAGE_H_PX = Math.round(1123 * SCALE); // one A4 page height in canvas pixels
-
-      // Smart page-break: scan a window of ±200css-px around the nominal break
-      // and pick the whitest row to avoid slicing through a glyph.
-      function findBreak(nominalY) {
-        if (nominalY >= canvas.height) return nominalY;
-        const ctx2d  = canvas.getContext('2d');
-        const w      = canvas.width;
-        const lookUp   = Math.min(200 * SCALE, nominalY);
-        const lookDown = Math.min(50 * SCALE, canvas.height - nominalY);
-        const scanTop  = nominalY - lookUp;
-        const scanH    = lookUp + lookDown;
-        const { data } = ctx2d.getImageData(0, scanTop, w, scanH);
-        let bestRow = lookUp; // default: nominal break
-        let bestWhites = -1;
-        for (let row = 0; row < scanH; row++) {
-          let whites = 0;
-          const base = row * w * 4;
-          for (let px = 0; px < w; px++) {
-            const i = base + px * 4;
-            if (data[i] > 248 && data[i + 1] > 248 && data[i + 2] > 248) whites++;
-          }
-          if (whites > bestWhites) { bestWhites = whites; bestRow = row; }
-          if (whites >= w * 0.99) break; // fully white row — no need to scan further
-        }
-        return scanTop + bestRow;
-      }
-
+      const SCALE = 2;
       const pdf = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
-      let yOffset = 0, totalPages = 0;
+      const totalPages = pages.length;
+      const pageNumberSlot = getPDFPageNumberSlot(currentDoc);
+      const pt = PDF_PAGE_TEMPLATE.pdfWidth / PDF_PAGE_TEMPLATE.cssWidth;
 
-      while (yOffset < canvas.height) {
-        const nominalEnd = yOffset + PAGE_H_PX;
-        const breakY     = nominalEnd < canvas.height ? findBreak(nominalEnd) : nominalEnd;
-        const sliceH     = Math.min(Math.max(breakY - yOffset, 1), canvas.height - yOffset);
+      // Each page is captured in its OWN container at viewport origin (0,0).
+      // Putting all pages in one stacked container causes pages 2+ to be
+      // off-viewport, which breaks html2canvas — headers and margins disappear.
+      for (let idx = 0; idx < totalPages; idx++) {
+        const pageEl = pages[idx];
 
-        // Draw this slice into a full A4-height canvas (white-pad remainder)
-        const pg = document.createElement('canvas');
-        pg.width  = canvas.width;
-        pg.height = PAGE_H_PX;
-        const ctx = pg.getContext('2d');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, pg.width, pg.height);
-        ctx.drawImage(canvas, 0, yOffset, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
+        const captureWrap = document.createElement('div');
+        captureWrap.style.cssText =
+          `position:fixed;left:0;top:0;z-index:-1;pointer-events:none;` +
+          `width:${PDF_PAGE_TEMPLATE.cssWidth}px;overflow:hidden;`;
+        document.body.appendChild(captureWrap);
+        captureWrap.appendChild(pageEl); // move out of paginationContainer
 
-        if (totalPages > 0) pdf.addPage();
-        pdf.addImage(pg.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, PDF_W, PDF_H);
+        const canvas = await html2canvas(pageEl, {
+          scale:        SCALE,
+          useCORS:      true,
+          allowTaint:   false,
+          backgroundColor: '#ffffff',
+          logging:      false,
+          width:        PDF_PAGE_TEMPLATE.cssWidth,
+          height:       PDF_PAGE_TEMPLATE.cssHeight,
+          windowWidth:  PDF_PAGE_TEMPLATE.cssWidth,
+          windowHeight: PDF_PAGE_TEMPLATE.cssHeight,
+          scrollX:      0,
+          scrollY:      0,
+        });
 
-        yOffset += sliceH;
-        totalPages++;
+        document.body.removeChild(captureWrap); // also removes pageEl
+
+        if (idx > 0) pdf.addPage();
+        pdf.addImage(
+          canvas.toDataURL('image/jpeg', 0.94), 'JPEG',
+          0, 0, PDF_PAGE_TEMPLATE.pdfWidth, PDF_PAGE_TEMPLATE.pdfHeight
+        );
+        console.log(`[PDF_HEADER_RENDERED] page=${idx + 1}`);
       }
 
       console.log(`[PDF_PAGE_COUNT] ${totalPages}`);
 
-      // ── Page number overlay — added by jsPDF on EVERY page ──────────
-      // Numbers are plain English digits (1, 2, 3…) positioned according
-      // to the Page tab setting. Not embedded in the image so all pages get one.
-      const pnPos = currentDoc.showPageNumber !== false
-        ? (currentDoc.pageNumberPosition || 'header-right')
-        : 'none';
-
-      if (pnPos !== 'none') {
-        // A4 margins: 76px left/right = 57pt, 40px top/bottom = 30pt
-        // Header text baseline ≈ top-padding(30pt) + font-size(7.5pt) = 37.5pt
-        // Footer text baseline ≈ PDF_H - bottom-padding(30pt) + hairline + gap ≈ PDF_H - 22pt
-        const isFooter  = pnPos.startsWith('footer');
-        const posEnd    = pnPos.split('-').pop(); // 'right' | 'center' | 'left'
-
-        let numX, numY, numAlign;
-
-        if (currentDoc.headerStyle === 'decorative' && !isFooter) {
-          // Decorative header: badge is always on the LEFT regardless of pnPos setting
-          numX = 71; numY = 37; numAlign = 'center';
-        } else {
-          numY     = isFooter ? PDF_H - 22 : 37;
-          numX     = posEnd === 'right'  ? PDF_W - 58
-                   : posEnd === 'center' ? PDF_W / 2
-                   :                       58;
-          numAlign = posEnd === 'right'  ? 'right'
-                   : posEnd === 'center' ? 'center'
-                   :                       'left';
-        }
-
+      // Plain digit page numbers (1, 2, 3) on every page via jsPDF overlay
+      if (pageNumberSlot) {
         pdf.setFontSize(10);
-        pdf.setTextColor(85, 85, 85); // #555 — matches header/footer colour
-
+        pdf.setTextColor(85, 85, 85);
         for (let p = 1; p <= totalPages; p++) {
           pdf.setPage(p);
-          pdf.text(String(p), numX, numY, { align: numAlign });
-          console.log(`[PDF_PAGE_NUMBER_RENDERED] page=${p}`);
+          pdf.text(String(p), pageNumberSlot.x * pt, pageNumberSlot.y * pt,
+                   { align: pageNumberSlot.align });
+          console.log(`[PDF_PAGE_NUMBER_RENDERED] page=${p} number=${p}`);
         }
       }
 
@@ -2119,7 +2218,8 @@ export default function TextToPdfPage() {
       console.error('[PDF]', err);
       setPdfErr('PDF generation failed. Please try again.');
     } finally {
-      if (container && document.body.contains(container)) document.body.removeChild(container);
+      if (paginationContainer && document.body.contains(paginationContainer))
+        document.body.removeChild(paginationContainer);
       setGenerating(false);
     }
   }
