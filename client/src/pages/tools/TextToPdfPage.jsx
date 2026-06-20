@@ -228,6 +228,17 @@ function renderVerseHTML(block) {
   );
 }
 
+// Tighten highlighted spans: background-color fills the full line-height (32px at lh:2)
+// which looks too tall. Add line-height:1.5 so the highlight box is ~24px instead.
+function normalizeHighlights(html) {
+  if (!html || html.indexOf('background-color') === -1) return html;
+  return html.replace(/<span\b([^>]*)>/gi, (match, attrs) => {
+    if (attrs.indexOf('background-color') === -1) return match;
+    if (attrs.indexOf('line-height') !== -1) return match;
+    return match.replace(/style="/, 'style="line-height:1.5;padding:1px 2px;');
+  });
+}
+
 // Supports block-level: fontFamily, direction, textAlign, lineHeight, letterSpacing, wordSpacing, margins
 function renderFreeTextHTML(block) {
   const ff  = block.fontFamily  || 'Jameel Noori Nastaleeq';
@@ -238,7 +249,7 @@ function renderFreeTextHTML(block) {
   const ws  = block.wordSpacing   ? `word-spacing:${block.wordSpacing};`     : '';
   const mt  = block.marginTop     || '8px';
   const mb  = block.marginBottom  || '8px';
-  const content = styleListsInContent(clean(block.content || ''));
+  const content = normalizeHighlights(styleListsInContent(clean(block.content || '')));
   return `<div style="font-family:'${ff}',serif;font-size:16px;direction:${dir};text-align:${ta};line-height:${lh};${ls}${ws}margin-top:${mt};margin-bottom:${mb};color:#000;">${content}</div>`;
 }
 
@@ -294,7 +305,7 @@ function decorativeHeaderHTML(doc) {
   const fs    = doc.headerFontSize || 10;
   const showPN = doc.showPageNumber !== false;
   const name  = doc.headerRight || doc.name || '';
-  const badge = `display:inline-block;border:1px solid #000;border-radius:999px;font-family:${ff};font-size:${fs}px;line-height:28px;color:#000;flex-shrink:0;white-space:nowrap;vertical-align:middle;`;
+  const badge = `display:inline-flex;align-items:center;justify-content:center;border:1px solid #000;border-radius:999px;font-family:${ff};font-size:${fs}px;height:36px;box-sizing:border-box;color:#000;flex-shrink:0;white-space:nowrap;`;
   return (
     `<div style="display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;">` +
     (showPN
@@ -316,7 +327,7 @@ function decorativeHeaderHTML(doc) {
     `<path d="M122 14 Q118 19 114 17" fill="none" stroke="#000" stroke-width="0.6"/>` +
     `<line x1="112" y1="11" x2="4" y2="11" stroke="#000" stroke-width="0.4"/>` +
     `</svg></div>` +
-    `<span style="${badge}padding:0 14px;text-align:center;direction:rtl;">${name || ' '}</span>` +
+    `<span style="${badge}padding:0 16px;text-align:center;direction:rtl;flex-shrink:1;max-width:45%;overflow:hidden;">${name || ' '}</span>` +
     `</div>`
   );
 }
@@ -391,7 +402,7 @@ function buildPDFPageShellHTML(doc) {
   const t = PDF_PAGE_TEMPLATE;
   return (
     `<div data-pdf-page style="background:white;width:${t.cssWidth}px;height:${t.cssHeight}px;box-sizing:border-box;position:relative;overflow:hidden;">` +
-    `<div data-pdf-header style="position:absolute;left:${t.marginLeft}px;right:${t.marginRight}px;top:${t.marginTop}px;height:${t.headerHeight}px;box-sizing:border-box;">${buildPDFHeaderHTML(doc)}</div>` +
+    `<div data-pdf-header style="position:absolute;left:${t.marginLeft}px;right:${t.marginRight}px;top:${t.marginTop}px;height:${t.headerHeight}px;box-sizing:border-box;overflow:hidden;">${buildPDFHeaderHTML(doc)}</div>` +
     `<div data-pdf-content style="position:absolute;left:${t.marginLeft}px;right:${t.marginRight}px;top:${t.marginTop + t.headerHeight + t.headerGap}px;bottom:${t.marginBottom + t.footerHeight + t.footerGap}px;box-sizing:border-box;overflow:hidden;"></div>` +
     `<div data-pdf-footer style="position:absolute;left:${t.marginLeft}px;right:${t.marginRight}px;bottom:${t.marginBottom}px;height:${t.footerHeight}px;box-sizing:border-box;">${buildPDFFooterHTML(doc)}</div>` +
     `</div>`
@@ -2132,7 +2143,7 @@ export default function TextToPdfPage() {
   async function handleDownload() {
     console.log('[PDF_EXPORT_REAL_HANDLER_RUNNING]');
     console.log('[PDF_PAGE_NUMBER_FIX_ACTIVE]');
-    console.log('[PDF_EXPORT_MODE]', 'frontend-per-page-v5-badge-pn');
+    console.log('[PDF_EXPORT_MODE]', 'frontend-per-page-v6-fonts-first');
     if (!currentDoc?.blocks?.length) return;
     setGenerating(true); setPdfErr('');
     let paginationContainer = null;
@@ -2147,6 +2158,12 @@ export default function TextToPdfPage() {
       paginationContainer.style.cssText =
         `position:fixed;left:-${PDF_PAGE_TEMPLATE.cssWidth + 20}px;top:0;pointer-events:none;width:${PDF_PAGE_TEMPLATE.cssWidth}px;`;
       document.body.appendChild(paginationContainer);
+
+      // Wait for fonts BEFORE paginating — JNN metrics differ from fallback font,
+      // so block heights measured without fonts loaded cause wrong page breaks.
+      await document.fonts.ready;
+      await new Promise(r => setTimeout(r, 350));
+
       const pages = paginatePDFPages(currentDoc, paginationContainer);
 
       // Stamp page numbers into decorative header badges (before capture so html2canvas picks them up)
@@ -2162,9 +2179,8 @@ export default function TextToPdfPage() {
       }
       console.log(`[PDF_CONTENT_AREA] startY=${PDF_PAGE_TEMPLATE.marginTop + PDF_PAGE_TEMPLATE.headerHeight + PDF_PAGE_TEMPLATE.headerGap} endY=${PDF_PAGE_TEMPLATE.cssHeight - PDF_PAGE_TEMPLATE.marginBottom - PDF_PAGE_TEMPLATE.footerHeight - PDF_PAGE_TEMPLATE.footerGap}`);
 
-      // Wait for fonts + Nastaleeq shaping
-      await document.fonts.ready;
-      await new Promise(r => setTimeout(r, 400));
+      // Short wait for layout to settle after badge stamping
+      await new Promise(r => setTimeout(r, 100));
 
       const SCALE = 2;
       const pdf = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
