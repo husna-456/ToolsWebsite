@@ -24,6 +24,17 @@ async function textToPdfGenerate(req, res) {
     if (!documentData.blocks?.length)
       return res.status(400).json({ success: false, error: 'Document has no blocks to render.' });
 
+    const blocks = documentData.blocks;
+    const first  = blocks[0] || {};
+    console.log('[PDF_REQUEST_DEBUG]', JSON.stringify({
+      blocksCount:     blocks.length,
+      firstBlockType:  first.type,
+      firstBlockFont:  first.fontFamily  || first.arabicFont || null,
+      firstBlockDir:   first.direction   || null,
+      firstBlockAlign: first.textAlign   || null,
+      firstBlock:      first,
+    }));
+
     const { generatePDF } = require('../services/pdfGeneratorMake');
     const pdfBuffer = await generatePDF(documentData);
 

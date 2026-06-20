@@ -32,6 +32,8 @@ const fs   = require('fs');
 
 const FR = require('./FontRegistry');   // central font registry + resolution
 
+console.log('[PDF_VERSION] exact-editor-export-v1');
+
 // ─────────────────────────────────────────────────────────────────
 // Utilities
 // ─────────────────────────────────────────────────────────────────
