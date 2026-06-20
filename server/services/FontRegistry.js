@@ -37,38 +37,40 @@ const STYLE_TO_PDF = {
 
 // ── Script tag for each registry key ─────────────────────────────
 const FONT_SCRIPT = {
-  Amiri:            'arabic',
-  NotoNaskhArabic:  'arabic',
-  ScheherazadeNew:  'arabic',
-  Cairo:            'arabic',
-  Tajawal:          'arabic',
-  ReemKufi:         'arabic',
-  Lateef:           'arabic',
-  NotoNastaliqUrdu: 'urdu',
+  Amiri:                   'arabic',
+  NotoNaskhArabic:         'arabic',
+  ScheherazadeNew:         'arabic',
+  Cairo:                   'arabic',
+  Tajawal:                 'arabic',
+  ReemKufi:                'arabic',
+  Lateef:                  'arabic',
+  NotoNastaliqUrdu:        'urdu',
+  JameeelNooriNastaleeq:   'urdu',  // registered when user places the TTF in server/fonts/
   // all others default to 'latin'
 };
 
 // ── Fallback chain per key ────────────────────────────────────────
 // Used when a font is unavailable; walks the chain to find an alternative.
 const FONT_FALLBACK = {
-  Amiri:            'NotoNaskhArabic',
-  NotoNaskhArabic:  'Amiri',
-  ScheherazadeNew:  'Amiri',
-  Cairo:            'NotoNaskhArabic',
-  Tajawal:          'NotoNaskhArabic',
-  ReemKufi:         'NotoNaskhArabic',
-  Lateef:           'Amiri',
-  NotoNastaliqUrdu: 'Amiri',
-  Roboto:           'OpenSans',
-  OpenSans:         'Roboto',
-  Lato:             'Roboto',
-  Poppins:          'Roboto',
-  Inter:            'Roboto',
-  Montserrat:       'Roboto',
-  Merriweather:     'Lora',
-  Lora:             'Merriweather',
-  PlayfairDisplay:  'Merriweather',
-  EBGaramond:       'Lora',
+  Amiri:                   'NotoNaskhArabic',
+  NotoNaskhArabic:         'Amiri',
+  ScheherazadeNew:         'Amiri',
+  Cairo:                   'NotoNaskhArabic',
+  Tajawal:                 'NotoNaskhArabic',
+  ReemKufi:                'NotoNaskhArabic',
+  Lateef:                  'Amiri',
+  NotoNastaliqUrdu:        'Amiri',
+  JameeelNooriNastaleeq:   'NotoNastaliqUrdu', // fall back to closest free Nastaleeq TTF
+  Roboto:                  'OpenSans',
+  OpenSans:                'Roboto',
+  Lato:                    'Roboto',
+  Poppins:                 'Roboto',
+  Inter:                   'Roboto',
+  Montserrat:              'Roboto',
+  Merriweather:            'Lora',
+  Lora:                    'Merriweather',
+  PlayfairDisplay:         'Merriweather',
+  EBGaramond:              'Lora',
 };
 
 // ── Editor font name → registry key ──────────────────────────────
@@ -88,9 +90,11 @@ const EDITOR_FONT_TO_KEY = {
   'Lateef':             'Lateef',
   // Urdu (Google Fonts — available as TTF)
   'Noto Nastaliq Urdu':     'NotoNastaliqUrdu',
-  // Jameel Noori Nastaleeq is a proprietary font; no free TTF exists.
-  // NotoNastaliqUrdu is the nearest free Nastaleeq-script substitute.
-  'Jameel Noori Nastaleeq': 'NotoNastaliqUrdu',
+  // Jameel Noori Nastaleeq: maps to its own key first.
+  // If JameeelNooriNastaleeq-Regular.ttf is present in server/fonts/ it is used directly.
+  // Otherwise FONT_FALLBACK walks to NotoNastaliqUrdu (nearest free Nastaleeq TTF).
+  // To enable: place JameeelNooriNastaleeq-Regular.ttf in server/fonts/ and redeploy.
+  'Jameel Noori Nastaleeq': 'JameeelNooriNastaleeq',
   // Latin (Google Fonts — all available as TTF)
   'Roboto':             'Roboto',
   'Open Sans':          'OpenSans',
@@ -176,6 +180,13 @@ function extractFromVFS(key, dest) {
 function buildDescriptors(raw) {
   const desc      = {};
   const available = new Set();
+
+  // Warn when Jameel Noori Nastaleeq is absent — users see NotoNastaliqUrdu instead
+  if (!raw['JameeelNooriNastaleeq']?.normal || !fileOk(raw['JameeelNooriNastaleeq'].normal)) {
+    console.warn('[FontRegistry] WARNING: JameeelNooriNastaleeq-Regular.ttf not found in server/fonts/');
+    console.warn('[FontRegistry]   -> "Jameel Noori Nastaleeq" will fall back to NotoNastaliqUrdu');
+    console.warn('[FontRegistry]   -> To fix: place JameeelNooriNastaleeq-Regular.ttf in server/fonts/ and redeploy');
+  }
 
   for (const [key, styles] of Object.entries(raw)) {
     if (!fileOk(styles.normal)) {

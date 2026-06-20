@@ -350,9 +350,13 @@ function htmlToInlines(html, base) {
   function pushText(raw, styles) {
     if (!raw) return;
     let text = raw
-      .replace(/[​‌‍﻿]/g, '')  // zero-width chars
-      .replace(/[\uD800-\uDFFF]/g, '');             // loose surrogates
-    // Remove supplementary plane chars (emoji etc.) that many fonts lack
+      // Strip ONLY U+200B (zero-width space) and U+FEFF (BOM).
+      // CRITICAL — DO NOT add U+200C (ZWNJ) or U+200D (ZWJ) to this regex.
+      // ZWNJ/ZWJ control which glyph form the shaping engine selects in Arabic/Urdu.
+      // Stripping them splits characters and destroys Nastaleeq ligatures.
+      .replace(/​|﻿/g, '')
+      .replace(/[\uD800-\uDFFF]/g, '');   // lone surrogates — encoding error, safe to drop
+    // Drop supplementary-plane chars (emoji etc.) that most Arabic/Urdu fonts lack
     try { text = text.replace(/[\u{10000}-\u{10FFFF}]/gu, ''); } catch (_) {}
     if (!text) return;
     const inline = { text };
