@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import axios from 'axios';
 import {
   FileDown, Plus, Trash2, Edit3, Download, Upload, ArrowLeft,
   ChevronUp, ChevronDown, Eye, FileText, X, BookOpen,
@@ -269,6 +268,77 @@ function buildDocumentBodyHTML(blocks) {
     parts.push(renderFreeTextHTML(b)); i++;
   }
   return parts.join('\n');
+}
+
+// ── Frontend PDF export helpers ─────────────────────────────────
+// Pure-HTML equivalents of React components used in the preview,
+// so handleDownload can render the same layout in a hidden div.
+
+function decorativeHeaderHTML(doc) {
+  const ff    = `'${doc.headerFontFamily || 'Noto Naskh Arabic'}',serif`;
+  const fs    = doc.headerFontSize || 10;
+  const showPN = doc.showPageNumber !== false;
+  const name  = doc.headerRight || doc.name || '';
+  const badge = `display:inline-block;border:1px solid #000;border-radius:999px;font-family:${ff};font-size:${fs}px;line-height:20px;color:#000;flex-shrink:0;white-space:nowrap;`;
+  return (
+    `<div style="display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px;padding-bottom:4px;">` +
+    (showPN
+      ? `<span style="${badge}padding:0 10px;min-width:28px;text-align:center;">ص ۱</span>`
+      : `<span style="${badge}padding:0 10px;opacity:0;">·</span>`) +
+    `<div style="flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center;padding:0 4px;min-width:0;">` +
+    `<svg width="100%" height="22" viewBox="0 0 400 22" preserveAspectRatio="xMidYMid meet">` +
+    `<g transform="translate(200,11)"><line x1="0" y1="-6" x2="0" y2="6" stroke="#000" stroke-width="0.8"/><line x1="-5.2" y1="-3" x2="5.2" y2="3" stroke="#000" stroke-width="0.8"/><line x1="-5.2" y1="3" x2="5.2" y2="-3" stroke="#000" stroke-width="0.8"/><circle cx="0" cy="0" r="2.5" fill="none" stroke="#000" stroke-width="0.7"/></g>` +
+    `<path d="M208 11 Q218 7 228 11 Q238 15 248 11 Q258 7 268 11 Q278 15 288 11" fill="none" stroke="#000" stroke-width="0.7"/>` +
+    `<path d="M218 8 Q220 3 224 5" fill="none" stroke="#000" stroke-width="0.6"/>` +
+    `<path d="M238 14 Q242 19 246 17" fill="none" stroke="#000" stroke-width="0.6"/>` +
+    `<path d="M258 8 Q260 3 264 5" fill="none" stroke="#000" stroke-width="0.6"/>` +
+    `<path d="M278 14 Q282 19 286 17" fill="none" stroke="#000" stroke-width="0.6"/>` +
+    `<line x1="288" y1="11" x2="396" y2="11" stroke="#000" stroke-width="0.4"/>` +
+    `<path d="M192 11 Q182 7 172 11 Q162 15 152 11 Q142 7 132 11 Q122 15 112 11" fill="none" stroke="#000" stroke-width="0.7"/>` +
+    `<path d="M182 8 Q180 3 176 5" fill="none" stroke="#000" stroke-width="0.6"/>` +
+    `<path d="M162 14 Q158 19 154 17" fill="none" stroke="#000" stroke-width="0.6"/>` +
+    `<path d="M142 8 Q140 3 136 5" fill="none" stroke="#000" stroke-width="0.6"/>` +
+    `<path d="M122 14 Q118 19 114 17" fill="none" stroke="#000" stroke-width="0.6"/>` +
+    `<line x1="112" y1="11" x2="4" y2="11" stroke="#000" stroke-width="0.4"/>` +
+    `</svg></div>` +
+    `<span style="${badge}padding:0 14px;">${name || ' '}</span>` +
+    `</div>`
+  );
+}
+
+// Builds the full A4 white-page HTML string (header + content + footer).
+// Uses the same render functions as the preview, so PDF = what you see.
+function buildA4PageHTML(doc) {
+  const blocks = doc.blocks || [];
+  const pnPos  = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
+  const hRight = pnPos === 'header-right'  ? 'ص ۱' : (doc.headerRight  || '');
+  const hCtr   = pnPos === 'header-center' ? 'ص ۱' : (doc.headerCenter || doc.name || '');
+  const hLeft  = pnPos === 'header-left'   ? 'ص ۱' : (doc.headerLeft   || '');
+  const fRight = pnPos === 'footer-right'  ? 'ص ۱' : (doc.footerRight  || '');
+  const fCtr   = pnPos === 'footer-center' ? 'ص ۱' : (doc.footerCenter || '');
+  const fLeft  = pnPos === 'footer-left'   ? 'ص ۱' : (doc.footerLeft   || '');
+  const hff    = `'${doc.headerFontFamily || 'Noto Naskh Arabic'}',serif`;
+  const fff    = `'${doc.footerFontFamily || 'Noto Naskh Arabic'}',serif`;
+  const hfs    = doc.headerFontSize || 10;
+  const ffs    = doc.footerFontSize || 9;
+
+  const headerHTML = doc.headerStyle === 'decorative'
+    ? decorativeHeaderHTML(doc)
+    : `<div style="display:flex;justify-content:space-between;font-family:${hff};font-size:${hfs}px;color:#555;direction:rtl;margin-bottom:16px;padding-bottom:6px;"><span>${hRight}</span><span>${hCtr}</span><span>${hLeft}</span></div>`;
+
+  const footerHTML =
+    `<div style="margin-top:32px;">` +
+    (doc.footerHairline !== false ? `<div style="width:100%;height:0.5px;background:#000;margin-bottom:4px;"></div>` : '') +
+    `<div style="display:flex;justify-content:space-between;font-family:${fff};font-size:${ffs}px;color:#555;direction:rtl;"><span>${fRight}</span><span>${fCtr}</span><span>${fLeft}</span></div>` +
+    `</div>`;
+
+  return (
+    `<div style="background:white;width:794px;padding:40px 76px;box-sizing:border-box;">` +
+    headerHTML +
+    buildDocumentBodyHTML(blocks) +
+    footerHTML +
+    `</div>`
+  );
 }
 
 // ── Language detection ──────────────────────────────────────────
@@ -1905,37 +1975,76 @@ export default function TextToPdfPage() {
     setDragOverIdx(null);
   }
 
-  // ── PDF Download ──────────────────────────────────────────────
+  // ── PDF Download (frontend capture — exact visual match) ────────
+  // Renders the same A4 HTML as the preview into a hidden off-screen div,
+  // captures it with html2canvas at 2× scale, and pages it into a jsPDF PDF.
+  // No backend call — the browser renders fonts (incl. system JNN) exactly.
   async function handleDownload() {
     if (!currentDoc?.blocks?.length) return;
     setGenerating(true); setPdfErr('');
+    let container = null;
     try {
-      const base = import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
-      const res  = await axios.post(
-        `${base}/api/tools/text-to-pdf/generate`,
-        { documentData: currentDoc },
-        { responseType: 'blob', timeout: 120000 },
-      );
-      const url = URL.createObjectURL(res.data);
-      const a   = document.createElement('a');
-      a.href    = url;
-      a.download = `${(currentDoc.name || 'document').replace(/[^a-zA-Z0-9\s_-]/g, '').trim().replace(/\s+/g, '_') || 'document'}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      // Try to read server error detail from blob response
-      let detail = 'PDF generation failed. Please try again.';
-      if (err.response?.data instanceof Blob) {
-        try {
-          const text = await err.response.data.text();
-          const json = JSON.parse(text);
-          if (json.details) detail = json.details;
-        } catch { /* ignore parse errors */ }
+      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+        import('html2canvas'),
+        import('jspdf'),
+      ]);
+
+      // Build hidden A4 container — same HTML as preview
+      container = document.createElement('div');
+      container.style.cssText = 'position:fixed;left:-10000px;top:0;z-index:-1;';
+      container.innerHTML = buildA4PageHTML(currentDoc);
+      document.body.appendChild(container);
+
+      // Wait for web fonts + give Nastaleeq shaping engine time to run
+      await document.fonts.ready;
+      await new Promise(r => setTimeout(r, 400));
+
+      const SCALE      = 2;
+      const pageEl     = container.firstElementChild; // the white 794px A4 div
+      const canvas     = await html2canvas(pageEl, {
+        scale:           SCALE,
+        useCORS:         true,
+        allowTaint:      false,
+        backgroundColor: '#ffffff',
+        logging:         false,
+      });
+
+      // A4 in PDF points: 595.28 × 841.89
+      const PDF_W      = 595.28;
+      const PDF_H      = 841.89;
+      const PAGE_H_PX  = Math.round(1123 * SCALE); // one A4 page in canvas pixels
+
+      const pdf = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
+      let yOffset = 0, pageNum = 0;
+
+      while (yOffset < canvas.height) {
+        const sliceH = Math.min(PAGE_H_PX, canvas.height - yOffset);
+
+        // Draw this page's slice into a fresh canvas (white-pad the last page)
+        const pg = document.createElement('canvas');
+        pg.width  = canvas.width;
+        pg.height = PAGE_H_PX;
+        const ctx = pg.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, pg.width, pg.height);
+        ctx.drawImage(canvas, 0, yOffset, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
+
+        if (pageNum > 0) pdf.addPage();
+        pdf.addImage(pg.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, PDF_W, PDF_H);
+
+        yOffset += PAGE_H_PX;
+        pageNum++;
       }
-      setPdfErr(detail);
+
+      const fname = (currentDoc.name || 'document')
+        .replace(/[^a-zA-Z0-9\s_-]/g, '').trim().replace(/\s+/g, '_') || 'document';
+      pdf.save(`${fname}.pdf`);
+
+    } catch (err) {
+      console.error('[PDF]', err);
+      setPdfErr('PDF generation failed. Please try again.');
     } finally {
+      if (container && document.body.contains(container)) document.body.removeChild(container);
       setGenerating(false);
     }
   }
