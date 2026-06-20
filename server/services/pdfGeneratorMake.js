@@ -444,6 +444,14 @@ function htmlToInlines(html, base) {
       }
     }
 
+    // Bullet marker for list items — browser renders <li> with a bullet; pdfmake doesn't
+    if (tag === 'li') {
+      const bullet = { text: '• ' };
+      if (next.font)     bullet.font     = next.font;
+      if (next.fontSize) bullet.fontSize = next.fontSize;
+      result.push(bullet);
+    }
+
     for (const child of (node.children || [])) walk(child, next);
 
     // Paragraph break after block-level element
