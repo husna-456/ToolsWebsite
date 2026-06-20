@@ -2073,16 +2073,26 @@ export default function TextToPdfPage() {
         : 'none';
 
       if (pnPos !== 'none') {
-        // A4 content margins: 76px left/right = 57pt, 40px top/bottom = 30pt
+        // A4 margins: 76px left/right = 57pt, 40px top/bottom = 30pt
+        // Header text baseline ≈ top-padding(30pt) + font-size(7.5pt) = 37.5pt
+        // Footer text baseline ≈ PDF_H - bottom-padding(30pt) + hairline + gap ≈ PDF_H - 22pt
         const isFooter  = pnPos.startsWith('footer');
-        const numY      = isFooter ? PDF_H - 14 : 26;          // pt from top
-        const posEnd    = pnPos.split('-').pop();               // 'right' | 'center' | 'left'
-        const numX      = posEnd === 'right'  ? PDF_W - 58     // inside right margin
-                        : posEnd === 'center' ? PDF_W / 2
-                        :                       58;             // inside left margin
-        const numAlign  = posEnd === 'right'  ? 'right'
-                        : posEnd === 'center' ? 'center'
-                        :                       'left';
+        const posEnd    = pnPos.split('-').pop(); // 'right' | 'center' | 'left'
+
+        let numX, numY, numAlign;
+
+        if (currentDoc.headerStyle === 'decorative' && !isFooter) {
+          // Decorative header: badge is always on the LEFT regardless of pnPos setting
+          numX = 71; numY = 37; numAlign = 'center';
+        } else {
+          numY     = isFooter ? PDF_H - 22 : 37;
+          numX     = posEnd === 'right'  ? PDF_W - 58
+                   : posEnd === 'center' ? PDF_W / 2
+                   :                       58;
+          numAlign = posEnd === 'right'  ? 'right'
+                   : posEnd === 'center' ? 'center'
+                   :                       'left';
+        }
 
         pdf.setFontSize(10);
         pdf.setTextColor(85, 85, 85); // #555 — matches header/footer colour
