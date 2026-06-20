@@ -14,10 +14,9 @@
  *                 Georgia → Merriweather, Verdana → OpenSans,
  *                 Trebuchet MS → OpenSans, Garamond → EBGaramond
  *
- * Font resolution order per font (TTF only — no woff2 / no WASM):
- *   1. @expo-google-fonts npm package file (guaranteed after npm install)
- *   2. server/fonts/{Name}-{Style}.ttf  (downloaded by download-fonts.js)
- *   3. server/fonts/_cache/             (extracted from pdfmake VFS)
+ * Font resolution: TTF files are committed in server/fonts/ (no downloads at runtime).
+ *   1. server/fonts/{Name}-{Style}.ttf  (committed to git)
+ *   2. server/fonts/_cache/             (Roboto extracted from pdfmake VFS — last resort)
  *   If still missing → nearest same-script fallback → PDF still generates.
  *
  * Resilience:
@@ -31,9 +30,8 @@ const path = require('path');
 const fs   = require('fs');
 const vm   = require('vm');
 
-const FONTS_DIR    = path.join(__dirname, '../fonts');
-const CACHE_DIR    = path.join(__dirname, '../fonts/_cache');
-const NODE_MODULES = path.join(__dirname, '../node_modules');
+const FONTS_DIR = path.join(__dirname, '../fonts');
+const CACHE_DIR = path.join(__dirname, '../fonts/_cache');
 
 // ─────────────────────────────────────────────────────────────────
 // Utilities
@@ -304,135 +302,131 @@ function extractFromVFS(vfsKey, destPath) {
 // ─────────────────────────────────────────────────────────────────
 // Comprehensive font registry
 //
+// All TTF files are committed in server/fonts/ — no npm packages needed.
 // Each entry: pdfmake key → { normal, bold, italics, bolditalics }
-// where each style is a list of candidate paths tried in order.
-// The first path that satisfies fileOk() is used.
-// If no path is found for a non-normal style, normal is reused.
-// If normal is not found, the font is omitted (not registered).
+// The first path that satisfies fileOk() is used per style.
+// Non-normal styles fall back to normal if not found.
+// If normal is not found the font is omitted (not registered).
 //
 // script:   'arabic'|'urdu'|'latin'  — used to choose text cleaner
 // fallback: pdfmake key to use when this font is not available
 // ─────────────────────────────────────────────────────────────────
 
-function egf(pkg, file) {
-  return path.join(NODE_MODULES, `@expo-google-fonts/${pkg}/${file}`);
-}
 function fd(file) { return path.join(FONTS_DIR, file); }
 
 const FONT_REGISTRY = {
   // ── Arabic-script fonts ──────────────────────────────────────────
   Amiri: {
     script: 'arabic', fallback: 'NotoNaskhArabic',
-    normal:      [ egf('amiri','Amiri_400Regular.ttf'),          fd('Amiri-Regular.ttf')         ],
-    bold:        [ egf('amiri','Amiri_700Bold.ttf'),             fd('Amiri-Bold.ttf')            ],
-    italics:     [ egf('amiri','Amiri_400Regular_Italic.ttf'),   fd('Amiri-Italic.ttf')          ],
-    bolditalics: [ egf('amiri','Amiri_700Bold_Italic.ttf'),      fd('Amiri-BoldItalic.ttf')      ],
+    normal:      [ fd('Amiri-Regular.ttf')      ],
+    bold:        [ fd('Amiri-Bold.ttf')         ],
+    italics:     [ fd('Amiri-Italic.ttf')       ],
+    bolditalics: [ fd('Amiri-BoldItalic.ttf')   ],
   },
   NotoNaskhArabic: {
     script: 'arabic', fallback: 'Amiri',
-    normal:      [ egf('noto-naskh-arabic','NotoNaskhArabic_400Regular.ttf'), fd('NotoNaskhArabic-Regular.ttf') ],
-    bold:        [ egf('noto-naskh-arabic','NotoNaskhArabic_700Bold.ttf'),    fd('NotoNaskhArabic-Bold.ttf')    ],
+    normal:      [ fd('NotoNaskhArabic-Regular.ttf') ],
+    bold:        [ fd('NotoNaskhArabic-Bold.ttf')    ],
   },
   ScheherazadeNew: {
     script: 'arabic', fallback: 'Amiri',
-    normal:      [ egf('scheherazade-new','ScheherazadeNew_400Regular.ttf'), fd('ScheherazadeNew-Regular.ttf') ],
-    bold:        [ egf('scheherazade-new','ScheherazadeNew_700Bold.ttf'),    fd('ScheherazadeNew-Bold.ttf')    ],
+    normal:      [ fd('ScheherazadeNew-Regular.ttf') ],
+    bold:        [ fd('ScheherazadeNew-Bold.ttf')    ],
   },
   Cairo: {
     script: 'arabic', fallback: 'NotoNaskhArabic',
-    normal:      [ egf('cairo','Cairo_400Regular.ttf'), fd('Cairo-Regular.ttf') ],
-    bold:        [ egf('cairo','Cairo_700Bold.ttf'),    fd('Cairo-Bold.ttf')    ],
+    normal:      [ fd('Cairo-Regular.ttf') ],
+    bold:        [ fd('Cairo-Bold.ttf')    ],
   },
   Tajawal: {
     script: 'arabic', fallback: 'NotoNaskhArabic',
-    normal:      [ egf('tajawal','Tajawal_400Regular.ttf'), fd('Tajawal-Regular.ttf') ],
-    bold:        [ egf('tajawal','Tajawal_700Bold.ttf'),    fd('Tajawal-Bold.ttf')    ],
+    normal:      [ fd('Tajawal-Regular.ttf') ],
+    bold:        [ fd('Tajawal-Bold.ttf')    ],
   },
   ReemKufi: {
     script: 'arabic', fallback: 'NotoNaskhArabic',
-    normal:      [ egf('reem-kufi','ReemKufi_400Regular.ttf'), fd('ReemKufi-Regular.ttf') ],
+    normal:      [ fd('ReemKufi-Regular.ttf') ],
   },
   Lateef: {
     script: 'arabic', fallback: 'Amiri',
-    normal:      [ egf('lateef','Lateef_400Regular.ttf'), fd('Lateef-Regular.ttf') ],
+    normal:      [ fd('Lateef-Regular.ttf') ],
   },
 
   // ── Urdu-script fonts ────────────────────────────────────────────
   NotoNastaliqUrdu: {
     script: 'urdu', fallback: 'Amiri',
-    normal:      [ egf('noto-nastaliq-urdu','NotoNastaliqUrdu_400Regular.ttf'), fd('NotoNastaliqUrdu-Regular.ttf') ],
-    bold:        [ egf('noto-nastaliq-urdu','NotoNastaliqUrdu_700Bold.ttf'),    fd('NotoNastaliqUrdu-Bold.ttf')    ],
+    normal:      [ fd('NotoNastaliqUrdu-Regular.ttf') ],
+    bold:        [ fd('NotoNastaliqUrdu-Bold.ttf')    ],
   },
 
   // ── Latin fonts ───────────────────────────────────────────────────
   Roboto: {
     script: 'latin', fallback: 'OpenSans',
-    normal:      [ egf('roboto','Roboto_400Regular.ttf'),          fd('Roboto-Regular.ttf')    ],
-    bold:        [ egf('roboto','Roboto_700Bold.ttf'),             fd('Roboto-Bold.ttf'),       fd('Roboto-Medium.ttf') ],
-    italics:     [ egf('roboto','Roboto_400Regular_Italic.ttf'),   fd('Roboto-Italic.ttf')     ],
-    bolditalics: [ egf('roboto','Roboto_700Bold_Italic.ttf'),      fd('Roboto-BoldItalic.ttf'), fd('Roboto-MediumItalic.ttf') ],
+    normal:      [ fd('Roboto-Regular.ttf')    ],
+    bold:        [ fd('Roboto-Bold.ttf')       ],
+    italics:     [ fd('Roboto-Italic.ttf')     ],
+    bolditalics: [ fd('Roboto-BoldItalic.ttf') ],
   },
   OpenSans: {
     script: 'latin', fallback: 'Roboto',
-    normal:      [ egf('open-sans','OpenSans_400Regular.ttf'),        fd('OpenSans-Regular.ttf')    ],
-    bold:        [ egf('open-sans','OpenSans_700Bold.ttf'),           fd('OpenSans-Bold.ttf')       ],
-    italics:     [ egf('open-sans','OpenSans_400Regular_Italic.ttf'), fd('OpenSans-Italic.ttf')     ],
-    bolditalics: [ egf('open-sans','OpenSans_700Bold_Italic.ttf'),    fd('OpenSans-BoldItalic.ttf') ],
+    normal:      [ fd('OpenSans-Regular.ttf')    ],
+    bold:        [ fd('OpenSans-Bold.ttf')       ],
+    italics:     [ fd('OpenSans-Italic.ttf')     ],
+    bolditalics: [ fd('OpenSans-BoldItalic.ttf') ],
   },
   Lato: {
     script: 'latin', fallback: 'Roboto',
-    normal:      [ egf('lato','Lato_400Regular.ttf'),        fd('Lato-Regular.ttf')    ],
-    bold:        [ egf('lato','Lato_700Bold.ttf'),           fd('Lato-Bold.ttf')       ],
-    italics:     [ egf('lato','Lato_400Regular_Italic.ttf'), fd('Lato-Italic.ttf')     ],
-    bolditalics: [ egf('lato','Lato_700Bold_Italic.ttf'),    fd('Lato-BoldItalic.ttf') ],
+    normal:      [ fd('Lato-Regular.ttf')    ],
+    bold:        [ fd('Lato-Bold.ttf')       ],
+    italics:     [ fd('Lato-Italic.ttf')     ],
+    bolditalics: [ fd('Lato-BoldItalic.ttf') ],
   },
   Poppins: {
     script: 'latin', fallback: 'Roboto',
-    normal:      [ egf('poppins','Poppins_400Regular.ttf'),        fd('Poppins-Regular.ttf')    ],
-    bold:        [ egf('poppins','Poppins_700Bold.ttf'),           fd('Poppins-Bold.ttf')       ],
-    italics:     [ egf('poppins','Poppins_400Regular_Italic.ttf'), fd('Poppins-Italic.ttf')     ],
-    bolditalics: [ egf('poppins','Poppins_700Bold_Italic.ttf'),    fd('Poppins-BoldItalic.ttf') ],
+    normal:      [ fd('Poppins-Regular.ttf')    ],
+    bold:        [ fd('Poppins-Bold.ttf')       ],
+    italics:     [ fd('Poppins-Italic.ttf')     ],
+    bolditalics: [ fd('Poppins-BoldItalic.ttf') ],
   },
   Inter: {
     script: 'latin', fallback: 'Roboto',
-    normal:      [ egf('inter','Inter_400Regular.ttf'),        fd('Inter-Regular.ttf') ],
-    bold:        [ egf('inter','Inter_700Bold.ttf'),           fd('Inter-Bold.ttf')    ],
-    italics:     [ egf('inter','Inter_400Regular_Italic.ttf'), fd('Inter-Italic.ttf')  ],
+    normal:      [ fd('Inter-Regular.ttf') ],
+    bold:        [ fd('Inter-Bold.ttf')    ],
   },
   Montserrat: {
     script: 'latin', fallback: 'Roboto',
-    normal:      [ egf('montserrat','Montserrat_400Regular.ttf'),        fd('Montserrat-Regular.ttf')    ],
-    bold:        [ egf('montserrat','Montserrat_700Bold.ttf'),           fd('Montserrat-Bold.ttf')       ],
-    italics:     [ egf('montserrat','Montserrat_400Regular_Italic.ttf'), fd('Montserrat-Italic.ttf')     ],
-    bolditalics: [ egf('montserrat','Montserrat_700Bold_Italic.ttf'),    fd('Montserrat-BoldItalic.ttf') ],
+    normal:      [ fd('Montserrat-Regular.ttf')    ],
+    bold:        [ fd('Montserrat-Bold.ttf')       ],
+    italics:     [ fd('Montserrat-Italic.ttf')     ],
+    bolditalics: [ fd('Montserrat-BoldItalic.ttf') ],
   },
   Merriweather: {
     script: 'latin', fallback: 'Lora',
-    normal:      [ egf('merriweather','Merriweather_400Regular.ttf'),        fd('Merriweather-Regular.ttf')    ],
-    bold:        [ egf('merriweather','Merriweather_700Bold.ttf'),           fd('Merriweather-Bold.ttf')       ],
-    italics:     [ egf('merriweather','Merriweather_400Regular_Italic.ttf'), fd('Merriweather-Italic.ttf')     ],
-    bolditalics: [ egf('merriweather','Merriweather_700Bold_Italic.ttf'),    fd('Merriweather-BoldItalic.ttf') ],
+    normal:      [ fd('Merriweather-Regular.ttf')    ],
+    bold:        [ fd('Merriweather-Bold.ttf')       ],
+    italics:     [ fd('Merriweather-Italic.ttf')     ],
+    bolditalics: [ fd('Merriweather-BoldItalic.ttf') ],
   },
   Lora: {
     script: 'latin', fallback: 'Merriweather',
-    normal:      [ egf('lora','Lora_400Regular.ttf'),        fd('Lora-Regular.ttf')    ],
-    bold:        [ egf('lora','Lora_700Bold.ttf'),           fd('Lora-Bold.ttf')       ],
-    italics:     [ egf('lora','Lora_400Regular_Italic.ttf'), fd('Lora-Italic.ttf')     ],
-    bolditalics: [ egf('lora','Lora_700Bold_Italic.ttf'),    fd('Lora-BoldItalic.ttf') ],
+    normal:      [ fd('Lora-Regular.ttf')    ],
+    bold:        [ fd('Lora-Bold.ttf')       ],
+    italics:     [ fd('Lora-Italic.ttf')     ],
+    bolditalics: [ fd('Lora-BoldItalic.ttf') ],
   },
   PlayfairDisplay: {
     script: 'latin', fallback: 'Merriweather',
-    normal:      [ egf('playfair-display','PlayfairDisplay_400Regular.ttf'),        fd('PlayfairDisplay-Regular.ttf')    ],
-    bold:        [ egf('playfair-display','PlayfairDisplay_700Bold.ttf'),           fd('PlayfairDisplay-Bold.ttf')       ],
-    italics:     [ egf('playfair-display','PlayfairDisplay_400Regular_Italic.ttf'), fd('PlayfairDisplay-Italic.ttf')     ],
-    bolditalics: [ egf('playfair-display','PlayfairDisplay_700Bold_Italic.ttf'),    fd('PlayfairDisplay-BoldItalic.ttf') ],
+    normal:      [ fd('PlayfairDisplay-Regular.ttf')    ],
+    bold:        [ fd('PlayfairDisplay-Bold.ttf')       ],
+    italics:     [ fd('PlayfairDisplay-Italic.ttf')     ],
+    bolditalics: [ fd('PlayfairDisplay-BoldItalic.ttf') ],
   },
   EBGaramond: {
     script: 'latin', fallback: 'Lora',
-    normal:      [ egf('eb-garamond','EBGaramond_400Regular.ttf'),        fd('EBGaramond-Regular.ttf')    ],
-    bold:        [ egf('eb-garamond','EBGaramond_700Bold.ttf'),           fd('EBGaramond-Bold.ttf')       ],
-    italics:     [ egf('eb-garamond','EBGaramond_400Regular_Italic.ttf'), fd('EBGaramond-Italic.ttf')     ],
-    bolditalics: [ egf('eb-garamond','EBGaramond_700Bold_Italic.ttf'),    fd('EBGaramond-BoldItalic.ttf') ],
+    normal:      [ fd('EBGaramond-Regular.ttf')    ],
+    bold:        [ fd('EBGaramond-Bold.ttf')       ],
+    italics:     [ fd('EBGaramond-Italic.ttf')     ],
+    bolditalics: [ fd('EBGaramond-BoldItalic.ttf') ],
   },
 };
 

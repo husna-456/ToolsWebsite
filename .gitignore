@@ -4,11 +4,10 @@ dist/
 *.log
 .eslintcache
 
-# Font files fetched/extracted at deploy time — not committed
+# Only the runtime VFS cache is excluded — TTF files in server/fonts/ are committed
 server/fonts/_cache/
 server/fonts/*.woff2
 server/fonts/*.woff
-server/fonts/*.ttf
 
 # Environment files
 .env

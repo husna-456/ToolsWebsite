@@ -59,13 +59,12 @@ const FONTS = [
 
   // ── Noto Nastaliq Urdu (replaces Jameel Noori Nastaleeq in PDF) ─
   { filename: 'NotoNastaliqUrdu-Regular.ttf', urls: [
+    'https://raw.githubusercontent.com/notofonts/noto-fonts/main/hinted/ttf/NotoNastaliqUrdu/NotoNastaliqUrdu-Regular.ttf',
     `${EGF}/noto-nastaliq-urdu/NotoNastaliqUrdu_400Regular.ttf`,
-    'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notonastaliqurdu/NotoNastaliqUrdu-Regular.ttf',
-    'https://fonts.gstatic.com/s/notonastaliqurdu/v19/LhWNMUPbN-oZdNFcBy1-DJYsEoTq5pudQ9L9Sj5NAvQMajEJHDV_W5e9WTqXzNY.ttf',
   ]},
   { filename: 'NotoNastaliqUrdu-Bold.ttf', urls: [
+    'https://raw.githubusercontent.com/notofonts/noto-fonts/main/hinted/ttf/NotoNastaliqUrdu/NotoNastaliqUrdu-Bold.ttf',
     `${EGF}/noto-nastaliq-urdu/NotoNastaliqUrdu_700Bold.ttf`,
-    'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notonastaliqurdu/NotoNastaliqUrdu-Bold.ttf',
   ]},
 
   // ── Scheherazade New ────────────────────────────────────────────
