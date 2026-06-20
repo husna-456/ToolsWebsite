@@ -4,24 +4,26 @@
  * Production PDF generator for Text-to-PDF tool.
  * Target: Hostinger Business Plan Node.js shared hosting.
  *
- * Font strategy (TTF only — no woff2, no WebAssembly):
+ * All 24 editor fonts are supported:
+ *   Arabic/Urdu : Amiri, NotoNaskhArabic, ScheherazadeNew, Cairo, Tajawal,
+ *                 ReemKufi, Lateef, NotoNastaliqUrdu
+ *                 ("Jameel Noori Nastaleeq" → NotoNastaliqUrdu — no free TTF)
+ *   Latin       : Roboto, OpenSans, Lato, Poppins, Inter, Montserrat,
+ *                 Merriweather, Lora, PlayfairDisplay, EBGaramond
+ *   System      : Times New Roman → Lora, Arial → OpenSans,
+ *                 Georgia → Merriweather, Verdana → OpenSans,
+ *                 Trebuchet MS → OpenSans, Garamond → EBGaramond
  *
- * Roboto (Latin):
- *   1. @expo-google-fonts/roboto TTF files (installed via npm)
- *   2. server/fonts/Roboto-*.ttf (downloaded by download-fonts.js during deploy)
- *   3. VFS extraction: runs pdfmake/build/vfs_fonts.js inside a Node.js vm
- *      sandbox, intercepting its require('pdfmake/build/pdfmake') to avoid
- *      loading browser globals. Writes extracted TTF to server/fonts/_cache/.
- *
- * Amiri (Arabic/Urdu):
- *   1. @expo-google-fonts/amiri TTF files (installed via npm — FIRST, most reliable)
- *   2. server/fonts/Amiri-*.ttf (downloaded by download-fonts.js during deploy)
+ * Font resolution order per font (TTF only — no woff2 / no WASM):
+ *   1. @expo-google-fonts npm package file (guaranteed after npm install)
+ *   2. server/fonts/{Name}-{Style}.ttf  (downloaded by download-fonts.js)
+ *   3. server/fonts/_cache/             (extracted from pdfmake VFS)
+ *   If still missing → nearest same-script fallback → PDF still generates.
  *
  * Resilience:
- *   - Each block rendered inside independent try/catch. Bad block = skip + log.
- *   - All block fields coerced to strings. Null/undefined never reaches pdfmake.
- *   - No Enclosed Alphanumeric Unicode (❶❷❸ U+2776+). Amiri has no glyphs
- *     for them. (1)(2)(3) ASCII used instead.
+ *   - Per-block try/catch: one bad block is skipped, rest continue.
+ *   - GPOSProcessor null-anchor patch prevents Arabic diacritic crashes.
+ *   - Harakat-strip fallback: if GPOS crash escapes, retry without diacritics.
  */
 
 const PdfPrinter = require('pdfmake/src/printer');
@@ -300,120 +302,295 @@ function extractFromVFS(vfsKey, destPath) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Roboto resolution
+// Comprehensive font registry
+//
+// Each entry: pdfmake key → { normal, bold, italics, bolditalics }
+// where each style is a list of candidate paths tried in order.
+// The first path that satisfies fileOk() is used.
+// If no path is found for a non-normal style, normal is reused.
+// If normal is not found, the font is omitted (not registered).
+//
+// script:   'arabic'|'urdu'|'latin'  — used to choose text cleaner
+// fallback: pdfmake key to use when this font is not available
 // ─────────────────────────────────────────────────────────────────
 
-const ROBOTO_SPECS = [
-  {
-    key: 'normal',
-    vfsKey: 'Roboto-Regular.ttf',
-    paths: [
-      path.join(NODE_MODULES, '@expo-google-fonts/roboto/Roboto_400Regular.ttf'),
-      path.join(FONTS_DIR,    'Roboto-Regular.ttf'),
-      path.join(CACHE_DIR,    'Roboto-Regular.ttf'),
-    ],
-  },
-  {
-    key: 'bold',
-    vfsKey: 'Roboto-Medium.ttf',
-    paths: [
-      path.join(NODE_MODULES, '@expo-google-fonts/roboto/Roboto_700Bold.ttf'),
-      path.join(FONTS_DIR,    'Roboto-Medium.ttf'),
-      path.join(CACHE_DIR,    'Roboto-Medium.ttf'),
-    ],
-  },
-  {
-    key: 'italics',
-    vfsKey: 'Roboto-Italic.ttf',
-    paths: [
-      path.join(NODE_MODULES, '@expo-google-fonts/roboto/Roboto_400Regular_Italic.ttf'),
-      path.join(FONTS_DIR,    'Roboto-Italic.ttf'),
-      path.join(CACHE_DIR,    'Roboto-Italic.ttf'),
-    ],
-  },
-  {
-    key: 'bolditalics',
-    vfsKey: 'Roboto-MediumItalic.ttf',
-    paths: [
-      path.join(NODE_MODULES, '@expo-google-fonts/roboto/Roboto_700Bold_Italic.ttf'),
-      path.join(FONTS_DIR,    'Roboto-MediumItalic.ttf'),
-      path.join(CACHE_DIR,    'Roboto-MediumItalic.ttf'),
-    ],
-  },
-];
+function egf(pkg, file) {
+  return path.join(NODE_MODULES, `@expo-google-fonts/${pkg}/${file}`);
+}
+function fd(file) { return path.join(FONTS_DIR, file); }
 
-function resolveRoboto() {
-  const result   = {};
-  let normalPath = null;
+const FONT_REGISTRY = {
+  // ── Arabic-script fonts ──────────────────────────────────────────
+  Amiri: {
+    script: 'arabic', fallback: 'NotoNaskhArabic',
+    normal:      [ egf('amiri','Amiri_400Regular.ttf'),          fd('Amiri-Regular.ttf')         ],
+    bold:        [ egf('amiri','Amiri_700Bold.ttf'),             fd('Amiri-Bold.ttf')            ],
+    italics:     [ egf('amiri','Amiri_400Regular_Italic.ttf'),   fd('Amiri-Italic.ttf')          ],
+    bolditalics: [ egf('amiri','Amiri_700Bold_Italic.ttf'),      fd('Amiri-BoldItalic.ttf')      ],
+  },
+  NotoNaskhArabic: {
+    script: 'arabic', fallback: 'Amiri',
+    normal:      [ egf('noto-naskh-arabic','NotoNaskhArabic_400Regular.ttf'), fd('NotoNaskhArabic-Regular.ttf') ],
+    bold:        [ egf('noto-naskh-arabic','NotoNaskhArabic_700Bold.ttf'),    fd('NotoNaskhArabic-Bold.ttf')    ],
+  },
+  ScheherazadeNew: {
+    script: 'arabic', fallback: 'Amiri',
+    normal:      [ egf('scheherazade-new','ScheherazadeNew_400Regular.ttf'), fd('ScheherazadeNew-Regular.ttf') ],
+    bold:        [ egf('scheherazade-new','ScheherazadeNew_700Bold.ttf'),    fd('ScheherazadeNew-Bold.ttf')    ],
+  },
+  Cairo: {
+    script: 'arabic', fallback: 'NotoNaskhArabic',
+    normal:      [ egf('cairo','Cairo_400Regular.ttf'), fd('Cairo-Regular.ttf') ],
+    bold:        [ egf('cairo','Cairo_700Bold.ttf'),    fd('Cairo-Bold.ttf')    ],
+  },
+  Tajawal: {
+    script: 'arabic', fallback: 'NotoNaskhArabic',
+    normal:      [ egf('tajawal','Tajawal_400Regular.ttf'), fd('Tajawal-Regular.ttf') ],
+    bold:        [ egf('tajawal','Tajawal_700Bold.ttf'),    fd('Tajawal-Bold.ttf')    ],
+  },
+  ReemKufi: {
+    script: 'arabic', fallback: 'NotoNaskhArabic',
+    normal:      [ egf('reem-kufi','ReemKufi_400Regular.ttf'), fd('ReemKufi-Regular.ttf') ],
+  },
+  Lateef: {
+    script: 'arabic', fallback: 'Amiri',
+    normal:      [ egf('lateef','Lateef_400Regular.ttf'), fd('Lateef-Regular.ttf') ],
+  },
 
-  for (const spec of ROBOTO_SPECS) {
-    const found = spec.paths.find(fileOk)
-      || extractFromVFS(spec.vfsKey, path.join(CACHE_DIR, spec.vfsKey));
+  // ── Urdu-script fonts ────────────────────────────────────────────
+  NotoNastaliqUrdu: {
+    script: 'urdu', fallback: 'Amiri',
+    normal:      [ egf('noto-nastaliq-urdu','NotoNastaliqUrdu_400Regular.ttf'), fd('NotoNastaliqUrdu-Regular.ttf') ],
+    bold:        [ egf('noto-nastaliq-urdu','NotoNastaliqUrdu_700Bold.ttf'),    fd('NotoNastaliqUrdu-Bold.ttf')    ],
+  },
 
-    if (spec.key === 'normal') {
-      if (!found) {
-        console.error('[PDF][FONT] Roboto normal NOT FOUND. Paths checked:', spec.paths.join(', '));
-        return null;
-      }
-      normalPath = found;
-    }
-    result[spec.key] = found || normalPath;
-  }
+  // ── Latin fonts ───────────────────────────────────────────────────
+  Roboto: {
+    script: 'latin', fallback: 'OpenSans',
+    normal:      [ egf('roboto','Roboto_400Regular.ttf'),          fd('Roboto-Regular.ttf')    ],
+    bold:        [ egf('roboto','Roboto_700Bold.ttf'),             fd('Roboto-Bold.ttf'),       fd('Roboto-Medium.ttf') ],
+    italics:     [ egf('roboto','Roboto_400Regular_Italic.ttf'),   fd('Roboto-Italic.ttf')     ],
+    bolditalics: [ egf('roboto','Roboto_700Bold_Italic.ttf'),      fd('Roboto-BoldItalic.ttf'), fd('Roboto-MediumItalic.ttf') ],
+  },
+  OpenSans: {
+    script: 'latin', fallback: 'Roboto',
+    normal:      [ egf('open-sans','OpenSans_400Regular.ttf'),        fd('OpenSans-Regular.ttf')    ],
+    bold:        [ egf('open-sans','OpenSans_700Bold.ttf'),           fd('OpenSans-Bold.ttf')       ],
+    italics:     [ egf('open-sans','OpenSans_400Regular_Italic.ttf'), fd('OpenSans-Italic.ttf')     ],
+    bolditalics: [ egf('open-sans','OpenSans_700Bold_Italic.ttf'),    fd('OpenSans-BoldItalic.ttf') ],
+  },
+  Lato: {
+    script: 'latin', fallback: 'Roboto',
+    normal:      [ egf('lato','Lato_400Regular.ttf'),        fd('Lato-Regular.ttf')    ],
+    bold:        [ egf('lato','Lato_700Bold.ttf'),           fd('Lato-Bold.ttf')       ],
+    italics:     [ egf('lato','Lato_400Regular_Italic.ttf'), fd('Lato-Italic.ttf')     ],
+    bolditalics: [ egf('lato','Lato_700Bold_Italic.ttf'),    fd('Lato-BoldItalic.ttf') ],
+  },
+  Poppins: {
+    script: 'latin', fallback: 'Roboto',
+    normal:      [ egf('poppins','Poppins_400Regular.ttf'),        fd('Poppins-Regular.ttf')    ],
+    bold:        [ egf('poppins','Poppins_700Bold.ttf'),           fd('Poppins-Bold.ttf')       ],
+    italics:     [ egf('poppins','Poppins_400Regular_Italic.ttf'), fd('Poppins-Italic.ttf')     ],
+    bolditalics: [ egf('poppins','Poppins_700Bold_Italic.ttf'),    fd('Poppins-BoldItalic.ttf') ],
+  },
+  Inter: {
+    script: 'latin', fallback: 'Roboto',
+    normal:      [ egf('inter','Inter_400Regular.ttf'),        fd('Inter-Regular.ttf') ],
+    bold:        [ egf('inter','Inter_700Bold.ttf'),           fd('Inter-Bold.ttf')    ],
+    italics:     [ egf('inter','Inter_400Regular_Italic.ttf'), fd('Inter-Italic.ttf')  ],
+  },
+  Montserrat: {
+    script: 'latin', fallback: 'Roboto',
+    normal:      [ egf('montserrat','Montserrat_400Regular.ttf'),        fd('Montserrat-Regular.ttf')    ],
+    bold:        [ egf('montserrat','Montserrat_700Bold.ttf'),           fd('Montserrat-Bold.ttf')       ],
+    italics:     [ egf('montserrat','Montserrat_400Regular_Italic.ttf'), fd('Montserrat-Italic.ttf')     ],
+    bolditalics: [ egf('montserrat','Montserrat_700Bold_Italic.ttf'),    fd('Montserrat-BoldItalic.ttf') ],
+  },
+  Merriweather: {
+    script: 'latin', fallback: 'Lora',
+    normal:      [ egf('merriweather','Merriweather_400Regular.ttf'),        fd('Merriweather-Regular.ttf')    ],
+    bold:        [ egf('merriweather','Merriweather_700Bold.ttf'),           fd('Merriweather-Bold.ttf')       ],
+    italics:     [ egf('merriweather','Merriweather_400Regular_Italic.ttf'), fd('Merriweather-Italic.ttf')     ],
+    bolditalics: [ egf('merriweather','Merriweather_700Bold_Italic.ttf'),    fd('Merriweather-BoldItalic.ttf') ],
+  },
+  Lora: {
+    script: 'latin', fallback: 'Merriweather',
+    normal:      [ egf('lora','Lora_400Regular.ttf'),        fd('Lora-Regular.ttf')    ],
+    bold:        [ egf('lora','Lora_700Bold.ttf'),           fd('Lora-Bold.ttf')       ],
+    italics:     [ egf('lora','Lora_400Regular_Italic.ttf'), fd('Lora-Italic.ttf')     ],
+    bolditalics: [ egf('lora','Lora_700Bold_Italic.ttf'),    fd('Lora-BoldItalic.ttf') ],
+  },
+  PlayfairDisplay: {
+    script: 'latin', fallback: 'Merriweather',
+    normal:      [ egf('playfair-display','PlayfairDisplay_400Regular.ttf'),        fd('PlayfairDisplay-Regular.ttf')    ],
+    bold:        [ egf('playfair-display','PlayfairDisplay_700Bold.ttf'),           fd('PlayfairDisplay-Bold.ttf')       ],
+    italics:     [ egf('playfair-display','PlayfairDisplay_400Regular_Italic.ttf'), fd('PlayfairDisplay-Italic.ttf')     ],
+    bolditalics: [ egf('playfair-display','PlayfairDisplay_700Bold_Italic.ttf'),    fd('PlayfairDisplay-BoldItalic.ttf') ],
+  },
+  EBGaramond: {
+    script: 'latin', fallback: 'Lora',
+    normal:      [ egf('eb-garamond','EBGaramond_400Regular.ttf'),        fd('EBGaramond-Regular.ttf')    ],
+    bold:        [ egf('eb-garamond','EBGaramond_700Bold.ttf'),           fd('EBGaramond-Bold.ttf')       ],
+    italics:     [ egf('eb-garamond','EBGaramond_400Regular_Italic.ttf'), fd('EBGaramond-Italic.ttf')     ],
+    bolditalics: [ egf('eb-garamond','EBGaramond_700Bold_Italic.ttf'),    fd('EBGaramond-BoldItalic.ttf') ],
+  },
+};
 
-  return result;
+// ── Editor font name (value from FONT_GROUPS) → pdfmake key ─────
+// System fonts map to nearest available equivalent.
+// "Jameel Noori Nastaleeq" → NotoNastaliqUrdu (no free TTF for JNN).
+const EDITOR_FONT_TO_KEY = {
+  // Arabic
+  'Amiri':              'Amiri',
+  'Noto Naskh Arabic':  'NotoNaskhArabic',
+  'Scheherazade New':   'ScheherazadeNew',
+  'Cairo':              'Cairo',
+  'Tajawal':            'Tajawal',
+  'Reem Kufi':          'ReemKufi',
+  'Lateef':             'Lateef',
+  // Urdu
+  'Noto Nastaliq Urdu':     'NotoNastaliqUrdu',
+  'Jameel Noori Nastaleeq': 'NotoNastaliqUrdu',
+  // Latin (web fonts)
+  'Roboto':            'Roboto',
+  'Open Sans':         'OpenSans',
+  'Lato':              'Lato',
+  'Poppins':           'Poppins',
+  'Inter':             'Inter',
+  'Montserrat':        'Montserrat',
+  'Merriweather':      'Merriweather',
+  'Lora':              'Lora',
+  'Playfair Display':  'PlayfairDisplay',
+  'EB Garamond':       'EBGaramond',
+  // Latin (system font fallbacks — mapped to nearest free equivalent)
+  'Times New Roman':   'Lora',
+  'Georgia':           'Merriweather',
+  'Garamond':          'EBGaramond',
+  'Arial':             'OpenSans',
+  'Verdana':           'OpenSans',
+  'Trebuchet MS':      'OpenSans',
+};
+
+// ── Resolve a single font style from candidate paths ─────────────
+function resolveStyle(candidates) {
+  if (!Array.isArray(candidates)) return null;
+  return candidates.find(fileOk) || null;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Amiri resolution — npm package path FIRST
-// ─────────────────────────────────────────────────────────────────
+// ── Amiri candidates — also used by patchFontkitGPOS ─────────────
+const AMIRI_NORMAL_CANDIDATES = FONT_REGISTRY.Amiri.normal;
 
-const AMIRI_NORMAL_CANDIDATES = [
-  path.join(NODE_MODULES, '@expo-google-fonts/amiri/Amiri_400Regular.ttf'),
-  path.join(FONTS_DIR,    'Amiri-Regular.ttf'),
-  path.join(FONTS_DIR,    'Amiri_400Regular.ttf'),
-];
-const AMIRI_BOLD_CANDIDATES = [
-  path.join(NODE_MODULES, '@expo-google-fonts/amiri/Amiri_700Bold.ttf'),
-  path.join(FONTS_DIR,    'Amiri-Bold.ttf'),
-  path.join(FONTS_DIR,    'Amiri_700Bold.ttf'),
-];
-
-function resolveAmiri() {
-  const normal = AMIRI_NORMAL_CANDIDATES.find(fileOk) || null;
-  if (!normal) {
-    console.error('[PDF][FONT] Amiri NOT FOUND. Paths checked:', AMIRI_NORMAL_CANDIDATES.join(', '));
-    return null;
-  }
-  return { normal, bold: AMIRI_BOLD_CANDIDATES.find(fileOk) || normal };
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Build font descriptor map — called fresh on every request
-// ─────────────────────────────────────────────────────────────────
-
+// ── Build PdfPrinter font descriptor map ─────────────────────────
+// Resolves all registered fonts. Missing normal = font omitted.
+// Missing bold/italic = falls back to normal (pdfmake accepts this).
+// Returns { available: Set<key>, desc: { [key]: {normal,bold,...} } }
 function buildFontDescriptors() {
-  const desc   = {};
-  const roboto = resolveRoboto();
-  const amiri  = resolveAmiri();
-  if (roboto) { desc.Roboto = roboto; console.log('[PDF][FONT] Roboto ok:', roboto.normal); }
-  if (amiri)  { desc.Amiri  = { normal: amiri.normal, bold: amiri.bold }; console.log('[PDF][FONT] Amiri ok:', amiri.normal); }
-  return desc;
+  const desc      = {};
+  const available = new Set();
+
+  for (const [key, def] of Object.entries(FONT_REGISTRY)) {
+    const normal = resolveStyle(def.normal);
+    if (!normal) {
+      console.warn(`[PDF][FONT] ${key}: normal TTF not found — font skipped`);
+      continue;
+    }
+    const bold        = resolveStyle(def.bold)        || normal;
+    const italics     = resolveStyle(def.italics)     || normal;
+    const bolditalics = resolveStyle(def.bolditalics) || bold;
+    desc[key]         = { normal, bold, italics, bolditalics };
+    available.add(key);
+    console.log(`[PDF][FONT] ${key}: ok (${path.basename(normal)})`);
+  }
+
+  // Roboto VFS fallback: extract from pdfmake's bundled VFS if no file found
+  if (!available.has('Roboto')) {
+    const vfsFallbacks = {
+      normal:      extractFromVFS('Roboto-Regular.ttf',      path.join(CACHE_DIR,'Roboto-Regular.ttf')),
+      bold:        extractFromVFS('Roboto-Medium.ttf',       path.join(CACHE_DIR,'Roboto-Medium.ttf')),
+      italics:     extractFromVFS('Roboto-Italic.ttf',       path.join(CACHE_DIR,'Roboto-Italic.ttf')),
+      bolditalics: extractFromVFS('Roboto-MediumItalic.ttf', path.join(CACHE_DIR,'Roboto-MediumItalic.ttf')),
+    };
+    if (vfsFallbacks.normal) {
+      desc.Roboto = {
+        normal:      vfsFallbacks.normal,
+        bold:        vfsFallbacks.bold        || vfsFallbacks.normal,
+        italics:     vfsFallbacks.italics     || vfsFallbacks.normal,
+        bolditalics: vfsFallbacks.bolditalics || vfsFallbacks.bold || vfsFallbacks.normal,
+      };
+      available.add('Roboto');
+      console.log('[PDF][FONT] Roboto: ok via VFS');
+    }
+  }
+
+  return { desc, available };
+}
+
+// ── Resolve editor font name → registered pdfmake key ────────────
+// Returns the key if available, or walks the fallback chain.
+// If all fallbacks fail, returns the script-appropriate last-resort.
+function resolveFont(editorName, available, script) {
+  const mapped = EDITOR_FONT_TO_KEY[editorName] || editorName;
+
+  // Walk fallback chain
+  let key = mapped;
+  const seen = new Set();
+  while (key && !seen.has(key)) {
+    if (available.has(key)) return key;
+    seen.add(key);
+    key = FONT_REGISTRY[key]?.fallback;
+  }
+
+  // Last resort by script
+  if (script === 'latin') {
+    for (const k of ['Roboto','OpenSans','Lato']) {
+      if (available.has(k)) return k;
+    }
+  }
+  if (script === 'urdu') {
+    for (const k of ['NotoNastaliqUrdu','Amiri']) {
+      if (available.has(k)) return k;
+    }
+  }
+  // arabic or unknown
+  for (const k of ['NotoNaskhArabic','Amiri','ScheherazadeNew']) {
+    if (available.has(k)) return k;
+  }
+  // Absolute last resort — pick anything
+  return [...available][0] || 'Roboto';
+}
+
+// ── Is this a RTL (Arabic/Urdu) font key? ────────────────────────
+function isRtlFont(key) {
+  return FONT_REGISTRY[key]?.script === 'arabic' || FONT_REGISTRY[key]?.script === 'urdu';
 }
 
 // ─────────────────────────────────────────────────────────────────
 // Block renderers
+//
+// All renderers receive a font context (fctx):
+//   fctx.NAF  — default Arabic pdfmake key (NotoNaskhArabic or fallback)
+//   fctx.NUF  — default Urdu pdfmake key   (NotoNastaliqUrdu or fallback)
+//   fctx.LF   — default Latin pdfmake key  (Roboto or fallback)
+//   fctx.AF   — Amiri key (for Amiri-specific content if available)
+//   fctx.res  — resolveFont(editorName, script) → pdfmake key
+//
+// Structured blocks (chapter_heading, fiqh, verse) match frontend defaults:
+//   Arabic fields  → NAF (NotoNaskhArabic, same as editor)
+//   Urdu fields    → NUF (NotoNastaliqUrdu ≈ Jameel Noori Nastaleeq shape)
 // ─────────────────────────────────────────────────────────────────
 
-function renderChapterHeading(block, AF) {
+function renderChapterHeading(block, fctx) {
   const nodes        = [];
   const arabicTitle  = cleanForAmiri(block.arabicTitle);
   const urduSubtitle = cleanForAmiri(block.urduSubtitle);
-  if (arabicTitle)  nodes.push({ text: arabicTitle,  font: AF, fontSize: 22, bold: true, alignment: 'center', margin: [0, 20, 0, urduSubtitle ? 4 : 14] });
-  if (urduSubtitle) nodes.push({ text: urduSubtitle, font: AF, fontSize: 17, bold: true, alignment: 'center', margin: [0, 0, 0, 14] });
+  if (arabicTitle)  nodes.push({ text: arabicTitle,  font: fctx.NAF, fontSize: 22, bold: true, alignment: 'center', margin: [0, 20, 0, urduSubtitle ? 4 : 14] });
+  if (urduSubtitle) nodes.push({ text: urduSubtitle, font: fctx.NUF, fontSize: 17, bold: true, alignment: 'center', margin: [0, 0, 0, 14] });
   return nodes;
 }
 
-function renderHadith(block, AF) {
+function renderHadith(block, fctx) {
+  // Arabic column: honour block.arabicFont (user-selected in Hadith editor)
+  const arabicKey = block.arabicFont ? fctx.res(block.arabicFont, 'arabic') : fctx.NAF;
   const num    = cleanForAmiri(block.number);
   const arabic = cleanForAmiri((num ? `﴿${num}﴾ ` : '') + safeStr(block.arabicMatn));
   const urdu   = cleanForAmiri(block.urduTranslation);
@@ -421,8 +598,8 @@ function renderHadith(block, AF) {
     table: {
       widths: ['50%', '50%'],
       body: [[
-        { text: urdu.trim(),   font: AF, fontSize: 13, alignment: 'right', margin: [4, 4, 8, 8] },
-        { text: arabic.trim(), font: AF, fontSize: 13, alignment: 'right', margin: [8, 4, 4, 8] },
+        { text: urdu.trim(),   font: fctx.NUF,  fontSize: 13, alignment: 'right', margin: [4, 4, 8, 8] },
+        { text: arabic.trim(), font: arabicKey,  fontSize: 13, alignment: 'right', margin: [8, 4, 4, 8] },
       ]],
     },
     layout: 'noBorders',
@@ -430,50 +607,55 @@ function renderHadith(block, AF) {
   };
 }
 
-function renderFiqh(block, AF) {
+function renderFiqh(block, fctx) {
   const heading = cleanForAmiri(block.heading) || 'فقہ الحدیث:';
-  const nodes   = [{ text: heading, font: AF, fontSize: 15, bold: true, alignment: 'right', margin: [0, 8, 0, 4] }];
+  const nodes   = [{ text: heading, font: fctx.NAF, fontSize: 15, bold: true, alignment: 'right', margin: [0, 8, 0, 4] }];
   const points  = Array.isArray(block.points) ? block.points : [];
   points.forEach((pt, i) => {
-    nodes.push({ text: `(${i + 1}) ` + cleanForAmiri(pt), font: AF, fontSize: 13, alignment: 'right', margin: [0, 2, 0, 2] });
+    nodes.push({ text: `(${i + 1}) ` + cleanForAmiri(pt), font: fctx.NUF, fontSize: 13, alignment: 'right', margin: [0, 2, 0, 2] });
   });
   return nodes;
 }
 
-function renderReference(block, AF) {
+function renderReference(block, fctx) {
   const content = cleanForAmiri(stripHtml(block.content));
   if (!content) return [];
   return [
     { canvas: [{ type: 'line', x1: 330, y1: 0, x2: 481, y2: 0, lineWidth: 0.8, lineColor: '#555' }], margin: [0, 8, 0, 3] },
-    { text: content, font: AF, fontSize: 10, alignment: 'right', color: '#333', margin: [0, 0, 0, 6] },
+    { text: content, font: fctx.NAF, fontSize: 10, alignment: 'right', color: '#333', margin: [0, 0, 0, 6] },
   ];
 }
 
-function renderVerse(block, AF) {
+function renderVerse(block, fctx) {
   const nodes      = [];
-  const arabicText  = cleanForAmiri(block.arabicText);
-  const urduText    = cleanForAmiri(block.urduText);
-  if (arabicText) nodes.push({ text: arabicText, font: AF, fontSize: 14, alignment: 'center', margin: [0, 10, 0, urduText ? 4 : 10] });
-  if (urduText)   nodes.push({ text: urduText,   font: AF, fontSize: 14, alignment: 'center', margin: [0, 0, 0, 10] });
+  const arabicText = cleanForAmiri(block.arabicText);
+  const urduText   = cleanForAmiri(block.urduText);
+  if (arabicText) nodes.push({ text: arabicText, font: fctx.NAF, fontSize: 14, alignment: 'center', margin: [0, 10, 0, urduText ? 4 : 10] });
+  if (urduText)   nodes.push({ text: urduText,   font: fctx.NUF, fontSize: 14, alignment: 'center', margin: [0, 0, 0, 10] });
   return nodes;
 }
 
-function renderFreeText(block, AF, LF) {
-  const dir     = safeStr(block.direction) || 'rtl';
-  const raw     = stripHtml(block.content);
-  const content = dir === 'ltr' ? cleanForRoboto(raw) : cleanForAmiri(raw);
-  const font    = dir === 'ltr' ? LF : AF;
-  const size    = Math.max(8, Math.min(48, Number(block.fontSize) || 13));
+function renderFreeText(block, fctx) {
+  const dir       = safeStr(block.direction) || 'rtl';
+  const isLtr     = dir === 'ltr';
+  const raw       = stripHtml(block.content);
+  // Resolve per-block font; fall back to NAF (RTL) or LF (LTR)
+  const editorFont = safeStr(block.fontFamily);
+  const script     = isLtr ? 'latin' : 'arabic';
+  const fontKey    = editorFont ? fctx.res(editorFont, script)
+                                : (isLtr ? fctx.LF : fctx.NAF);
+  const content    = isRtlFont(fontKey) ? cleanForAmiri(raw) : cleanForRoboto(raw);
+  const size       = Math.max(8, Math.min(48, Number(block.fontSize) || 13));
   return {
     text:      content,
-    font:      font,
+    font:      fontKey,
     fontSize:  size,
     alignment: pdfAlign(safeStr(block.textAlign), dir),
     margin:    [0, 4, 0, 4],
   };
 }
 
-function buildContent(blocks, AF, LF) {
+function buildContent(blocks, fctx) {
   const content    = [];
   const safeBlocks = Array.isArray(blocks) ? blocks : [];
 
@@ -484,12 +666,12 @@ function buildContent(blocks, AF, LF) {
       const type = safeStr(block.type) || 'free_text';
       let r;
       switch (type) {
-        case 'chapter_heading': r = renderChapterHeading(block, AF); break;
-        case 'hadith':          r = renderHadith(block, AF);         break;
-        case 'fiqh':            r = renderFiqh(block, AF);           break;
-        case 'reference':       r = renderReference(block, AF);      break;
-        case 'verse':           r = renderVerse(block, AF);          break;
-        default:                r = renderFreeText(block, AF, LF);   break;
+        case 'chapter_heading': r = renderChapterHeading(block, fctx); break;
+        case 'hadith':          r = renderHadith(block, fctx);         break;
+        case 'fiqh':            r = renderFiqh(block, fctx);           break;
+        case 'reference':       r = renderReference(block, fctx);      break;
+        case 'verse':           r = renderVerse(block, fctx);          break;
+        default:                r = renderFreeText(block, fctx);       break;
       }
       if (Array.isArray(r)) content.push(...r.filter(Boolean));
       else if (r)           content.push(r);
@@ -504,17 +686,19 @@ function buildContent(blocks, AF, LF) {
 // Header / footer
 // ─────────────────────────────────────────────────────────────────
 
-function makeHeader(doc, AF) {
-  const name = cleanForAmiri(stripHtml(doc.headerRight || doc.name || ''));
-  const pos  = doc.showPageNumber !== false
+function makeHeader(doc, fctx) {
+  const hFont = fctx.res(safeStr(doc.headerFontFamily) || 'Noto Naskh Arabic', 'arabic');
+  const hSize = Math.max(7, Math.min(18, Number(doc.headerFontSize) || 9));
+  const name  = cleanForAmiri(stripHtml(doc.headerRight || doc.name || ''));
+  const pos   = doc.showPageNumber !== false
     ? (safeStr(doc.pageNumberPosition) || 'header-right')
     : 'none';
   return (pg) => {
     try {
       return {
         columns: [
-          { text: pos === 'header-left'  ? String(pg) : '',   font: AF, fontSize: 9, color: '#555', alignment: 'left'  },
-          { text: pos === 'header-right' ? String(pg) : name, font: AF, fontSize: 9, color: '#555', alignment: 'right' },
+          { text: pos === 'header-left'  ? String(pg) : '',   font: hFont, fontSize: hSize, color: '#555', alignment: 'left'  },
+          { text: pos === 'header-right' ? String(pg) : name, font: hFont, fontSize: hSize, color: '#555', alignment: 'right' },
         ],
         margin: [57, 15, 57, 0],
       };
@@ -522,7 +706,9 @@ function makeHeader(doc, AF) {
   };
 }
 
-function makeFooter(doc, AF) {
+function makeFooter(doc, fctx) {
+  const fFont    = fctx.res(safeStr(doc.footerFontFamily) || 'Noto Naskh Arabic', 'arabic');
+  const fSize    = Math.max(7, Math.min(14, Number(doc.footerFontSize) || 9));
   const pos      = doc.showPageNumber !== false
     ? (safeStr(doc.pageNumberPosition) || 'header-right')
     : 'none';
@@ -533,7 +719,7 @@ function makeFooter(doc, AF) {
       const ct    = pos === 'footer-center' ? String(pg) : center;
       const stack = [];
       if (hairline) stack.push({ canvas: [{ type: 'line', x1: 57, y1: 0, x2: 481, y2: 0, lineWidth: 0.4, lineColor: '#000' }], margin: [0, 0, 0, 3] });
-      stack.push({ text: ct, font: AF, fontSize: 9, color: '#555', alignment: 'center' });
+      stack.push({ text: ct, font: fFont, fontSize: fSize, color: '#555', alignment: 'center' });
       return { stack, margin: [0, 8, 0, 0] };
     } catch (_) { return { text: '' }; }
   };
@@ -543,22 +729,32 @@ function makeFooter(doc, AF) {
 // Main export
 // ─────────────────────────────────────────────────────────────────
 
-async function _buildPDFBuffer(desc, doc) {
-  const AF         = 'Amiri';
-  const LF         = 'Roboto';
-  const blockCount = Array.isArray(doc.blocks) ? doc.blocks.length : 0;
+async function _buildPDFBuffer(fontResult, doc) {
+  const { desc, available } = fontResult;
 
+  // Build font context used by all renderers
+  const res  = (name, script) => resolveFont(name, available, script);
+  const fctx = {
+    available,
+    res,
+    NAF: res('Noto Naskh Arabic',  'arabic'), // default Arabic  (matches editor default)
+    NUF: res('Noto Nastaliq Urdu', 'urdu'),   // default Urdu    (≈ Jameel Noori Nastaleeq)
+    LF:  res('Roboto',             'latin'),   // default Latin
+    AF:  res('Amiri',              'arabic'),  // Amiri (for GPOS-tested Amiri usage)
+  };
+
+  const blockCount = Array.isArray(doc.blocks) ? doc.blocks.length : 0;
   console.time('[PDF] generate');
-  console.log(`[PDF] start: fonts=[${Object.keys(desc).join(',')}] blocks=${blockCount}`);
+  console.log(`[PDF] start: fonts=[${[...available].join(',')}] NAF=${fctx.NAF} NUF=${fctx.NUF} LF=${fctx.LF} blocks=${blockCount}`);
 
   const printer = new PdfPrinter(desc);
   const docDef  = {
     pageSize:     'A4',
     pageMargins:  [57, 71, 57, 71],
-    defaultStyle: { font: AF, fontSize: 13 },
-    header:  makeHeader(doc, AF),
-    footer:  makeFooter(doc, AF),
-    content: buildContent(doc.blocks || [], AF, LF),
+    defaultStyle: { font: fctx.NAF, fontSize: 13 },
+    header:  makeHeader(doc, fctx),
+    footer:  makeFooter(doc, fctx),
+    content: buildContent(doc.blocks || [], fctx),
   };
 
   return new Promise((resolve, reject) => {
@@ -591,30 +787,27 @@ async function generatePDF(doc) {
   if (!doc || typeof doc !== 'object') throw new Error('[PDF] Invalid document data.');
 
   // Layer 1: patch GPOSProcessor.prototype.getAnchor before any font opens.
-  // No-op after first successful patch. Non-fatal if it can't run yet.
   patchFontkitGPOS();
 
-  const desc = buildFontDescriptors();
+  const fontData = buildFontDescriptors();
+  const { available } = fontData;
 
-  if (!desc.Amiri) {
-    throw new Error(
-      '[PDF] Amiri font not found. Checked: ' + AMIRI_NORMAL_CANDIDATES.join(', ')
-    );
-  }
-  if (!desc.Roboto) {
-    throw new Error(
-      '[PDF] Roboto font not found (VFS extraction also failed). ' +
-      'Checked: ' + ROBOTO_SPECS[0].paths.join(', ')
-    );
-  }
+  // Need at least one Arabic font and one Latin font to render the document.
+  const hasArabic = ['NotoNaskhArabic','Amiri','ScheherazadeNew','Cairo','Tajawal','ReemKufi','Lateef','NotoNastaliqUrdu'].some(k => available.has(k));
+  const hasLatin  = ['Roboto','OpenSans','Lato','Poppins','Inter','Montserrat','Merriweather','Lora','PlayfairDisplay','EBGaramond'].some(k => available.has(k));
+
+  if (!hasArabic) throw new Error('[PDF] No Arabic/Urdu font available. Run npm run install:fonts');
+  if (!hasLatin)  throw new Error('[PDF] No Latin font available. Run npm run install:fonts');
+
+  console.log(`[PDF] fonts resolved: ${[...available].join(', ')}`);
 
   // Layer 2: build PDF; on GPOS null-anchor escape, strip harakat and retry.
   try {
-    return await _buildPDFBuffer(desc, doc);
+    return await _buildPDFBuffer(fontData, doc);
   } catch (e) {
     if (e && typeof e.message === 'string' && e.message.includes('xCoordinate')) {
       console.warn('[PDF] GPOS null-anchor escaped patch — retrying with harakat stripped');
-      return await _buildPDFBuffer(desc, stripDocHarakat(doc));
+      return await _buildPDFBuffer(fontData, stripDocHarakat(doc));
     }
     throw e;
   }
