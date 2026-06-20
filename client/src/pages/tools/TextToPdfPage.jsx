@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+﻿import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   FileDown, Plus, Trash2, Edit3, Download, Upload, ArrowLeft,
   ChevronUp, ChevronDown, Eye, FileText, X, BookOpen,
@@ -23,9 +23,9 @@ const PDF_PAGE_TEMPLATE = {
   marginRight: 76,
   marginBottom: 40,
   marginLeft: 76,
-  headerHeight: 34,
-  headerGap: 16,
-  footerGap: 24,
+  headerHeight: 48,
+  headerGap: 8,
+  footerGap: 16,
   footerHeight: 24,
 };
 
@@ -294,14 +294,14 @@ function decorativeHeaderHTML(doc) {
   const fs    = doc.headerFontSize || 10;
   const showPN = doc.showPageNumber !== false;
   const name  = doc.headerRight || doc.name || '';
-  const badge = `display:inline-block;border:1px solid #000;border-radius:999px;font-family:${ff};font-size:${fs}px;line-height:20px;color:#000;flex-shrink:0;white-space:nowrap;`;
+  const badge = `display:inline-block;border:1px solid #000;border-radius:999px;font-family:${ff};font-size:${fs}px;line-height:28px;color:#000;flex-shrink:0;white-space:nowrap;vertical-align:middle;`;
   return (
-    `<div style="display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px;padding-bottom:4px;">` +
+    `<div style="display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;">` +
     (showPN
-      ? `<span style="${badge}padding:0 10px;min-width:28px;text-align:center;opacity:0;border-color:transparent;"> </span>`
-      : `<span style="${badge}padding:0 10px;opacity:0;border-color:transparent;"> </span>`) +
+      ? `<span data-pdf-page-num style="${badge}padding:0 12px;min-width:36px;text-align:center;"> </span>`
+      : `<span style="${badge}padding:0 12px;opacity:0;border-color:transparent;"> </span>`) +
     `<div style="flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center;padding:0 4px;min-width:0;">` +
-    `<svg width="100%" height="22" viewBox="0 0 400 22" preserveAspectRatio="xMidYMid meet">` +
+    `<svg width="100%" height="28" viewBox="0 0 400 22" preserveAspectRatio="xMidYMid meet">` +
     `<g transform="translate(200,11)"><line x1="0" y1="-6" x2="0" y2="6" stroke="#000" stroke-width="0.8"/><line x1="-5.2" y1="-3" x2="5.2" y2="3" stroke="#000" stroke-width="0.8"/><line x1="-5.2" y1="3" x2="5.2" y2="-3" stroke="#000" stroke-width="0.8"/><circle cx="0" cy="0" r="2.5" fill="none" stroke="#000" stroke-width="0.7"/></g>` +
     `<path d="M208 11 Q218 7 228 11 Q238 15 248 11 Q258 7 268 11 Q278 15 288 11" fill="none" stroke="#000" stroke-width="0.7"/>` +
     `<path d="M218 8 Q220 3 224 5" fill="none" stroke="#000" stroke-width="0.6"/>` +
@@ -316,7 +316,7 @@ function decorativeHeaderHTML(doc) {
     `<path d="M122 14 Q118 19 114 17" fill="none" stroke="#000" stroke-width="0.6"/>` +
     `<line x1="112" y1="11" x2="4" y2="11" stroke="#000" stroke-width="0.4"/>` +
     `</svg></div>` +
-    `<span style="${badge}padding:0 14px;">${name || ' '}</span>` +
+    `<span style="${badge}padding:0 14px;text-align:center;direction:rtl;">${name || ' '}</span>` +
     `</div>`
   );
 }
@@ -452,6 +452,7 @@ function paginatePDFPages(doc, container) {
         console.warn(`[PDF_BLOCK_OVERFLOW] page=${pages.length}`);
         content = makePage();
       } else {
+        console.log(`[PDF_PAGE_BREAK] fromPage=${pages.length} reason=overflow`);
         content = makePage();
         content.appendChild(node);
       }
@@ -473,10 +474,9 @@ function getPDFPageNumberSlot(doc) {
   const pnPos = doc.showPageNumber !== false ? (doc.pageNumberPosition || 'header-right') : 'none';
   if (pnPos === 'none') return null;
 
+  // Page number is stamped into left badge HTML (data-pdf-page-num) — no jsPDF overlay needed
   if (doc.headerStyle === 'decorative' && pnPos.startsWith('header')) {
-    // Badge total width ≈ 2(border) + 20(padding) + 28(min-width) = 50px
-    // Badge center x = marginLeft + 25; center y = marginTop + (headerHeight/2)
-    return { x: t.marginLeft + 25, y: t.marginTop + Math.round(t.headerHeight / 2), align: 'center' };
+    return null;
   }
 
   const isFooter = pnPos.startsWith('footer');
@@ -2132,7 +2132,7 @@ export default function TextToPdfPage() {
   async function handleDownload() {
     console.log('[PDF_EXPORT_REAL_HANDLER_RUNNING]');
     console.log('[PDF_PAGE_NUMBER_FIX_ACTIVE]');
-    console.log('[PDF_EXPORT_MODE]', 'frontend-per-page-v4');
+    console.log('[PDF_EXPORT_MODE]', 'frontend-per-page-v5-badge-pn');
     if (!currentDoc?.blocks?.length) return;
     setGenerating(true); setPdfErr('');
     let paginationContainer = null;
@@ -2148,6 +2148,19 @@ export default function TextToPdfPage() {
         `position:fixed;left:-${PDF_PAGE_TEMPLATE.cssWidth + 20}px;top:0;pointer-events:none;width:${PDF_PAGE_TEMPLATE.cssWidth}px;`;
       document.body.appendChild(paginationContainer);
       const pages = paginatePDFPages(currentDoc, paginationContainer);
+
+      // Stamp page numbers into decorative header badges (before capture so html2canvas picks them up)
+      const _pnPos = currentDoc.pageNumberPosition || 'header-right';
+      if (currentDoc.headerStyle === 'decorative' && currentDoc.showPageNumber !== false && _pnPos.startsWith('header')) {
+        pages.forEach((pageEl, idx) => {
+          const numEl = pageEl.querySelector('[data-pdf-page-num]');
+          if (numEl) {
+            numEl.textContent = String(idx + 1);
+            console.log(`[PDF_PAGE_NUMBER] page=${idx + 1} x=badge y=badge`);
+          }
+        });
+      }
+      console.log(`[PDF_CONTENT_AREA] startY=${PDF_PAGE_TEMPLATE.marginTop + PDF_PAGE_TEMPLATE.headerHeight + PDF_PAGE_TEMPLATE.headerGap} endY=${PDF_PAGE_TEMPLATE.cssHeight - PDF_PAGE_TEMPLATE.marginBottom - PDF_PAGE_TEMPLATE.footerHeight - PDF_PAGE_TEMPLATE.footerGap}`);
 
       // Wait for fonts + Nastaleeq shaping
       await document.fonts.ready;
@@ -2171,6 +2184,7 @@ export default function TextToPdfPage() {
           `width:${PDF_PAGE_TEMPLATE.cssWidth}px;overflow:hidden;`;
         document.body.appendChild(captureWrap);
         captureWrap.appendChild(pageEl); // move out of paginationContainer
+        console.log(`[PDF_HEADER_BOX] page=${idx + 1} x=${PDF_PAGE_TEMPLATE.marginLeft} y=${PDF_PAGE_TEMPLATE.marginTop} w=${PDF_PAGE_TEMPLATE.cssWidth - PDF_PAGE_TEMPLATE.marginLeft - PDF_PAGE_TEMPLATE.marginRight} h=${PDF_PAGE_TEMPLATE.headerHeight}`);
 
         const canvas = await html2canvas(pageEl, {
           scale:        SCALE,
