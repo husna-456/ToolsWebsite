@@ -291,6 +291,7 @@ function buildDocumentBodyHTML(blocks) {
 // A4 page geometry — CSS pixels at 96 dpi ↔ PDF points
 // PDF_DENSITY='professional-compact': tighter margins → more content per page
 const PDF_DENSITY = 'professional-compact';
+const CHUNK_GAP   = 6; // px vertical gap between adjacent chunks (replaces CSS margins)
 
 const PL = {
   cssW: 794,  cssH: 1123,
@@ -542,17 +543,18 @@ function bisectEl(el) {
   return [elA, elB];
 }
 
-// Recursively bisect el until every piece fits in an empty content zone.
-// Must only be called when layout.zone is empty (guaranteed by PaginationEngine).
+// Recursively bisect el until every piece fits on an empty page.
+// Uses independent height measurement — no zone side-effects.
 function splitOversizedChunk(el, layout) {
-  console.log(`[PDF_CHUNK_MEASURE] h=${el.offsetHeight || '?'}`);
-  if (layout.fits(el)) return [el];
+  const h = layout.measureChunk(el);
+  console.log(`[PDF_CHUNK_MEASURE] h=${h}`);
+  if (h <= PL.contentH) return [el];
 
   console.log(`[PDF_OVERSIZED_CHUNK_SPLIT]`);
   const halves = bisectEl(el);
   if (!halves) {
     console.warn(`[PDF_CHUNK_SPLIT_RESULT] parts=1 unsplittable`);
-    return [el]; // force it — content clips rather than disappears
+    return [el];
   }
   const result = [
     ...splitOversizedChunk(halves[0], layout),
@@ -563,9 +565,8 @@ function splitOversizedChunk(el, layout) {
 }
 
 // ── Page Layout Engine ───────────────────────────────────────────────
-// Creates pages on demand, tracks the active content zone, and provides
-// a fits() probe that temporarily appends/removes an element so the
-// browser's own layout engine decides whether the content fits.
+// Tracks currentY explicitly — no scrollHeight comparisons, no margin-
+// collapse ambiguity.  measureChunk() is the sole height oracle.
 class PageLayoutEngine {
   constructor(doc, container) {
     this.doc       = doc;
@@ -573,6 +574,7 @@ class PageLayoutEngine {
     this.pages     = [];
     this.pageNum   = 1;
     this.zone      = null;
+    this.currentY  = 0;
     this._openPage();
   }
   _openPage() {
@@ -581,26 +583,55 @@ class PageLayoutEngine {
     const page = wrap.firstElementChild;
     this.container.appendChild(page);
     this.pages.push(page);
-    this.zone = page.querySelector('[data-pdf-content]');
+    this.zone     = page.querySelector('[data-pdf-content]');
+    this.currentY = 0;
     console.log(`[PDF_NEW_PAGE] page=${this.pages.length}`);
   }
   addPage() {
     this._openPage();
     console.log(`[PDF_PAGE_BREAK] → page ${this.pages.length}`);
   }
-  // Probe: append el, read scrollHeight, remove el. Zone is unchanged.
-  fits(el) {
-    this.zone.appendChild(el);
-    void this.zone.offsetHeight;
-    const ok = this.zone.scrollHeight <= this.zone.clientHeight + 1;
-    this.zone.removeChild(el);
-    return ok;
+  // Measure el's intrinsic height in an isolated probe (margins stripped so
+  // CHUNK_GAP is the sole source of inter-chunk spacing).
+  measureChunk(el) {
+    const probe = document.createElement('div');
+    probe.style.cssText =
+      `position:absolute;left:-99999px;top:0;` +
+      `width:${PL.contentW}px;visibility:hidden;`;
+    this.container.appendChild(probe);
+    const savedMT = el.style.marginTop;
+    const savedMB = el.style.marginBottom;
+    el.style.marginTop    = '0';
+    el.style.marginBottom = '0';
+    probe.appendChild(el);
+    void probe.offsetHeight;
+    const h = el.offsetHeight;
+    probe.removeChild(el);
+    probe.remove();
+    el.style.marginTop    = savedMT;
+    el.style.marginBottom = savedMB;
+    return h;
   }
-  append(el) {
-    this.zone.appendChild(el);
-    console.log(`[PDF_CHUNK_RENDER] page=${this.pages.length} used=${this.zone.scrollHeight}/${this.zone.clientHeight}`);
+  // Pure math — does chunkH fit in the remaining space on this page?
+  fitsAt(chunkH) {
+    const gap = this.currentY > 0 ? CHUNK_GAP : 0;
+    const fits = this.currentY + gap + chunkH <= PL.contentH;
+    console.log(
+      `[PDF_FITS_CHECK] currentY=${this.currentY} gap=${gap} chunkH=${chunkH}` +
+      ` remaining=${PL.contentH - this.currentY} → ${fits ? 'FIT' : 'OVERFLOW'}`
+    );
+    return fits;
   }
-  isEmpty() { return !this.zone.hasChildNodes(); }
+  // Place el into the active zone, overriding its CSS margins with CHUNK_GAP.
+  append(el, chunkH) {
+    const gap = this.currentY > 0 ? CHUNK_GAP : 0;
+    el.style.marginTop    = gap > 0 ? `${gap}px` : '0';
+    el.style.marginBottom = '0';
+    this.zone.appendChild(el);
+    this.currentY += gap + chunkH;
+    console.log(`[PDF_CHUNK_RENDER] page=${this.pages.length} h=${chunkH} gap=${gap} currentY=${this.currentY}/${PL.contentH}`);
+  }
+  isEmpty()  { return this.currentY === 0; }
   finalize() {
     if (this.pages.length > 1 && this.isEmpty()) this.pages.pop().remove();
     return this.pages;
@@ -616,42 +647,46 @@ class PaginationEngine {
   constructor(layout) { this.layout = layout; }
 
   run(blocks) {
-    // Use a live queue so bisected chunks can be inserted in-place
     const queue = this._buildChunks(blocks);
     console.log(`[PDF_CONTENT_AREA] contentH=${PL.contentH} raw_chunks=${queue.length}`);
     let qi = 0;
 
     while (qi < queue.length) {
-      const chunk = queue[qi];
-      console.log(`[PDF_BLOCK_START] chunk=${qi}/${queue.length}`);
+      const chunk  = queue[qi];
+      const chunkH = this.layout.measureChunk(chunk);
+      console.log(
+        `[PDF_BLOCK_START] chunk=${qi}/${queue.length} h=${chunkH}` +
+        ` currentY=${this.layout.currentY} remaining=${PL.contentH - this.layout.currentY}`
+      );
 
-      if (this.layout.fits(chunk)) {
-        this.layout.append(chunk);
-        console.log(`[PDF_BLOCK_CONTINUED_SAME_PAGE] chunk=${qi}`);
+      if (this.layout.fitsAt(chunkH)) {
+        this.layout.append(chunk, chunkH);
+        console.log(`[PDF_BLOCK_CONTINUED_SAME_PAGE] chunk=${qi} currentY=${this.layout.currentY}`);
         qi++;
         continue;
       }
 
       if (!this.layout.isEmpty()) {
-        // Page has content — move to next page and retry the same chunk
-        console.log(`[PDF_PAGE_BREAK_REASON] chunk=${qi} overflows partial page → new page`);
+        console.log(
+          `[PDF_PAGE_BREAK_REASON] chunk=${qi} h=${chunkH}` +
+          ` remaining=${PL.contentH - this.layout.currentY} → new page`
+        );
         this.layout.addPage();
-        continue; // qi unchanged — retry chunk on fresh page
+        continue; // retry same chunk on the fresh page
       }
 
-      // Empty page and chunk still overflows — must bisect
+      // Empty page and chunk still doesn't fit → bisect
       const parts = splitOversizedChunk(chunk, this.layout);
       if (parts.length === 1) {
-        // Unsplittable (single character / BR / atomic element) — force it
-        this.layout.append(chunk);
+        // Unsplittable atomic element — force-place it
+        this.layout.append(chunk, chunkH);
         qi++;
       } else {
-        queue.splice(qi, 1, ...parts); // replace with smaller pieces
-        // qi unchanged — first piece will be processed on next iteration
+        queue.splice(qi, 1, ...parts);
       }
     }
 
-    console.log(`[PDF_NO_CONTENT_DROPPED] total_placed=${queue.length} pages=${this.layout.pages.length}`);
+    console.log(`[PDF_NO_CONTENT_DROPPED] total_chunks=${queue.length} pages=${this.layout.pages.length}`);
   }
 
   _buildChunks(blocks) {
