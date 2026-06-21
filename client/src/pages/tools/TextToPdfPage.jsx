@@ -426,143 +426,160 @@ function pdfPageShell(doc, pageNum) {
   );
 }
 
-// ── Content unit builder ─────────────────────────────────────────────
-// Splits a free_text block into per-paragraph DOM elements so long blocks
-// can flow across page boundaries without losing content.
-function splitFreeTextUnits(block) {
-  const ff  = block.fontFamily  || 'Jameel Noori Nastaleeq';
-  const dir = block.direction   || 'rtl';
-  const ta  = block.textAlign   || (dir === 'ltr' ? 'justify' : 'right');
-  const lh  = block.lineHeight  || (dir === 'ltr' ? '1.6' : '2.0');
-  const ls  = block.letterSpacing ? `letter-spacing:${block.letterSpacing};` : '';
-  const ws  = block.wordSpacing   ? `word-spacing:${block.wordSpacing};`     : '';
-  const mt  = block.marginTop     || '8px';
-  const mb  = block.marginBottom  || '8px';
-  const baseStyle =
-    `font-family:'${ff}',serif;font-size:16px;direction:${dir};` +
-    `text-align:${ta};line-height:${lh};${ls}${ws}color:#000;`;
-  const content = normalizeHighlights(styleListsInContent(clean(block.content || '')));
-  const temp = document.createElement('div');
-  temp.innerHTML = content;
-  const children = Array.from(temp.children);
-  if (children.length <= 1) {
+// ── Page Layout Engine ───────────────────────────────────────────────
+// Creates pages on demand, tracks the active content zone, and provides
+// a fits() probe (append → measure → remove) so PaginationEngine can
+// decide per-chunk whether to stay on the current page or open a new one.
+class PageLayoutEngine {
+  constructor(doc, container) {
+    this.doc       = doc;
+    this.container = container;
+    this.pages     = [];
+    this.pageNum   = 1;
+    this.zone      = null;
+    this._openPage();
+  }
+  _openPage() {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = pdfPageShell(this.doc, this.pageNum++);
+    const page = wrap.firstElementChild;
+    this.container.appendChild(page);
+    this.pages.push(page);
+    this.zone = page.querySelector('[data-pdf-content]');
+    console.log(`[PDF_NEW_PAGE] page=${this.pages.length}`);
+  }
+  addPage() {
+    this._openPage();
+    console.log(`[PDF_PAGE_BREAK] → page ${this.pages.length}`);
+  }
+  fits(el) {
+    this.zone.appendChild(el);
+    void this.zone.offsetHeight;
+    const ok = this.zone.scrollHeight <= this.zone.clientHeight + 1;
+    this.zone.removeChild(el);
+    return ok;
+  }
+  append(el) {
+    this.zone.appendChild(el);
+    console.log(`[PDF_CHUNK_RENDER] page=${this.pages.length} used=${this.zone.scrollHeight}/${this.zone.clientHeight}`);
+  }
+  isEmpty() { return !this.zone.hasChildNodes(); }
+  finalize() {
+    if (this.pages.length > 1 && this.isEmpty()) this.pages.pop().remove();
+    return this.pages;
+  }
+}
+
+// ── Pagination Engine ────────────────────────────────────────────────
+// Splits every block into the finest renderable chunks (per-paragraph
+// for free_text, per-point for fiqh) then flows them through
+// PageLayoutEngine. Content never forces a page break by itself —
+// it fills available space first, then overflows to the next page.
+class PaginationEngine {
+  constructor(layout) { this.layout = layout; }
+
+  run(blocks) {
+    const chunks = this._buildChunks(blocks);
+    console.log(`[PDF_CONTENT_AREA] contentH=${PL.contentH} total_chunks=${chunks.length}`);
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      console.log(`[PDF_BLOCK_START] chunk=${i}/${chunks.length}`);
+
+      if (!this.layout.fits(chunk)) {
+        if (!this.layout.isEmpty()) {
+          // Current page is partially full — overflow to next page
+          console.log(`[PDF_PAGE_BREAK] chunk=${i} → page ${this.layout.pages.length + 1}`);
+          this.layout.addPage();
+        } else {
+          // Fresh page but chunk still overflows — force it (rare: single element > 947px)
+          console.warn(`[PDF_BLOCK_SPLIT] chunk=${i} exceeds full page height`);
+        }
+      }
+
+      this.layout.append(chunk);
+    }
+
+    console.log(`[PDF_NO_CONTENT_DROPPED] placed=${chunks.length} pages=${this.layout.pages.length}`);
+  }
+
+  _buildChunks(blocks) {
+    const out = [];
+    for (const b of blocks) out.push(...this._blockToChunks(b));
+    return out;
+  }
+
+  _blockToChunks(block) {
+    switch (block.type) {
+      case 'hadith':          return this._hadithChunks(block);
+      case 'fiqh':            return this._fiqhChunks(block);
+      case 'chapter_heading':
+      case 'reference':
+      case 'verse':           return this._singleChunk(block);
+      case 'free_text':
+      default:                return this._freeTextChunks(block);
+    }
+  }
+
+  _singleChunk(block) {
+    const t = document.createElement('div');
+    t.innerHTML = renderBlockHTML(block);
+    return t.firstElementChild ? [t.firstElementChild] : [];
+  }
+
+  _hadithChunks(block) {
     const el = document.createElement('div');
-    el.style.cssText = baseStyle + `margin-top:${mt};margin-bottom:${mb};`;
-    el.innerHTML = content;
+    el.style.marginTop = '22px';
+    el.innerHTML = renderHadithTableHTML(block);
     return [el];
   }
-  return children.map((child, idx) => {
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = baseStyle +
-      `margin-top:${idx === 0 ? mt : '2px'};` +
-      `margin-bottom:${idx === children.length - 1 ? mb : '2px'};`;
-    wrapper.appendChild(child.cloneNode(true));
-    return wrapper;
-  });
-}
 
-// Converts all blocks into an array of independently-placeable DOM elements.
-// fiqh points and free_text paragraphs are each their own element so the
-// pagination engine can split them across pages without content loss.
-function buildPdfUnits(blocks) {
-  const units = [];
-  for (const block of blocks) {
-    if (block.type === 'hadith') {
+  _fiqhChunks(block) {
+    const t = document.createElement('div');
+    t.innerHTML = renderFiqhHTML(block);
+    const out = [];
+    while (t.firstElementChild) out.push(t.firstElementChild);
+    return out;
+  }
+
+  _freeTextChunks(block) {
+    const ff  = block.fontFamily    || 'Jameel Noori Nastaleeq';
+    const dir = block.direction     || 'rtl';
+    const ta  = block.textAlign     || (dir === 'ltr' ? 'justify' : 'right');
+    const lh  = block.lineHeight    || (dir === 'ltr' ? '1.6' : '2.0');
+    const ls  = block.letterSpacing ? `letter-spacing:${block.letterSpacing};` : '';
+    const ws  = block.wordSpacing   ? `word-spacing:${block.wordSpacing};`     : '';
+    const mt  = block.marginTop     || '8px';
+    const mb  = block.marginBottom  || '8px';
+    const base =
+      `font-family:'${ff}',serif;font-size:16px;direction:${dir};` +
+      `text-align:${ta};line-height:${lh};${ls}${ws}color:#000;`;
+    const content = normalizeHighlights(styleListsInContent(clean(block.content || '')));
+    const t = document.createElement('div');
+    t.innerHTML = content;
+    const kids = Array.from(t.children);
+    if (kids.length <= 1) {
       const el = document.createElement('div');
-      el.style.marginTop = '22px';
-      el.innerHTML = renderHadithTableHTML(block);
-      units.push(el);
-      continue;
+      el.style.cssText = base + `margin-top:${mt};margin-bottom:${mb};`;
+      el.innerHTML = content;
+      return [el];
     }
-    if (block.type === 'fiqh') {
-      const temp = document.createElement('div');
-      temp.innerHTML = renderFiqhHTML(block);
-      while (temp.firstElementChild) units.push(temp.firstElementChild);
-      continue;
-    }
-    if (block.type === 'free_text' || !block.type) {
-      units.push(...splitFreeTextUnits(block));
-      continue;
-    }
-    // chapter_heading, reference, verse — single root element each
-    const temp = document.createElement('div');
-    temp.innerHTML = renderBlockHTML(block);
-    while (temp.firstElementChild) units.push(temp.firstElementChild);
+    return kids.map((child, idx) => {
+      const w = document.createElement('div');
+      w.style.cssText = base +
+        `margin-top:${idx === 0 ? mt : '2px'};` +
+        `margin-bottom:${idx === kids.length - 1 ? mb : '2px'};`;
+      w.appendChild(child.cloneNode(true));
+      return w;
+    });
   }
-  return units;
 }
 
-// ── Pagination engine ────────────────────────────────────────────────
-// Measures all units in a hidden staging area (same width as content zone),
-// then distributes them across pages by tracking currentY. A block that
-// crosses a page boundary is split at the unit boundary — no content dropped.
-// Must be called AFTER fonts are loaded (handleDownload ensures this).
+// ── PDF pagination entry point ───────────────────────────────────────
 function pdfPaginate(doc, container) {
-  const units = buildPdfUnits(doc.blocks || []);
-
-  // Measure all units together before moving them (single reflow)
-  const staging = document.createElement('div');
-  staging.style.cssText =
-    `position:absolute;left:-99999px;top:0;width:${PL.contentW}px;visibility:hidden;`;
-  units.forEach(u => staging.appendChild(u));
-  container.appendChild(staging);
-  void staging.offsetHeight;
-  const heights = units.map(u => u.offsetHeight);
-  units.forEach(u => staging.removeChild(u));
-  staging.remove();
-
-  const pages = [];
-  let pageNum = 1;
-  let currentY = 0;
-
-  const newPage = () => {
-    const wrap = document.createElement('div');
-    wrap.innerHTML = pdfPageShell(doc, pageNum++);
-    const page = wrap.firstElementChild;
-    container.appendChild(page);
-    pages.push(page);
-    currentY = 0;
-    return page.querySelector('[data-pdf-content]');
-  };
-
-  let zone = newPage();
-  console.log(`[PDF_CONTENT_AREA] contentTop=${PL.contentTop} contentH=${PL.contentH}`);
-
-  for (let i = 0; i < units.length; i++) {
-    const unit = units[i];
-    const h    = heights[i];
-    console.log(`[PDF_BLOCK_START] unit=${i} h=${h} currentY=${currentY}`);
-
-    if (h > PL.contentH) {
-      // Unit taller than a full page — give it its own page (overflow:hidden clips it)
-      if (currentY > 0) {
-        console.log(`[PDF_PAGE_BREAK] currentY=${currentY} → page ${pageNum} (oversized unit)`);
-        zone = newPage();
-      }
-      zone.appendChild(unit);
-      currentY = h;
-      console.warn(`[PDF_BLOCK_SPLIT] unit=${i} h=${h} exceeds contentH=${PL.contentH}`);
-      continue;
-    }
-
-    if (currentY + h > PL.contentH) {
-      console.log(`[PDF_PAGE_BREAK] currentY=${currentY} unitH=${h} → page ${pageNum}`);
-      zone = newPage();
-    }
-
-    zone.appendChild(unit);
-    currentY += h;
-    console.log(`[PDF_LINE_RENDERED] unit=${i} h=${h} currentY=${currentY}/${PL.contentH}`);
-  }
-
-  console.log(`[PDF_NO_CONTENT_DROPPED] total_units=${units.length} pages=${pages.length}`);
-
-  // Drop empty trailing page
-  const lastZone = pages.length > 0
-    ? pages[pages.length - 1].querySelector('[data-pdf-content]') : null;
-  if (pages.length > 1 && lastZone && !lastZone.hasChildNodes()) pages.pop().remove();
-
-  return pages;
+  const layout = new PageLayoutEngine(doc, container);
+  new PaginationEngine(layout).run(doc.blocks || []);
+  return layout.finalize();
 }
 
 // ── Per-page capture ─────────────────────────────────────────────────
