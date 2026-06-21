@@ -426,47 +426,94 @@ function pdfPageShell(doc, pageNum) {
   );
 }
 
-// ── Block grouping for pagination ────────────────────────────────────
-// Each block is its own pagination unit so none is forced to exceed the
-// page height. Hadith gets a 22px top margin. Fiqh and reference follow
-// as separate units and flow naturally to the next page if needed.
-function pdfGroupBlocks(blocks) {
-  const parts = [];
-  let i = 0;
-  while (i < blocks.length) {
-    const b = blocks[i];
-    if (b.type === 'hadith') {
-      parts.push(`<div data-pdf-block style="margin-top:22px;">${renderHadithTableHTML(b)}</div>`);
-      i++;
-      while (i < blocks.length && blocks[i].type === 'fiqh') {
-        parts.push(`<div data-pdf-block>${renderFiqhHTML(blocks[i])}</div>`);
-        i++;
-      }
-      if (i < blocks.length && blocks[i].type === 'reference') {
-        parts.push(`<div data-pdf-block>${renderReferenceHTML(blocks[i])}</div>`);
-        i++;
-      }
+// ── Content unit builder ─────────────────────────────────────────────
+// Splits a free_text block into per-paragraph DOM elements so long blocks
+// can flow across page boundaries without losing content.
+function splitFreeTextUnits(block) {
+  const ff  = block.fontFamily  || 'Jameel Noori Nastaleeq';
+  const dir = block.direction   || 'rtl';
+  const ta  = block.textAlign   || (dir === 'ltr' ? 'justify' : 'right');
+  const lh  = block.lineHeight  || (dir === 'ltr' ? '1.6' : '2.0');
+  const ls  = block.letterSpacing ? `letter-spacing:${block.letterSpacing};` : '';
+  const ws  = block.wordSpacing   ? `word-spacing:${block.wordSpacing};`     : '';
+  const mt  = block.marginTop     || '8px';
+  const mb  = block.marginBottom  || '8px';
+  const baseStyle =
+    `font-family:'${ff}',serif;font-size:16px;direction:${dir};` +
+    `text-align:${ta};line-height:${lh};${ls}${ws}color:#000;`;
+  const content = normalizeHighlights(styleListsInContent(clean(block.content || '')));
+  const temp = document.createElement('div');
+  temp.innerHTML = content;
+  const children = Array.from(temp.children);
+  if (children.length <= 1) {
+    const el = document.createElement('div');
+    el.style.cssText = baseStyle + `margin-top:${mt};margin-bottom:${mb};`;
+    el.innerHTML = content;
+    return [el];
+  }
+  return children.map((child, idx) => {
+    const wrapper = document.createElement('div');
+    wrapper.style.cssText = baseStyle +
+      `margin-top:${idx === 0 ? mt : '2px'};` +
+      `margin-bottom:${idx === children.length - 1 ? mb : '2px'};`;
+    wrapper.appendChild(child.cloneNode(true));
+    return wrapper;
+  });
+}
+
+// Converts all blocks into an array of independently-placeable DOM elements.
+// fiqh points and free_text paragraphs are each their own element so the
+// pagination engine can split them across pages without content loss.
+function buildPdfUnits(blocks) {
+  const units = [];
+  for (const block of blocks) {
+    if (block.type === 'hadith') {
+      const el = document.createElement('div');
+      el.style.marginTop = '22px';
+      el.innerHTML = renderHadithTableHTML(block);
+      units.push(el);
       continue;
     }
-    parts.push(`<div data-pdf-block>${renderBlockHTML(b)}</div>`);
-    i++;
+    if (block.type === 'fiqh') {
+      const temp = document.createElement('div');
+      temp.innerHTML = renderFiqhHTML(block);
+      while (temp.firstElementChild) units.push(temp.firstElementChild);
+      continue;
+    }
+    if (block.type === 'free_text' || !block.type) {
+      units.push(...splitFreeTextUnits(block));
+      continue;
+    }
+    // chapter_heading, reference, verse — single root element each
+    const temp = document.createElement('div');
+    temp.innerHTML = renderBlockHTML(block);
+    while (temp.firstElementChild) units.push(temp.firstElementChild);
   }
-  return parts.join('');
+  return units;
 }
 
 // ── Pagination engine ────────────────────────────────────────────────
-// Greedy fill: move blocks from staging into the content zone one by one.
-// Overflow check (scrollHeight > clientHeight) triggers a new page.
+// Measures all units in a hidden staging area (same width as content zone),
+// then distributes them across pages by tracking currentY. A block that
+// crosses a page boundary is split at the unit boundary — no content dropped.
 // Must be called AFTER fonts are loaded (handleDownload ensures this).
 function pdfPaginate(doc, container) {
+  const units = buildPdfUnits(doc.blocks || []);
+
+  // Measure all units together before moving them (single reflow)
   const staging = document.createElement('div');
   staging.style.cssText =
     `position:absolute;left:-99999px;top:0;width:${PL.contentW}px;visibility:hidden;`;
-  staging.innerHTML = pdfGroupBlocks(doc.blocks || []);
+  units.forEach(u => staging.appendChild(u));
   container.appendChild(staging);
+  void staging.offsetHeight;
+  const heights = units.map(u => u.offsetHeight);
+  units.forEach(u => staging.removeChild(u));
+  staging.remove();
 
   const pages = [];
   let pageNum = 1;
+  let currentY = 0;
 
   const newPage = () => {
     const wrap = document.createElement('div');
@@ -474,33 +521,42 @@ function pdfPaginate(doc, container) {
     const page = wrap.firstElementChild;
     container.appendChild(page);
     pages.push(page);
+    currentY = 0;
     return page.querySelector('[data-pdf-content]');
   };
 
   let zone = newPage();
   console.log(`[PDF_CONTENT_AREA] contentTop=${PL.contentTop} contentH=${PL.contentH}`);
 
-  while (staging.firstElementChild) {
-    const block = staging.firstElementChild;
-    zone.appendChild(block);
-    void zone.offsetHeight; // force layout reflow
+  for (let i = 0; i < units.length; i++) {
+    const unit = units[i];
+    const h    = heights[i];
+    console.log(`[PDF_BLOCK_START] unit=${i} h=${h} currentY=${currentY}`);
 
-    if (zone.scrollHeight > zone.clientHeight + 1) {
-      zone.removeChild(block);
-      if (!zone.hasChildNodes()) {
-        // Block alone is taller than one content zone — force it and continue on next page
-        zone.appendChild(block);
-        console.warn(`[PDF_BLOCK_TOO_TALL] page=${pages.length} block.type=${block.dataset?.pdfBlock || '?'}`);
+    if (h > PL.contentH) {
+      // Unit taller than a full page — give it its own page (overflow:hidden clips it)
+      if (currentY > 0) {
+        console.log(`[PDF_PAGE_BREAK] currentY=${currentY} → page ${pageNum} (oversized unit)`);
         zone = newPage();
-      } else {
-        console.log(`[PDF_PAGE_BREAK] fromPage=${pages.length} → page ${pages.length + 1}`);
-        zone = newPage();
-        zone.appendChild(block);
       }
+      zone.appendChild(unit);
+      currentY = h;
+      console.warn(`[PDF_BLOCK_SPLIT] unit=${i} h=${h} exceeds contentH=${PL.contentH}`);
+      continue;
     }
+
+    if (currentY + h > PL.contentH) {
+      console.log(`[PDF_PAGE_BREAK] currentY=${currentY} unitH=${h} → page ${pageNum}`);
+      zone = newPage();
+    }
+
+    zone.appendChild(unit);
+    currentY += h;
+    console.log(`[PDF_LINE_RENDERED] unit=${i} h=${h} currentY=${currentY}/${PL.contentH}`);
   }
 
-  staging.remove();
+  console.log(`[PDF_NO_CONTENT_DROPPED] total_units=${units.length} pages=${pages.length}`);
+
   // Drop empty trailing page
   const lastZone = pages.length > 0
     ? pages[pages.length - 1].querySelector('[data-pdf-content]') : null;
