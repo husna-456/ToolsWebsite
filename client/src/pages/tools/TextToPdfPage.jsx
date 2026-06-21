@@ -426,10 +426,116 @@ function pdfPageShell(doc, pageNum) {
   );
 }
 
+// ── Chunk bisection utilities ────────────────────────────────────────
+// Split raw text at the natural boundary closest to the midpoint.
+// Priority: Urdu/Arabic sentence end → word space → character midpoint.
+function bisectText(text) {
+  if (!text || text.length < 2) return null;
+  const mid = Math.floor(text.length / 2);
+
+  // Sentence-ending punctuation closest to midpoint
+  const re = /[۔؟!.?!؟؛]/g;
+  let bestIdx = -1, bestDist = Infinity, m;
+  while ((m = re.exec(text)) !== null) {
+    const idx = m.index + 1;
+    if (idx > 0 && idx < text.length) {
+      const d = Math.abs(idx - mid);
+      if (d < bestDist) { bestDist = d; bestIdx = idx; }
+    }
+  }
+  if (bestIdx > 0) return [text.slice(0, bestIdx), text.slice(bestIdx).replace(/^\s+/, '')];
+
+  // Word space closest to midpoint
+  bestDist = Infinity; bestIdx = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === ' ' || text[i] === '‌' || text[i] === '​') {
+      const d = Math.abs(i - mid);
+      if (d < bestDist) { bestDist = d; bestIdx = i + 1; }
+    }
+  }
+  if (bestIdx > 0 && bestIdx < text.length) return [text.slice(0, bestIdx), text.slice(bestIdx)];
+
+  // Last resort: character midpoint
+  return [text.slice(0, mid), text.slice(mid)];
+}
+
+// Split a DOM element into two sibling elements each with roughly half the
+// content. Returns [firstHalf, secondHalf] preserving all inline styles,
+// attributes, RTL direction, and Nastaleeq font inheritance.
+// Returns null when the element cannot be split any further.
+function bisectEl(el) {
+  const kids = Array.from(el.childNodes);
+  if (kids.length === 0) return null;
+
+  // ── Single child element: recurse into it ───────────────────────────
+  if (kids.length === 1 && kids[0].nodeType === Node.ELEMENT_NODE) {
+    const inner = kids[0];
+    if (inner.tagName === 'BR') return null;
+    const halves = bisectEl(inner);
+    if (!halves) return null;
+    const elA = el.cloneNode(false); elA.appendChild(halves[0]);
+    const elB = el.cloneNode(false); elB.appendChild(halves[1]);
+    return [elA, elB];
+  }
+
+  // ── Single text node: split at text boundary ─────────────────────────
+  if (kids.length === 1 && kids[0].nodeType === Node.TEXT_NODE) {
+    const halves = bisectText(kids[0].textContent);
+    if (!halves) return null;
+    const elA = el.cloneNode(false); elA.appendChild(document.createTextNode(halves[0]));
+    const elB = el.cloneNode(false); elB.appendChild(document.createTextNode(halves[1]));
+    return [elA, elB];
+  }
+
+  // ── Multiple child nodes: find best split point near midpoint ─────────
+  const mid = Math.ceil(kids.length / 2);
+  let splitIdx = mid;
+  const SENT = /[۔؟!.?!؟؛]\s*$/;
+
+  outer: for (let off = 0; off < kids.length; off++) {
+    for (const i of [mid + off, mid - off]) {
+      if (i <= 0 || i >= kids.length) continue;
+      const prev = kids[i - 1];
+      if (prev.nodeType === Node.ELEMENT_NODE && prev.tagName === 'BR') { splitIdx = i; break outer; }
+      if (prev.nodeType === Node.TEXT_NODE && SENT.test(prev.textContent)) { splitIdx = i; break outer; }
+    }
+  }
+
+  // Guard: both halves must be non-empty
+  if (splitIdx <= 0) splitIdx = 1;
+  if (splitIdx >= kids.length) splitIdx = kids.length - 1;
+
+  const elA = el.cloneNode(false);
+  const elB = el.cloneNode(false);
+  kids.slice(0, splitIdx).forEach(n => elA.appendChild(n.cloneNode(true)));
+  kids.slice(splitIdx).forEach(n => elB.appendChild(n.cloneNode(true)));
+  return [elA, elB];
+}
+
+// Recursively bisect el until every piece fits in an empty content zone.
+// Must only be called when layout.zone is empty (guaranteed by PaginationEngine).
+function splitOversizedChunk(el, layout) {
+  console.log(`[PDF_CHUNK_MEASURE] h=${el.offsetHeight || '?'}`);
+  if (layout.fits(el)) return [el];
+
+  console.log(`[PDF_OVERSIZED_CHUNK_SPLIT]`);
+  const halves = bisectEl(el);
+  if (!halves) {
+    console.warn(`[PDF_CHUNK_SPLIT_RESULT] parts=1 unsplittable`);
+    return [el]; // force it — content clips rather than disappears
+  }
+  const result = [
+    ...splitOversizedChunk(halves[0], layout),
+    ...splitOversizedChunk(halves[1], layout),
+  ];
+  console.log(`[PDF_CHUNK_SPLIT_RESULT] parts=${result.length}`);
+  return result;
+}
+
 // ── Page Layout Engine ───────────────────────────────────────────────
 // Creates pages on demand, tracks the active content zone, and provides
-// a fits() probe (append → measure → remove) so PaginationEngine can
-// decide per-chunk whether to stay on the current page or open a new one.
+// a fits() probe that temporarily appends/removes an element so the
+// browser's own layout engine decides whether the content fits.
 class PageLayoutEngine {
   constructor(doc, container) {
     this.doc       = doc;
@@ -452,6 +558,7 @@ class PageLayoutEngine {
     this._openPage();
     console.log(`[PDF_PAGE_BREAK] → page ${this.pages.length}`);
   }
+  // Probe: append el, read scrollHeight, remove el. Zone is unchanged.
   fits(el) {
     this.zone.appendChild(el);
     void this.zone.offsetHeight;
@@ -471,36 +578,50 @@ class PageLayoutEngine {
 }
 
 // ── Pagination Engine ────────────────────────────────────────────────
-// Splits every block into the finest renderable chunks (per-paragraph
-// for free_text, per-point for fiqh) then flows them through
-// PageLayoutEngine. Content never forces a page break by itself —
-// it fills available space first, then overflows to the next page.
+// Converts blocks into fine-grained chunks and flows them through
+// PageLayoutEngine using a queue. When a chunk is too tall for an empty
+// page it is recursively bisected until each piece fits. Chunks are never
+// skipped — no content is lost.
 class PaginationEngine {
   constructor(layout) { this.layout = layout; }
 
   run(blocks) {
-    const chunks = this._buildChunks(blocks);
-    console.log(`[PDF_CONTENT_AREA] contentH=${PL.contentH} total_chunks=${chunks.length}`);
+    // Use a live queue so bisected chunks can be inserted in-place
+    const queue = this._buildChunks(blocks);
+    console.log(`[PDF_CONTENT_AREA] contentH=${PL.contentH} raw_chunks=${queue.length}`);
+    let qi = 0;
 
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      console.log(`[PDF_BLOCK_START] chunk=${i}/${chunks.length}`);
+    while (qi < queue.length) {
+      const chunk = queue[qi];
+      console.log(`[PDF_BLOCK_START] chunk=${qi}/${queue.length}`);
 
-      if (!this.layout.fits(chunk)) {
-        if (!this.layout.isEmpty()) {
-          // Current page is partially full — overflow to next page
-          console.log(`[PDF_PAGE_BREAK] chunk=${i} → page ${this.layout.pages.length + 1}`);
-          this.layout.addPage();
-        } else {
-          // Fresh page but chunk still overflows — force it (rare: single element > 947px)
-          console.warn(`[PDF_BLOCK_SPLIT] chunk=${i} exceeds full page height`);
-        }
+      if (this.layout.fits(chunk)) {
+        this.layout.append(chunk);
+        console.log(`[PDF_BLOCK_CONTINUED_SAME_PAGE] chunk=${qi}`);
+        qi++;
+        continue;
       }
 
-      this.layout.append(chunk);
+      if (!this.layout.isEmpty()) {
+        // Page has content — move to next page and retry the same chunk
+        console.log(`[PDF_PAGE_BREAK_REASON] chunk=${qi} overflows partial page → new page`);
+        this.layout.addPage();
+        continue; // qi unchanged — retry chunk on fresh page
+      }
+
+      // Empty page and chunk still overflows — must bisect
+      const parts = splitOversizedChunk(chunk, this.layout);
+      if (parts.length === 1) {
+        // Unsplittable (single character / BR / atomic element) — force it
+        this.layout.append(chunk);
+        qi++;
+      } else {
+        queue.splice(qi, 1, ...parts); // replace with smaller pieces
+        // qi unchanged — first piece will be processed on next iteration
+      }
     }
 
-    console.log(`[PDF_NO_CONTENT_DROPPED] placed=${chunks.length} pages=${this.layout.pages.length}`);
+    console.log(`[PDF_NO_CONTENT_DROPPED] total_placed=${queue.length} pages=${this.layout.pages.length}`);
   }
 
   _buildChunks(blocks) {
@@ -558,12 +679,25 @@ class PaginationEngine {
     const t = document.createElement('div');
     t.innerHTML = content;
     const kids = Array.from(t.children);
-    if (kids.length <= 1) {
+
+    // No element children (plain text or empty) — wrap as single chunk
+    if (kids.length === 0) {
+      if (!t.textContent.trim()) return [];
       const el = document.createElement('div');
       el.style.cssText = base + `margin-top:${mt};margin-bottom:${mb};`;
       el.innerHTML = content;
       return [el];
     }
+
+    // Single element — one chunk (splitOversizedChunk will bisect if needed)
+    if (kids.length === 1) {
+      const el = document.createElement('div');
+      el.style.cssText = base + `margin-top:${mt};margin-bottom:${mb};`;
+      el.appendChild(kids[0].cloneNode(true));
+      return [el];
+    }
+
+    // Multiple elements — one chunk per element, each carrying the block styles
     return kids.map((child, idx) => {
       const w = document.createElement('div');
       w.style.cssText = base +
