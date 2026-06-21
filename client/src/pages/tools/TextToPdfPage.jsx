@@ -289,20 +289,49 @@ function buildDocumentBodyHTML(blocks) {
 // ══════════════════════════════════════════════════════════════════════
 
 // A4 page geometry — CSS pixels at 96 dpi ↔ PDF points
+// PDF_DENSITY='professional-compact': tighter margins → more content per page
+const PDF_DENSITY = 'professional-compact';
+
 const PL = {
   cssW: 794,  cssH: 1123,
   ptW:  595.28, ptH: 841.89,
-  mTop: 40, mRight: 76, mBottom: 40, mLeft: 76,
-  hdrH: 48,    // header zone (fits 36px badge + 6px padding top & bottom)
-  hdrGap: 10,  // gap: header bottom → content top
-  ftrH: 24,    // footer zone
-  ftrGap: 14,  // gap: content bottom → footer top
+  mTop: 32, mRight: 60, mBottom: 32, mLeft: 60,
+  hdrH: 42,   // badge 30px + 6px pad top & bottom
+  hdrGap: 8,  // gap: header bottom → content top
+  ftrH: 20,   // footer zone
+  ftrGap: 8,  // gap: content bottom → footer top
 };
-PL.contentW   = PL.cssW  - PL.mLeft - PL.mRight;              // 642 px
-PL.contentTop = PL.mTop  + PL.hdrH  + PL.hdrGap;             //  98 px from top
-PL.contentBot = PL.cssH  - PL.mBottom - PL.ftrH - PL.ftrGap; // 1045 px from top
-PL.contentH   = PL.contentBot - PL.contentTop;                 //  947 px
+PL.contentW   = PL.cssW  - PL.mLeft - PL.mRight;              // 674 px
+PL.contentTop = PL.mTop  + PL.hdrH  + PL.hdrGap;             //  82 px from top
+PL.contentBot = PL.cssH  - PL.mBottom - PL.ftrH - PL.ftrGap; // 1063 px from top
+PL.contentH   = PL.contentBot - PL.contentTop;                 //  981 px
 PL.pt         = PL.ptW   / PL.cssW;                            // ~0.7497 pt/px
+
+// Post-process a PDF chunk element to reduce excessive default spacing.
+// Only called in the PDF generation path — never touches the editor preview.
+// Normalises line-heights that default to 2.0 in the editor but are too
+// spread-out for print, and trims excessive margins/padding.
+function pdfCompactify(el) {
+  if (PDF_DENSITY !== 'professional-compact') return;
+  [el, ...el.querySelectorAll('[style]')].forEach(node => {
+    if (!(node instanceof HTMLElement)) return;
+    const s = node.style;
+    const lh = parseFloat(s.lineHeight);
+    if (!isNaN(lh)) {
+      if (lh >= 1.9) s.lineHeight = '1.55';        // Urdu 2.0 → 1.55
+      else if (lh >= 1.7) s.lineHeight = '1.55';   // Arabic 1.8 → 1.55
+      else if (lh > 1.55) s.lineHeight = '1.45';   // Latin 1.6 → 1.45
+    }
+    const mt = parseFloat(s.marginTop);
+    if (mt > 10) s.marginTop  = Math.round(mt  * 0.5) + 'px';
+    const mb = parseFloat(s.marginBottom);
+    if (mb > 6)  s.marginBottom = Math.round(mb * 0.55) + 'px';
+    const pt = parseFloat(s.paddingTop);
+    if (pt > 6)  s.paddingTop  = Math.round(pt  * 0.55) + 'px';
+    const pb = parseFloat(s.paddingBottom);
+    if (pb > 8)  s.paddingBottom = Math.round(pb * 0.55) + 'px';
+  });
+}
 
 // ── Decorative header: [page-num badge] [──SVG──] [title badge] ──────
 function pdfDecorativeHeader(doc, pageNum) {
@@ -313,6 +342,7 @@ function pdfDecorativeHeader(doc, pageNum) {
   const showLP   = showPN && pnPos.startsWith('header');
   const title    = doc.headerRight || doc.name || '';
 
+  const badgeH = PL.hdrH - 12; // hdrH minus 6px top pad + 6px bottom pad
   const B = [
     'display:inline-flex',
     'align-items:center',
@@ -321,7 +351,7 @@ function pdfDecorativeHeader(doc, pageNum) {
     'border-radius:999px',
     `font-family:${ff}`,
     `font-size:${fs}px`,
-    'height:36px',
+    `height:${badgeH}px`,
     'box-sizing:border-box',
     'color:#1a1a1a',
     'white-space:nowrap',
@@ -645,13 +675,17 @@ class PaginationEngine {
   _singleChunk(block) {
     const t = document.createElement('div');
     t.innerHTML = renderBlockHTML(block);
-    return t.firstElementChild ? [t.firstElementChild] : [];
+    const el = t.firstElementChild;
+    if (!el) return [];
+    pdfCompactify(el);
+    return [el];
   }
 
   _hadithChunks(block) {
     const el = document.createElement('div');
-    el.style.marginTop = '22px';
+    el.style.marginTop = '12px'; // was 22px — compact mode
     el.innerHTML = renderHadithTableHTML(block);
+    pdfCompactify(el);
     return [el];
   }
 
@@ -659,7 +693,11 @@ class PaginationEngine {
     const t = document.createElement('div');
     t.innerHTML = renderFiqhHTML(block);
     const out = [];
-    while (t.firstElementChild) out.push(t.firstElementChild);
+    while (t.firstElementChild) {
+      const el = t.firstElementChild;
+      pdfCompactify(el);
+      out.push(el);
+    }
     return out;
   }
 
@@ -667,11 +705,17 @@ class PaginationEngine {
     const ff  = block.fontFamily    || 'Jameel Noori Nastaleeq';
     const dir = block.direction     || 'rtl';
     const ta  = block.textAlign     || (dir === 'ltr' ? 'justify' : 'right');
-    const lh  = block.lineHeight    || (dir === 'ltr' ? '1.6' : '2.0');
+    // Compact PDF line-height: respect explicit user choice; otherwise use
+    // 1.55 for Urdu/Arabic (was 2.0) and 1.45 for LTR (was 1.6)
+    const lh  = block.lineHeight
+      ? block.lineHeight
+      : (PDF_DENSITY === 'professional-compact'
+          ? (dir === 'ltr' ? '1.45' : '1.55')
+          : (dir === 'ltr' ? '1.6'  : '2.0'));
     const ls  = block.letterSpacing ? `letter-spacing:${block.letterSpacing};` : '';
     const ws  = block.wordSpacing   ? `word-spacing:${block.wordSpacing};`     : '';
-    const mt  = block.marginTop     || '8px';
-    const mb  = block.marginBottom  || '8px';
+    const mt  = block.marginTop     || '6px';
+    const mb  = block.marginBottom  || '6px';
     const base =
       `font-family:'${ff}',serif;font-size:16px;direction:${dir};` +
       `text-align:${ta};line-height:${lh};${ls}${ws}color:#000;`;
@@ -701,8 +745,8 @@ class PaginationEngine {
     return kids.map((child, idx) => {
       const w = document.createElement('div');
       w.style.cssText = base +
-        `margin-top:${idx === 0 ? mt : '2px'};` +
-        `margin-bottom:${idx === kids.length - 1 ? mb : '2px'};`;
+        `margin-top:${idx === 0 ? mt : '6px'};` +
+        `margin-bottom:${idx === kids.length - 1 ? mb : '6px'};`;
       w.appendChild(child.cloneNode(true));
       return w;
     });
