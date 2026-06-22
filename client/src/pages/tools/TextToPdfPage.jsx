@@ -317,12 +317,6 @@ function pdfCompactify(el) {
   [el, ...el.querySelectorAll('[style]')].forEach(node => {
     if (!(node instanceof HTMLElement)) return;
     const s = node.style;
-    const lh = parseFloat(s.lineHeight);
-    if (!isNaN(lh)) {
-      if (lh >= 1.9) s.lineHeight = '1.55';        // Urdu 2.0 → 1.55
-      else if (lh >= 1.7) s.lineHeight = '1.55';   // Arabic 1.8 → 1.55
-      else if (lh > 1.55) s.lineHeight = '1.45';   // Latin 1.6 → 1.45
-    }
     const mt = parseFloat(s.marginTop);
     if (mt > 10) s.marginTop  = Math.round(mt  * 0.5) + 'px';
     const mb = parseFloat(s.marginBottom);
@@ -331,22 +325,56 @@ function pdfCompactify(el) {
     if (pt > 6)  s.paddingTop  = Math.round(pt  * 0.55) + 'px';
     const pb = parseFloat(s.paddingBottom);
     if (pb > 8)  s.paddingBottom = Math.round(pb * 0.55) + 'px';
+
+    // ── Line-height capping ────────────────────────────────────────────
+    // JNN Nastaleeq calligraphic glyphs have tall ascenders and descenders.
+    // Below line-height 1.8 the ink overflows the CSS line box and overlaps
+    // the adjacent line — exactly what the user sees as "مخرج نمبر overlap".
+    // Arabic Naskh is more compact and is safe at 1.8 too.
+    // We check direction OR explicit fontFamily to classify the node.
+    const ff2 = s.fontFamily || '';
+    const isNastaleeq = ff2.indexOf('Jameel')    !== -1 ||
+                        ff2.indexOf('Nastaleeq') !== -1 ||
+                        ff2.indexOf('Nastaliq')  !== -1;
+    const isRTLNode = s.direction === 'rtl' || isNastaleeq;
+    const lh2 = parseFloat(s.lineHeight);
+    if (!isNaN(lh2)) {
+      if (isRTLNode) {
+        // RTL / Nastaleeq: cap at 1.8 from above (never reduce below 1.8)
+        if (lh2 > 1.8) {
+          s.lineHeight = '1.8';
+          console.log(`[PDF_LINE_HEIGHT_APPLIED] ${lh2}→1.8 (RTL cap)`);
+          console.log(`[PDF_TRIMMED_EMPTY_SPACE] inflated lh ${lh2} replaced with 1.8 — recovered ~${Math.round((lh2 - 1.8) * 16)}px per line`);
+        }
+      } else {
+        // LTR: compact for print
+        if (lh2 > 1.45) {
+          const prev = lh2;
+          s.lineHeight = '1.45';
+          console.log(`[PDF_TRIMMED_EMPTY_SPACE] LTR lh ${prev}→1.45`);
+        }
+      }
+    }
+
     if (s.direction === 'rtl') {
-      // JNN Nastaleeq inter-word space is calligraphically very narrow; without an
-      // explicit value html2canvas rasterises adjacent words with only 2–3 px gap.
-      if (!s.wordSpacing) s.wordSpacing = '3px';
-      // Prevent html2canvas from breaking Urdu words at arbitrary character
-      // boundaries when a line wraps.
+      // Prevent word-break or hyphenation breaking Urdu words mid-character.
       s.overflowWrap = 'normal';
       s.wordBreak    = 'normal';
       s.hyphens      = 'none';
+      // Do NOT force word-spacing here. Adding 3 px widens each space, which
+      // can cause a short phrase like "مخرج نمبر" to wrap when it previously
+      // fit on one line. Combined with the tight line-height this made the two
+      // wrapped lines' glyphs overlap — the very bug being reported.
+      console.log(`[PDF_URDU_STYLE_APPLIED] overflowWrap/wordBreak/hyphens set`);
     }
-    // letter-spacing on JNN/Nastaleeq forces html2canvas to treat each code-point
-    // as a separate text run. The run-placement code does not know ligature widths,
-    // so glyphs land on top of each other ("س ل overlap", "لان malformed").
-    // Strip it completely — Nastaleeq never needs inter-character tracking.
-    const ff = s.fontFamily || '';
-    if (ff.indexOf('Jameel') !== -1 || ff.indexOf('Nastaleeq') !== -1 || ff.indexOf('Nastaliq') !== -1) {
+
+    // letter-spacing on Nastaleeq forces html2canvas to treat each code-point
+    // as a separate text run. Run placement ignores ligature widths → glyphs
+    // land on top of each other. Strip it unconditionally for these fonts.
+    const ff3 = s.fontFamily || '';
+    if (ff3.indexOf('Jameel')    !== -1 ||
+        ff3.indexOf('Nastaleeq') !== -1 ||
+        ff3.indexOf('Nastaliq')  !== -1) {
       s.letterSpacing = '';
     }
   });
@@ -632,6 +660,12 @@ class PageLayoutEngine {
     probe.appendChild(el);
     void probe.offsetHeight;        // force synchronous layout
     const h = el.offsetHeight;
+
+    // Log actual rendered bounds so we can verify measurement matches visual content.
+    // getBoundingClientRect reflects the post-font, post-lineheight paint bounds.
+    const rect = el.getBoundingClientRect();
+    console.log(`[PDF_VISIBLE_BOUNDS] offsetH=${h} rect.height=${rect.height.toFixed(1)} diff=${(h - rect.height).toFixed(1)}`);
+
     probe.removeChild(el);
     document.body.removeChild(probe);
     el.style.marginTop    = savedMT;
@@ -640,12 +674,14 @@ class PageLayoutEngine {
   }
   // Pure math — does chunkH fit in the remaining space on this page?
   fitsAt(chunkH) {
-    const gap = this.currentY > 0 ? CHUNK_GAP : 0;
-    const fits = this.currentY + gap + chunkH <= PL.contentH;
-    console.log(
-      `[PDF_FITS_CHECK] currentY=${this.currentY} gap=${gap} chunkH=${chunkH}` +
-      ` remaining=${PL.contentH - this.currentY} → ${fits ? 'FIT' : 'OVERFLOW'}`
-    );
+    const gap       = this.currentY > 0 ? CHUNK_GAP : 0;
+    const remaining = PL.contentH - this.currentY;
+    const needed    = gap + chunkH;
+    const fits      = needed <= remaining;
+    console.log(`[PDF_REMAINING_SPACE] remaining=${remaining} needed=${needed} (gap=${gap}+chunkH=${chunkH})`);
+    if (!fits) {
+      console.log(`[PDF_PAGE_BREAK_REASON] overflow by ${(needed - remaining).toFixed(1)}px — new page`);
+    }
     return fits;
   }
   // Place el into the active zone, overriding its CSS margins with CHUNK_GAP.
@@ -770,29 +806,36 @@ class PaginationEngine {
     const ff  = block.fontFamily    || 'Jameel Noori Nastaleeq';
     const dir = block.direction     || 'rtl';
     const ta  = block.textAlign     || (dir === 'ltr' ? 'justify' : 'right');
-    // Compact PDF line-height: respect explicit user choice; otherwise use
-    // 1.55 for Urdu/Arabic (was 2.0) and 1.45 for LTR (was 1.6)
-    const lh  = block.lineHeight
-      ? block.lineHeight
-      : (PDF_DENSITY === 'professional-compact'
-          ? (dir === 'ltr' ? '1.45' : '1.55')
-          : (dir === 'ltr' ? '1.6'  : '2.0'));
-    // letter-spacing on JNN/Nastaleeq breaks ligatures in html2canvas — strip it.
-    const isNastaleeq = ff.indexOf('Jameel') !== -1 || ff.indexOf('Nastaleeq') !== -1 || ff.indexOf('Nastaliq') !== -1;
-    const ls  = (block.letterSpacing && !isNastaleeq) ? `letter-spacing:${block.letterSpacing};` : '';
-    // RTL free-text blocks bypass pdfCompactify, so apply the same
-    // word-spacing default here.  Explicit user value always wins.
-    const ws  = block.wordSpacing
-      ? `word-spacing:${block.wordSpacing};`
-      : (dir === 'rtl' ? 'word-spacing:3px;' : '');
-    const mt  = block.marginTop     || '6px';
-    const mb  = block.marginBottom  || '6px';
-    // overflow-wrap/word-break: prevent html2canvas from breaking Urdu words at
-    // arbitrary character boundaries. hyphens:none stops browser auto-hyphenation.
+
+    // JNN Nastaleeq calligraphic glyphs have tall ascenders/descenders.
+    // At line-height < 1.8 the ink overflows the CSS line box and overlaps
+    // the adjacent line (the root cause of "مخرج نمبر overlap").
+    // Use 1.8 as the compact-safe minimum for ALL RTL text in PDF.
+    const isNastaleeq = ff.indexOf('Jameel')    !== -1 ||
+                        ff.indexOf('Nastaleeq') !== -1 ||
+                        ff.indexOf('Nastaliq')  !== -1;
+    const defaultLH = PDF_DENSITY === 'professional-compact'
+      ? (dir === 'ltr' ? '1.45' : '1.8')   // was '1.55' — caused glyph overlap
+      : (dir === 'ltr' ? '1.6'  : '2.0');
+    const lh = block.lineHeight ? block.lineHeight : defaultLH;
+    console.log(`[PDF_LINE_HEIGHT_APPLIED] font=${ff} dir=${dir} lh=${lh}`);
+
+    // letter-spacing on Nastaleeq forces html2canvas into per-code-point runs;
+    // ligature widths are ignored so glyphs stack. Strip unconditionally.
+    const ls = (block.letterSpacing && !isNastaleeq) ? `letter-spacing:${block.letterSpacing};` : '';
+
+    // Only apply explicit user word-spacing; do NOT add a default.
+    // Auto-adding 3px caused short phrases to wrap and then overlap vertically
+    // at the tight line-height — it was the primary source of reported overlap.
+    const ws = block.wordSpacing ? `word-spacing:${block.wordSpacing};` : '';
+
+    const mt  = block.marginTop    || '6px';
+    const mb  = block.marginBottom || '6px';
     const rtlSafety = dir === 'rtl' ? 'overflow-wrap:normal;word-break:normal;hyphens:none;' : '';
     const base =
       `font-family:'${ff}',serif;font-size:16px;direction:${dir};` +
       `text-align:${ta};line-height:${lh};${ls}${ws}${rtlSafety}color:#000;`;
+
     const content = normalizeHighlights(styleListsInContent(clean(block.content || '')));
     const t = document.createElement('div');
     t.innerHTML = content;
@@ -804,6 +847,11 @@ class PaginationEngine {
       const el = document.createElement('div');
       el.style.cssText = base + `margin-top:${mt};margin-bottom:${mb};`;
       el.innerHTML = content;
+      // pdfCompactify normalises any inline styles baked into the editor HTML
+      // (e.g. line-height:2.8 from a user preset). Without this call the chunk
+      // is measured at the inflated line-height and fitsAt() returns false even
+      // when 30–50 % of the page is still available — the blank-space bug.
+      pdfCompactify(el);
       return [el];
     }
 
@@ -812,6 +860,7 @@ class PaginationEngine {
       const el = document.createElement('div');
       el.style.cssText = base + `margin-top:${mt};margin-bottom:${mb};`;
       el.appendChild(kids[0].cloneNode(true));
+      pdfCompactify(el);
       return [el];
     }
 
@@ -822,6 +871,7 @@ class PaginationEngine {
         `margin-top:${idx === 0 ? mt : '6px'};` +
         `margin-bottom:${idx === kids.length - 1 ? mb : '6px'};`;
       w.appendChild(child.cloneNode(true));
+      pdfCompactify(w);
       return w;
     });
   }
@@ -2554,6 +2604,7 @@ export default function TextToPdfPage() {
       const nnkSpec = `16px 'Noto Naskh Arabic'`;
       const jnnOk = document.fonts.check(jnnSpec);
       const nnkOk = document.fonts.check(nnkSpec);
+      console.log(`[PDF_FONT_CHECK_JNN] loaded=${jnnOk} spec="${jnnSpec}"`);
       console.log(`[PDF_FONT_CHECK] JNN=${jnnOk} NNK=${nnkOk}`);
 
       // JNN Nastaleeq needs extra settle time: the shaping engine (HarfBuzz)
