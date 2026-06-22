@@ -69,8 +69,8 @@ export default function OCRTool() {
       const text = await runOCR(file, setProgress);
       if (!text) setError('No text detected in the image. Try a clearer image with higher contrast.');
       else setResult(text);
-    } catch {
-      setError('OCR processing failed. Please try again with a different image.');
+    } catch (err) {
+      setError(err.message || 'OCR processing failed. Please try again with a different image.');
     } finally {
       setLoading(false);
       setProgress(0);
