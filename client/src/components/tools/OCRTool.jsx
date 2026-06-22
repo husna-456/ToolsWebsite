@@ -1,27 +1,29 @@
 import { useState, useRef, useCallback } from 'react';
 import { Upload, FileText, Copy, Check, Download, X, Loader2, AlertCircle } from 'lucide-react';
-import { createWorker } from 'tesseract.js';
 import { useClipboard } from '@/hooks/useClipboard';
 
 const ACCEPTED = '.jpg,.jpeg,.png,.gif,.bmp,.tiff,.webp';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
 
 async function runOCR(file, onProgress) {
-  onProgress(5);
-  const worker = await createWorker('eng', 1, {
-    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/worker.min.js',
-    langPath:   'https://tessdata.projectnaptha.com/4.0.0',
-    corePath:   'https://cdn.jsdelivr.net/npm/tesseract.js-core@4.0.6/tesseract-core.wasm.js',
-    logger: m => {
-      if (m.status === 'recognizing text') {
-        onProgress(10 + Math.round(m.progress * 85));
-      }
-    },
+  onProgress(20);
+  const formData = new FormData();
+  formData.append('image', file);
+  onProgress(40);
+  const token = localStorage.getItem('it_token');
+  const res = await fetch(`${API_BASE_URL}/api/ocr/run`, {
+    method: 'POST',
+    body: formData,
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
-  onProgress(10);
-  const { data: { text } } = await worker.recognize(file);
-  await worker.terminate();
+  onProgress(80);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'OCR failed');
+  }
+  const data = await res.json();
   onProgress(100);
-  return text.trim();
+  return data.result;
 }
 
 export default function OCRTool() {
