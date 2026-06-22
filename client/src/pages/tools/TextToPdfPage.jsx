@@ -590,24 +590,52 @@ function bisectEl(el) {
 }
 
 // Recursively bisect el until every piece fits on an empty page.
-// Uses independent height measurement — no zone side-effects.
-function splitOversizedChunk(el, layout) {
-  const h = layout.measureChunk(el);
-  console.log(`[PDF_CHUNK_MEASURE] h=${h}`);
-  if (h <= PL.contentH) return [el];
-
-  console.log(`[PDF_OVERSIZED_CHUNK_SPLIT]`);
-  const halves = bisectEl(el);
-  if (!halves) {
-    console.warn(`[PDF_CHUNK_SPLIT_RESULT] parts=1 unsplittable`);
+// depth guards against infinite recursion: JNN Nastaleeq lines have a
+// CSS minimum height — bisecting a single text node repeatedly yields
+// the same height, so without this guard the function never terminates.
+function splitOversizedChunk(el, layout, depth = 0) {
+  if (depth > 10) {
+    console.warn(`[PDF_SPLIT_MAX_DEPTH] giving up at depth=${depth} h=${layout.measureChunk(el)}`);
     return [el];
   }
-  const result = [
-    ...splitOversizedChunk(halves[0], layout),
-    ...splitOversizedChunk(halves[1], layout),
+
+  const h = layout.measureChunk(el);
+  console.log(`[PDF_CHUNK_MEASURE] depth=${depth} h=${h}`);
+  if (h <= PL.contentH) return [el];
+
+  console.log(`[PDF_SPLIT_ATTEMPT] depth=${depth} h=${h} max=${PL.contentH}`);
+
+  const nodes = Array.from(el.childNodes);
+  if (nodes.length === 0) return [el];
+
+  // Single text node — split at character midpoint
+  if (nodes.length === 1 && nodes[0].nodeType === Node.TEXT_NODE) {
+    const text = nodes[0].textContent;
+    if (text.length <= 2) return [el];   // cannot split further
+    const mid = Math.floor(text.length / 2);
+    const a = el.cloneNode(false);
+    a.appendChild(document.createTextNode(text.slice(0, mid)));
+    const b = el.cloneNode(false);
+    b.appendChild(document.createTextNode(text.slice(mid)));
+    return [
+      ...splitOversizedChunk(a, layout, depth + 1),
+      ...splitOversizedChunk(b, layout, depth + 1),
+    ];
+  }
+
+  // Multiple nodes — bisect at midpoint
+  const mid = Math.floor(nodes.length / 2);
+  if (mid === 0) return [el];
+
+  const firstEl = el.cloneNode(false);
+  nodes.slice(0, mid).forEach(n => firstEl.appendChild(n.cloneNode(true)));
+  const secondEl = el.cloneNode(false);
+  nodes.slice(mid).forEach(n => secondEl.appendChild(n.cloneNode(true)));
+
+  return [
+    ...splitOversizedChunk(firstEl, layout, depth + 1),
+    ...splitOversizedChunk(secondEl, layout, depth + 1),
   ];
-  console.log(`[PDF_CHUNK_SPLIT_RESULT] parts=${result.length}`);
-  return result;
 }
 
 // ── Page Layout Engine ───────────────────────────────────────────────
@@ -797,6 +825,8 @@ class PaginationEngine {
     const out = [];
     while (t.firstElementChild) {
       const el = t.firstElementChild;
+      t.removeChild(el);   // must detach before pushing; without this
+                           // t.firstElementChild is always the same node → infinite loop
       pdfCompactify(el);
       out.push(el);
     }
