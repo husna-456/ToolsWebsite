@@ -2,11 +2,14 @@ const express          = require('express');
 const router           = express.Router();
 const multer           = require('multer');
 const { createWorker } = require('tesseract.js');
-const sharp            = require('sharp');
 const fs               = require('fs');
+const path             = require('path');
+
+const uploadDir = path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const upload = multer({
-  dest: 'uploads/',
+  dest: uploadDir,
   limits: { fileSize: 10 * 1024 * 1024 }
 });
 
@@ -14,42 +17,31 @@ router.post('/run', upload.single('image'), async (req, res) => {
   console.log('[API_REQUEST] POST /api/ocr/run', { filename: req.file?.originalname, size: req.file?.size });
 
   if (!req.file) {
-    console.log('[API_ERROR] POST /api/ocr/run — no image uploaded');
     return res.status(400).json({ error: 'No image uploaded' });
   }
 
-  const processedPath = req.file.path + '_processed.png';
-
   try {
-    await sharp(req.file.path)
-      .greyscale()
-      .sharpen({ sigma: 2 })
-      .normalise()
-      .threshold(180)
-      .toFile(processedPath);
-
-    console.log('[API_REQUEST] OCR processing:', processedPath);
-
+    console.log('[OCR_STEP] creating worker');
     const worker = await createWorker('eng');
-    const { data: { text } } = await worker.recognize(processedPath);
+    console.log('[OCR_STEP] worker created, recognizing');
+    const { data: { text } } = await worker.recognize(req.file.path);
+    console.log('[OCR_STEP] done, terminating worker');
     await worker.terminate();
 
-    if (fs.existsSync(req.file.path))  fs.unlinkSync(req.file.path);
-    if (fs.existsSync(processedPath))  fs.unlinkSync(processedPath);
+    try { fs.unlinkSync(req.file.path); } catch {}
 
     if (!text.trim()) {
-      console.log('[API_ERROR] POST /api/ocr/run — no text found in image');
       return res.status(422).json({ error: 'No text found. Please upload a clear image with readable text.' });
     }
 
-    console.log('[API_RESPONSE] POST /api/ocr/run — success, chars:', text.trim().length);
+    console.log('[API_RESPONSE] POST /api/ocr/run success, chars:', text.trim().length);
     res.json({ success: true, result: text.trim() });
 
   } catch (err) {
-    console.error('[API_ERROR] POST /api/ocr/run:', err.message);
-    if (fs.existsSync(req.file.path))  fs.unlinkSync(req.file.path);
-    if (fs.existsSync(processedPath))  fs.unlinkSync(processedPath);
-    res.status(500).json({ error: 'OCR processing failed. Please try again.' });
+    console.error('[API_ERROR] POST /api/ocr/run:', err.message, err.stack);
+    try { fs.unlinkSync(req.file.path); } catch {}
+    // Return actual error message temporarily for diagnosis
+    res.status(500).json({ error: err.message });
   }
 });
 
