@@ -8,6 +8,9 @@ const ACCEPTED = '.jpg,.jpeg,.png,.gif,.bmp,.tiff,.webp';
 async function runOCR(file, onProgress) {
   onProgress(5);
   const worker = await createWorker('eng', 1, {
+    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/worker.min.js',
+    langPath:   'https://tessdata.projectnaptha.com/4.0.0',
+    corePath:   'https://cdn.jsdelivr.net/npm/tesseract.js-core@4.0.6/tesseract-core.wasm.js',
     logger: m => {
       if (m.status === 'recognizing text') {
         onProgress(10 + Math.round(m.progress * 85));
