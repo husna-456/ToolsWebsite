@@ -599,25 +599,52 @@ export default function ImageToolShell({ tool }) {
     setBgError('');
     setBgLoading(true);
     setBgProgress(5);
+    console.log('[BG_START] Starting background removal', { name: file.name, size: file.size, type: file.type });
+
+    const TIMEOUT_MS = 120_000;
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error('Timed out after 2 minutes. The AI model may be too large to load. Please try again.')),
+        TIMEOUT_MS,
+      );
+    });
 
     try {
+      console.log('[BG_FILE_RECEIVED]', file.name, file.size, 'bytes');
+      console.log('[BG_MODEL_LOADING] Importing @imgly/background-removal…');
+
       const { removeBackground } = await import('@imgly/background-removal');
-      const blob = await removeBackground(file, {
+      setBgProgress(10);
+      console.log('[BG_MODEL_LOADED] Library imported — calling removeBackground…');
+
+      console.log('[BG_API_REQUEST] removeBackground called');
+      const removalPromise = removeBackground(file, {
+        model: 'small',
         progress: (key, current, total) => {
+          console.log('[BG_IMAGE_PROCESSING]', key, current, '/', total);
           if (total > 0) {
-            const pct = Math.round((current / total) * 100);
+            const pct = (current / total) * 100;
             if (key.startsWith('fetch:')) {
-              setBgProgress(Math.min(55, Math.round(pct * 0.55)));
+              // model download: 10 → 65 %
+              setBgProgress(prev => Math.max(prev, Math.min(65, Math.round(10 + pct * 0.55))));
             } else {
-              setBgProgress(55 + Math.min(43, Math.round(pct * 0.43)));
+              // inference/compute: 65 → 95 %
+              setBgProgress(prev => Math.max(prev, Math.min(95, Math.round(65 + pct * 0.30))));
             }
           }
         },
       });
 
+      const blob = await Promise.race([removalPromise, timeoutPromise]);
+      clearTimeout(timeoutId);
+
+      console.log('[BG_API_RESPONSE] Blob received, size:', blob?.size);
+      setBgProgress(98);
+
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
+      const a   = document.createElement('a');
+      a.href     = url;
       a.download = 'background-removed.png';
       document.body.appendChild(a);
       a.click();
@@ -626,8 +653,14 @@ export default function ImageToolShell({ tool }) {
 
       setBgProgress(100);
       setDone(true);
-    } catch {
-      setBgError('Background removal failed. Please try a different image.');
+      console.log('[BG_SUCCESS] Done');
+
+    } catch (err) {
+      clearTimeout(timeoutId);
+      const msg = err?.message || String(err) || 'Background removal failed. Please try again.';
+      console.error('[BG_ERROR]', msg);
+      setBgError(msg);
+      setBgProgress(0);
     } finally {
       setBgLoading(false);
     }
@@ -858,7 +891,10 @@ export default function ImageToolShell({ tool }) {
                   <Loader2 className="w-8 h-8 text-accent animate-spin" />
                   <p className="text-sm font-medium text-text-secondary">
                     {isBgRemover
-                      ? bgProgress < 56 ? 'Loading AI model…' : 'Removing background…'
+                      ? bgProgress < 11  ? 'Initialising AI model…'
+                        : bgProgress < 66 ? `Downloading AI model… ${bgProgress}%`
+                        : bgProgress < 96 ? 'Removing background…'
+                        : 'Finalising…'
                       : 'Processing your image…'}
                   </p>
                 </div>
