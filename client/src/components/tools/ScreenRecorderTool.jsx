@@ -4,6 +4,8 @@ import {
   Clock, Pause, Play, Info, Wifi, WifiOff, Volume2, Radio, Loader2,
 } from 'lucide-react';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
+
 function formatDuration(seconds) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -32,7 +34,7 @@ function uploadRecording(blob, slug, onUploadProgress, onUploadDone) {
     );
 
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `/api/tools/${slug}/process`);
+    xhr.open('POST', `${API_BASE_URL}/api/tools/${slug}/process`);
     xhr.responseType = 'blob';
     xhr.timeout = 10 * 60 * 1000; // 10 min — allow large files + FFmpeg time
 

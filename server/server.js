@@ -35,6 +35,7 @@ const allowedOrigins = [
   // keep dev origins so local testing still works
   'http://localhost:5173',
   'http://localhost:5174',
+  'http://localhost:3000',
 ].filter(Boolean);
 
 const corsOptions = {

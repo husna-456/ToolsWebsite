@@ -3,7 +3,7 @@ import { Upload, FileText, Copy, Check, Download, X, Loader2, AlertCircle } from
 import { useClipboard } from '@/hooks/useClipboard';
 
 const ACCEPTED = '.jpg,.jpeg,.png,.gif,.bmp,.tiff,.webp';
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
 
 async function runOCR(file, onProgress) {
   onProgress(20);
@@ -13,9 +13,11 @@ async function runOCR(file, onProgress) {
 
   onProgress(40);
 
+  const token = localStorage.getItem('it_token');
   const res = await fetch(`${API_BASE_URL}/api/ocr/run`, {
     method: 'POST',
     body: formData,
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
 
   onProgress(80);

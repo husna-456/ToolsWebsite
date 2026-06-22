@@ -5,6 +5,8 @@ import {
 } from 'lucide-react';
 import { useFileUpload } from '@/hooks/useFileUpload';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
+
 // ── Subtitle format helpers ────────────────────────────────────
 
 function srtToVTT(srt) {
@@ -27,7 +29,7 @@ function generateSubtitles(videoFile, language, onUploadPct, onTranscribing) {
     formData.append('language', language);
 
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/subtitles');
+    xhr.open('POST', `${API_BASE_URL}/api/subtitles`);
     xhr.timeout = 45 * 60 * 1000; // 45 min — covers first-run model download (medium = 460 MB)
 
     xhr.upload.onprogress = (e) => {

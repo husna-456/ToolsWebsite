@@ -5,6 +5,8 @@ import {
 } from 'lucide-react';
 import { useFileUpload } from '@/hooks/useFileUpload';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
+
 const AUDIO_ONLY_SLUGS = ['audio-converter', 'audio-compressor', 'audio-trimmer'];
 const AUDIO_IN_SLUGS   = [...AUDIO_ONLY_SLUGS, 'audio-merger'];
 const MULTI_SLUGS      = ['audio-merger', 'video-merger'];
@@ -480,7 +482,7 @@ export default function MediaToolShell({ tool }) {
     if (sseRef.current) sseRef.current.close();
     setSsePercent(0);
     setEtaSeconds(null);
-    const es = new EventSource(`/api/tools/audio-converter/progress/${jobId}`);
+    const es = new EventSource(`${API_BASE_URL}/api/tools/audio-converter/progress/${jobId}`);
     sseRef.current = es;
     es.onmessage = (e) => {
       try {

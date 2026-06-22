@@ -186,8 +186,13 @@ setImmediate(() => {
 
 // ── Route ──────────────────────────────────────────────────────
 router.post('/', upload.single('file'), async (req, res) => {
+  console.log('[API_REQUEST] POST /api/subtitles', { filename: req.file?.originalname, size: req.file?.size, language: req.body.language });
+
   const videoPath = req.file?.path;
-  if (!videoPath) return res.status(400).json({ error: 'Video file is required.' });
+  if (!videoPath) {
+    console.log('[API_ERROR] POST /api/subtitles — no video file uploaded');
+    return res.status(400).json({ error: 'Video file is required.' });
+  }
 
   const langInput = (req.body.language || 'english').toLowerCase();
   const langCode  = LANG_MAP[langInput] ?? 'en';
@@ -195,23 +200,26 @@ router.post('/', upload.single('file'), async (req, res) => {
   const audioPath = path.join(TMP_DIR, audioName + '.wav');
 
   try {
-    console.log(`[subtitles] Step 1/3 — Extracting audio… (lang=${langCode})`);
+    console.log(`[API_REQUEST] POST /api/subtitles — Step 1/3 — Extracting audio… (lang=${langCode})`);
     await extractAudio(videoPath, audioPath);
 
     const model = MODEL_MAP[langCode] || 'base';
-    console.log(`[subtitles] Step 2/3 — Running Whisper (model=${model})…`);
+    console.log(`[API_REQUEST] POST /api/subtitles — Step 2/3 — Running Whisper (model=${model})…`);
     const { srt, vtt } = await runTranscribe(audioPath, langCode);
 
     rm(videoPath, audioPath);
 
-    if (!srt) return res.status(422).json({ error: 'No speech found. Make sure the video has clear audio.' });
+    if (!srt) {
+      console.log('[API_ERROR] POST /api/subtitles — no speech found');
+      return res.status(422).json({ error: 'No speech found. Make sure the video has clear audio.' });
+    }
 
-    console.log(`[subtitles] Step 3/3 — Done. ${srt.split('\n\n').length} subtitle block(s)`);
+    console.log(`[API_RESPONSE] POST /api/subtitles — Done. ${srt.split('\n\n').length} subtitle block(s)`);
     res.json({ srt, vtt });
 
   } catch (err) {
     rm(videoPath, audioPath);
-    console.error('[subtitles]', err.message);
+    console.error('[API_ERROR] POST /api/subtitles:', err.message);
     const { status, msg } = userError(err);
     res.status(status).json({ error: msg });
   }

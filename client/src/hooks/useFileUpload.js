@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import axios from 'axios';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
+
 export function useFileUpload(slug) {
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState('');
@@ -59,7 +61,7 @@ export function useFileUpload(slug) {
 
       const token = localStorage.getItem('it_token');
       const response = await axios.post(
-        `/api/tools/${slug}/process`,
+        `${API_BASE_URL}/api/tools/${slug}/process`,
         formData,
         {
           responseType: 'blob',

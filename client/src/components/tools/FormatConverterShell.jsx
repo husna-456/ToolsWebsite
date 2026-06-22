@@ -5,6 +5,8 @@ import {
 import axios from 'axios';
 import { useFileUpload } from '@/hooks/useFileUpload';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
+
 // ── Accept type + label helpers ───────────────────────────────
 function getInputInfo(slug) {
   const from = slug.split('-to-')[0];
@@ -304,7 +306,7 @@ function Base64Converter({ slug }) {
     try {
       const token = localStorage.getItem('it_token');
       const response = await axios.post(
-        `/api/tools/${slug}/run`,
+        `${API_BASE_URL}/api/tools/${slug}/run`,
         { base64: raw },
         {
           responseType: 'blob',
