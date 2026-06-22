@@ -709,50 +709,51 @@ class PaginationEngine {
   constructor(layout) { this.layout = layout; }
 
   run(blocks) {
-    const queue = this._buildChunks(blocks);
-    console.log(`[PDF_CONTENT_AREA] contentH=${PL.contentH} raw_chunks=${queue.length}`);
-    let qi = 0;
+    const allChunks = this._buildChunks(blocks);
+    console.log(`[PDF_CONTENT_AREA] contentH=${PL.contentH} raw_chunks=${allChunks.length}`);
 
-    while (qi < queue.length) {
-      const chunk  = queue[qi];
+    for (let i = 0; i < allChunks.length; i++) {
+      const chunk  = allChunks[i];
       const chunkH = this.layout.measureChunk(chunk);
-      const remaining = PL.contentH - this.layout.currentY;
       console.log(
-        `[PDF_BLOCK_HEIGHT] chunk=${qi}/${queue.length} h=${chunkH}`
-      );
-      console.log(
-        `[PDF_REMAINING_SPACE] page=${this.layout.pages.length}` +
-        ` currentY=${this.layout.currentY} remaining=${remaining}`
+        `[PDF_BLOCK_HEIGHT] chunk=${i}/${allChunks.length} h=${chunkH}` +
+        ` currentY=${this.layout.currentY} remaining=${PL.contentH - this.layout.currentY}`
       );
 
       if (this.layout.fitsAt(chunkH)) {
+        // ── Case 1: chunk fits remaining space on current page ─────────
         this.layout.append(chunk, chunkH);
-        console.log(`[PDF_BLOCK_CONTINUED_SAME_PAGE] chunk=${qi} currentY=${this.layout.currentY}`);
-        qi++;
-        continue;
-      }
+        console.log(`[PDF_BLOCK_CONTINUED_SAME_PAGE] chunk=${i} currentY=${this.layout.currentY}`);
 
-      if (!this.layout.isEmpty()) {
+      } else if (this.layout.isEmpty()) {
+        // ── Case 2: empty page and chunk is too tall → bisect ──────────
+        const parts = splitOversizedChunk(chunk, this.layout);
+        if (parts.length === 1) {
+          // Unsplittable atom — force-place it and continue
+          this.layout.append(chunk, chunkH);
+          console.log(`[PDF_FORCE_PLACE] unsplittable chunk h=${chunkH}`);
+        } else {
+          // Splice parts back into allChunks and re-examine from same index
+          allChunks.splice(i, 1, ...parts);
+          i--;  // the loop's i++ will bring us back to the same position
+          console.log(`[PDF_CHUNK_SPLIT_RESULT] parts=${parts.length}`);
+        }
+
+      } else {
+        // ── Case 3: doesn't fit, page not empty → new page, place directly
+        // CRITICAL: never create a new page just because a new editor block
+        // started. We only reach here when chunkH genuinely exceeds remaining.
         console.log(
-          `[PDF_PAGE_BREAK_REASON] chunk=${qi} h=${chunkH}` +
+          `[PDF_PAGE_BREAK_REASON] chunk=${i} h=${chunkH}` +
           ` remaining=${PL.contentH - this.layout.currentY} → new page`
         );
         this.layout.addPage();
-        continue; // retry same chunk on the fresh page
-      }
-
-      // Empty page and chunk still doesn't fit → bisect
-      const parts = splitOversizedChunk(chunk, this.layout);
-      if (parts.length === 1) {
-        // Unsplittable atomic element — force-place it
         this.layout.append(chunk, chunkH);
-        qi++;
-      } else {
-        queue.splice(qi, 1, ...parts);
+        console.log(`[PDF_NEW_PAGE_PLACED] chunk=${i} currentY=${this.layout.currentY}`);
       }
     }
 
-    console.log(`[PDF_NO_CONTENT_DROPPED] total_chunks=${queue.length} pages=${this.layout.pages.length}`);
+    console.log(`[PDF_NO_CONTENT_DROPPED] total_chunks=${allChunks.length} pages=${this.layout.pages.length}`);
   }
 
   _buildChunks(blocks) {
@@ -900,14 +901,30 @@ function pdfPaginate(doc, container) {
 //    to land on top of each other. Omit them and let html2canvas read the
 //    real window.innerWidth / window.innerHeight.
 async function pdfCapturePage(html2canvas, pageEl) {
+  // ── Issue 2 fix: force consistent font/direction on every content element
+  // before capture. Some entries inherit a different font-family or miss an
+  // explicit direction:rtl depending on how the editor stored the block, which
+  // makes html2canvas use different font metrics → glyphs land at wrong X.
+  // We target only [data-pdf-content] so the decorative header flex layout
+  // (which needs its own direction context) is unaffected.
+  const contentZone = pageEl.querySelector('[data-pdf-content]');
+  if (contentZone) {
+    contentZone.querySelectorAll('*').forEach(node => {
+      if (!(node instanceof HTMLElement)) return;
+      node.style.fontFamily    = "'Jameel Noori Nastaleeq', serif";
+      node.style.direction     = 'rtl';
+      node.style.unicodeBidi   = 'embed';
+      node.style.fontSynthesis = 'none';
+    });
+    console.log(`[PDF_URDU_STYLE_APPLIED] forced JNN+RTL on ${contentZone.querySelectorAll('*').length} nodes`);
+  }
+
   const wrap = document.createElement('div');
   wrap.style.cssText =
     `position:fixed;left:0;top:0;z-index:9999;pointer-events:none;` +
     `width:${PL.cssW}px;height:${PL.cssH}px;overflow:visible;`;
   document.body.appendChild(wrap);
   wrap.appendChild(pageEl);
-  // getBoundingClientRect forces a synchronous layout so positions are
-  // accurate before html2canvas reads them via its own cloneNode pass.
   void pageEl.getBoundingClientRect();
 
   console.log(`[PDF_CANVAS_SCALE] scale=2 dpr=${window.devicePixelRatio}`);
@@ -926,6 +943,22 @@ async function pdfCapturePage(html2canvas, pageEl) {
     scrollX:         0,
     scrollY:         0,
     imageTimeout:    15000,
+    onclone: (clonedDoc) => {
+      // Inject a stylesheet into the html2canvas clone. The cloneNode pass
+      // copies inline styles but not always the cascaded computed value.
+      // Adding !important here guarantees every content node uses JNN metrics,
+      // eliminating the per-entry inconsistency where some glyphs used a
+      // fallback font with different advance widths.
+      const s = clonedDoc.createElement('style');
+      s.textContent =
+        `[data-pdf-content] * {` +
+        ` font-family: 'Jameel Noori Nastaleeq', serif !important;` +
+        ` font-synthesis: none !important;` +
+        ` direction: rtl !important;` +
+        ` unicode-bidi: embed !important;` +
+        `}`;
+      clonedDoc.head.appendChild(s);
+    },
   });
 
   document.body.removeChild(wrap);
@@ -2567,6 +2600,7 @@ export default function TextToPdfPage() {
   // ── PDF Download ──────────────────────────────────────────────────
   async function handleDownload() {
     console.log('[PDF v2.0] Export started');
+    await document.fonts.ready;   // ensure all fonts are loaded before anything else
     if (!currentDoc?.blocks?.length) return;
     setGenerating(true); setPdfErr('');
     let root = null;
