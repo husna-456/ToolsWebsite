@@ -589,53 +589,79 @@ function bisectEl(el) {
   return [elA, elB];
 }
 
-// Recursively bisect el until every piece fits on an empty page.
-// depth guards against infinite recursion: JNN Nastaleeq lines have a
-// CSS minimum height — bisecting a single text node repeatedly yields
-// the same height, so without this guard the function never terminates.
-function splitOversizedChunk(el, layout, depth = 0) {
-  if (depth > 10) {
-    console.warn(`[PDF_SPLIT_MAX_DEPTH] giving up at depth=${depth} h=${layout.measureChunk(el)}`);
-    return [el];
-  }
+// Standalone height oracle — mc is a persistent off-screen BFC container
+// that the caller creates once and reuses across all measurements in a run.
+function measureChunk(el, mc) {
+  const savedMT = el.style.marginTop;
+  const savedMB = el.style.marginBottom;
+  el.style.marginTop    = '0';
+  el.style.marginBottom = '0';
+  mc.appendChild(el);
+  void mc.offsetHeight;      // force synchronous layout
+  const h = el.offsetHeight;
+  mc.removeChild(el);
+  el.style.marginTop    = savedMT;
+  el.style.marginBottom = savedMB;
+  return h;
+}
 
-  const h = layout.measureChunk(el);
-  console.log(`[PDF_CHUNK_MEASURE] depth=${depth} h=${h}`);
-  if (h <= PL.contentH) return [el];
+function splitOversizedChunk(el, mc, maxPx, depth = 0) {
+  const h = measureChunk(el, mc);
+  console.log(
+    '[PDF_SPLIT_ATTEMPT] depth=' + depth +
+    ' h=' + h + ' max=' + maxPx
+  );
 
-  console.log(`[PDF_SPLIT_ATTEMPT] depth=${depth} h=${h} max=${PL.contentH}`);
+  if (h <= maxPx || depth > 8) return [el];
 
   const nodes = Array.from(el.childNodes);
   if (nodes.length === 0) return [el];
 
-  // Single text node — split at character midpoint
-  if (nodes.length === 1 && nodes[0].nodeType === Node.TEXT_NODE) {
+  if (
+    nodes.length === 1 &&
+    nodes[0].nodeType === Node.TEXT_NODE
+  ) {
     const text = nodes[0].textContent;
-    if (text.length <= 2) return [el];   // cannot split further
+    if (text.length <= 2) return [el];
     const mid = Math.floor(text.length / 2);
     const a = el.cloneNode(false);
-    a.appendChild(document.createTextNode(text.slice(0, mid)));
+    a.appendChild(
+      document.createTextNode(text.slice(0, mid))
+    );
     const b = el.cloneNode(false);
-    b.appendChild(document.createTextNode(text.slice(mid)));
-    return [
-      ...splitOversizedChunk(a, layout, depth + 1),
-      ...splitOversizedChunk(b, layout, depth + 1),
+    b.appendChild(
+      document.createTextNode(text.slice(mid))
+    );
+    const result = [
+      ...splitOversizedChunk(a, mc, maxPx, depth + 1),
+      ...splitOversizedChunk(b, mc, maxPx, depth + 1),
     ];
+    console.log('[PDF_SPLIT_RESULT] parts=' + result.length);
+    return result;
   }
 
-  // Multiple nodes — bisect at midpoint
   const mid = Math.floor(nodes.length / 2);
   if (mid === 0) return [el];
 
   const firstEl = el.cloneNode(false);
-  nodes.slice(0, mid).forEach(n => firstEl.appendChild(n.cloneNode(true)));
+  nodes.slice(0, mid).forEach(n =>
+    firstEl.appendChild(n.cloneNode(true))
+  );
   const secondEl = el.cloneNode(false);
-  nodes.slice(mid).forEach(n => secondEl.appendChild(n.cloneNode(true)));
+  nodes.slice(mid).forEach(n =>
+    secondEl.appendChild(n.cloneNode(true))
+  );
 
-  return [
-    ...splitOversizedChunk(firstEl, layout, depth + 1),
-    ...splitOversizedChunk(secondEl, layout, depth + 1),
+  const result = [
+    ...splitOversizedChunk(
+      firstEl, mc, maxPx, depth + 1
+    ),
+    ...splitOversizedChunk(
+      secondEl, mc, maxPx, depth + 1
+    ),
   ];
+  console.log('[PDF_SPLIT_RESULT] parts=' + result.length);
+  return result;
 }
 
 // ── Page Layout Engine ───────────────────────────────────────────────
@@ -740,47 +766,66 @@ class PaginationEngine {
     const allChunks = this._buildChunks(blocks);
     console.log(`[PDF_CONTENT_AREA] contentH=${PL.contentH} raw_chunks=${allChunks.length}`);
 
-    for (let i = 0; i < allChunks.length; i++) {
-      const chunk  = allChunks[i];
-      const chunkH = this.layout.measureChunk(chunk);
-      console.log(
-        `[PDF_BLOCK_HEIGHT] chunk=${i}/${allChunks.length} h=${chunkH}` +
-        ` currentY=${this.layout.currentY} remaining=${PL.contentH - this.layout.currentY}`
-      );
+    // Persistent BFC probe — created once, shared across all measurements
+    const mc = document.createElement('div');
+    mc.style.cssText =
+      `position:fixed;left:0;top:-${PL.cssH + 200}px;` +
+      `width:${PL.contentW}px;height:auto;` +
+      `overflow:hidden;visibility:hidden;pointer-events:none;`;
+    document.body.appendChild(mc);
 
-      if (this.layout.fitsAt(chunkH)) {
-        // ── Case 1: chunk fits remaining space on current page ─────────
-        this.layout.append(chunk, chunkH);
-        console.log(`[PDF_BLOCK_CONTINUED_SAME_PAGE] chunk=${i} currentY=${this.layout.currentY}`);
+    const MAX_CONTENT_HEIGHT = PL.contentH;
 
-      } else if (this.layout.isEmpty()) {
-        // ── Case 2: empty page and chunk is too tall → bisect ──────────
-        const parts = splitOversizedChunk(chunk, this.layout);
-        if (parts.length === 1) {
-          // Unsplittable atom — force-place it and continue
-          this.layout.append(chunk, chunkH);
-          console.log(`[PDF_FORCE_PLACE] unsplittable chunk h=${chunkH}`);
-        } else {
-          // Splice parts back into allChunks and re-examine from same index
-          allChunks.splice(i, 1, ...parts);
-          i--;  // the loop's i++ will bring us back to the same position
-          console.log(`[PDF_CHUNK_SPLIT_RESULT] parts=${parts.length}`);
-        }
+    // ── Pagination algorithm ──────────────────────────────────────────────
+    const pages    = [[]];
+    let usedHeight = 0;
+
+    for (const chunk of allChunks) {
+      const h = measureChunk(chunk, mc);
+
+      if (usedHeight + h <= MAX_CONTENT_HEIGHT) {
+        pages[pages.length - 1].push(chunk);
+        usedHeight += h;
 
       } else {
-        // ── Case 3: doesn't fit, page not empty → new page, place directly
-        // CRITICAL: never create a new page just because a new editor block
-        // started. We only reach here when chunkH genuinely exceeds remaining.
-        console.log(
-          `[PDF_PAGE_BREAK_REASON] chunk=${i} h=${chunkH}` +
-          ` remaining=${PL.contentH - this.layout.currentY} → new page`
-        );
-        this.layout.addPage();
-        this.layout.append(chunk, chunkH);
-        console.log(`[PDF_NEW_PAGE_PLACED] chunk=${i} currentY=${this.layout.currentY}`);
+        pages.push([]);
+        usedHeight = 0;
+
+        if (h > MAX_CONTENT_HEIGHT) {
+          const parts = splitOversizedChunk(
+            chunk, mc, MAX_CONTENT_HEIGHT
+          );
+          for (const part of parts) {
+            const ph = measureChunk(part, mc);
+            if (usedHeight + ph <= MAX_CONTENT_HEIGHT) {
+              pages[pages.length - 1].push(part);
+              usedHeight += ph;
+            } else {
+              pages.push([part]);
+              usedHeight = ph;
+            }
+          }
+        } else {
+          pages[pages.length - 1].push(chunk);
+          usedHeight = h;
+        }
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    // Render computed chunk groups into DOM pages via the layout engine
+    let firstPage = true;
+    for (const pageChunks of pages) {
+      if (pageChunks.length === 0) continue;
+      if (!firstPage) this.layout.addPage();
+      firstPage = false;
+      for (const chunk of pageChunks) {
+        const h = measureChunk(chunk, mc);
+        this.layout.append(chunk, h);
       }
     }
 
+    document.body.removeChild(mc);
     console.log(`[PDF_NO_CONTENT_DROPPED] total_chunks=${allChunks.length} pages=${this.layout.pages.length}`);
   }
 
