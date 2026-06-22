@@ -331,10 +331,24 @@ function pdfCompactify(el) {
     if (pt > 6)  s.paddingTop  = Math.round(pt  * 0.55) + 'px';
     const pb = parseFloat(s.paddingBottom);
     if (pb > 8)  s.paddingBottom = Math.round(pb * 0.55) + 'px';
-    // RTL Urdu/Arabic: JNN Nastaleeq inter-word space is calligraphically narrow.
-    // Without an explicit word-spacing, html2canvas rasterises adjacent words with
-    // only 2–3 physical pixels between them at scale:2, making them look merged.
-    if (s.direction === 'rtl' && !s.wordSpacing) s.wordSpacing = '3px';
+    if (s.direction === 'rtl') {
+      // JNN Nastaleeq inter-word space is calligraphically very narrow; without an
+      // explicit value html2canvas rasterises adjacent words with only 2–3 px gap.
+      if (!s.wordSpacing) s.wordSpacing = '3px';
+      // Prevent html2canvas from breaking Urdu words at arbitrary character
+      // boundaries when a line wraps.
+      s.overflowWrap = 'normal';
+      s.wordBreak    = 'normal';
+      s.hyphens      = 'none';
+    }
+    // letter-spacing on JNN/Nastaleeq forces html2canvas to treat each code-point
+    // as a separate text run. The run-placement code does not know ligature widths,
+    // so glyphs land on top of each other ("س ل overlap", "لان malformed").
+    // Strip it completely — Nastaleeq never needs inter-character tracking.
+    const ff = s.fontFamily || '';
+    if (ff.indexOf('Jameel') !== -1 || ff.indexOf('Nastaleeq') !== -1 || ff.indexOf('Nastaliq') !== -1) {
+      s.letterSpacing = '';
+    }
   });
 }
 
@@ -367,7 +381,7 @@ function pdfDecorativeHeader(doc, pageNum) {
     : `<span style="${B};flex-shrink:0;padding:0 14px;opacity:0;border-color:transparent;"> </span>`;
 
   const rightBadge = title
-    ? `<span style="${B};flex-shrink:1;max-width:240px;padding:0 16px;overflow:hidden;direction:rtl;">${title}</span>`
+    ? `<span style="${B};flex-shrink:1;min-width:0;max-width:240px;padding:0 16px;overflow:hidden;text-overflow:ellipsis;direction:rtl;">${title}</span>`
     : `<span style="${B};flex-shrink:0;padding:0 14px;opacity:0;border-color:transparent;"> </span>`;
 
   const svg =
@@ -576,7 +590,7 @@ class PageLayoutEngine {
     this.doc       = doc;
     this.container = container;
     this.pages     = [];
-    this.pageNum   = 1;
+    this.pageNum   = doc.pageNumberStart || 1;
     this.zone      = null;
     this.currentY  = 0;
     this._openPage();
@@ -589,7 +603,8 @@ class PageLayoutEngine {
     this.pages.push(page);
     this.zone     = page.querySelector('[data-pdf-content]');
     this.currentY = 0;
-    console.log(`[PDF_NEW_PAGE] page=${this.pages.length}`);
+    console.log(`[PDF_NEW_PAGE] page=${this.pages.length} contentH=${PL.contentH}`);
+    console.log(`[PDF_HEADER_LAYOUT] pageNum=${this.pageNum - 1} hdrH=${PL.hdrH} contentTop=${PL.contentTop}`);
   }
   addPage() {
     this._openPage();
@@ -665,9 +680,13 @@ class PaginationEngine {
     while (qi < queue.length) {
       const chunk  = queue[qi];
       const chunkH = this.layout.measureChunk(chunk);
+      const remaining = PL.contentH - this.layout.currentY;
       console.log(
-        `[PDF_BLOCK_START] chunk=${qi}/${queue.length} h=${chunkH}` +
-        ` currentY=${this.layout.currentY} remaining=${PL.contentH - this.layout.currentY}`
+        `[PDF_BLOCK_HEIGHT] chunk=${qi}/${queue.length} h=${chunkH}`
+      );
+      console.log(
+        `[PDF_REMAINING_SPACE] page=${this.layout.pages.length}` +
+        ` currentY=${this.layout.currentY} remaining=${remaining}`
       );
 
       if (this.layout.fitsAt(chunkH)) {
@@ -758,7 +777,9 @@ class PaginationEngine {
       : (PDF_DENSITY === 'professional-compact'
           ? (dir === 'ltr' ? '1.45' : '1.55')
           : (dir === 'ltr' ? '1.6'  : '2.0'));
-    const ls  = block.letterSpacing ? `letter-spacing:${block.letterSpacing};` : '';
+    // letter-spacing on JNN/Nastaleeq breaks ligatures in html2canvas — strip it.
+    const isNastaleeq = ff.indexOf('Jameel') !== -1 || ff.indexOf('Nastaleeq') !== -1 || ff.indexOf('Nastaliq') !== -1;
+    const ls  = (block.letterSpacing && !isNastaleeq) ? `letter-spacing:${block.letterSpacing};` : '';
     // RTL free-text blocks bypass pdfCompactify, so apply the same
     // word-spacing default here.  Explicit user value always wins.
     const ws  = block.wordSpacing
@@ -766,9 +787,12 @@ class PaginationEngine {
       : (dir === 'rtl' ? 'word-spacing:3px;' : '');
     const mt  = block.marginTop     || '6px';
     const mb  = block.marginBottom  || '6px';
+    // overflow-wrap/word-break: prevent html2canvas from breaking Urdu words at
+    // arbitrary character boundaries. hyphens:none stops browser auto-hyphenation.
+    const rtlSafety = dir === 'rtl' ? 'overflow-wrap:normal;word-break:normal;hyphens:none;' : '';
     const base =
       `font-family:'${ff}',serif;font-size:16px;direction:${dir};` +
-      `text-align:${ta};line-height:${lh};${ls}${ws}color:#000;`;
+      `text-align:${ta};line-height:${lh};${ls}${ws}${rtlSafety}color:#000;`;
     const content = normalizeHighlights(styleListsInContent(clean(block.content || '')));
     const t = document.createElement('div');
     t.innerHTML = content;
@@ -811,16 +835,33 @@ function pdfPaginate(doc, container) {
 }
 
 // ── Per-page capture ─────────────────────────────────────────────────
-// html2canvas requires the element to be near the viewport origin (0,0).
-// Pages are placed there one at a time to avoid off-viewport rendering bugs.
+// html2canvas requires the element to be at the viewport origin (0,0).
+// One page at a time to avoid off-viewport rendering bugs.
+//
+// Key decisions:
+//  • z-index:9999  — page renders above app chrome so no other element
+//                    bleeds into the capture
+//  • overflow:visible — prevents the wrapper from clipping Nastaleeq glyphs
+//                       whose ink extends outside their CSS line boxes
+//  • NO windowWidth/windowHeight — these make html2canvas lie about the
+//    viewport size. For RTL text, html2canvas uses window width to compute
+//    the right-edge anchor of each text run. Forcing 794 when the real window
+//    is e.g. 1920 px shifts every RTL run by (1920−794) px, causing glyphs
+//    to land on top of each other. Omit them and let html2canvas read the
+//    real window.innerWidth / window.innerHeight.
 async function pdfCapturePage(html2canvas, pageEl) {
   const wrap = document.createElement('div');
   wrap.style.cssText =
-    `position:fixed;left:0;top:0;z-index:-1;pointer-events:none;` +
-    `width:${PL.cssW}px;height:${PL.cssH}px;overflow:hidden;`;
+    `position:fixed;left:0;top:0;z-index:9999;pointer-events:none;` +
+    `width:${PL.cssW}px;height:${PL.cssH}px;overflow:visible;`;
   document.body.appendChild(wrap);
   wrap.appendChild(pageEl);
-  void pageEl.offsetHeight;
+  // getBoundingClientRect forces a synchronous layout so positions are
+  // accurate before html2canvas reads them via its own cloneNode pass.
+  void pageEl.getBoundingClientRect();
+
+  console.log(`[PDF_CANVAS_SCALE] scale=2 dpr=${window.devicePixelRatio}`);
+  console.log(`[PDF_GLYPH_RENDER] capturing ${PL.cssW}×${PL.cssH} → canvas ${PL.cssW*2}×${PL.cssH*2}`);
 
   const canvas = await html2canvas(pageEl, {
     scale:           2,
@@ -830,8 +871,8 @@ async function pdfCapturePage(html2canvas, pageEl) {
     logging:         false,
     width:           PL.cssW,
     height:          PL.cssH,
-    windowWidth:     PL.cssW,
-    windowHeight:    PL.cssH,
+    x:               0,
+    y:               0,
     scrollX:         0,
     scrollY:         0,
     imageTimeout:    15000,
@@ -2504,7 +2545,21 @@ export default function TextToPdfPage() {
       ).join('');
       root.appendChild(warmup);
       await document.fonts.ready;
-      await new Promise(r => setTimeout(r, 500)); // extra settle for Nastaleeq shaping
+      console.log(`[PDF_FONT_READY] document.fonts.ready resolved`);
+      console.log(`[PDF_DEVICE_PIXEL_RATIO] dpr=${window.devicePixelRatio}`);
+
+      // Verify JNN is actually available — if only system fallback loaded,
+      // glyph shaping will be wrong even though fonts.ready fired.
+      const jnnSpec = `16px 'Jameel Noori Nastaleeq'`;
+      const nnkSpec = `16px 'Noto Naskh Arabic'`;
+      const jnnOk = document.fonts.check(jnnSpec);
+      const nnkOk = document.fonts.check(nnkSpec);
+      console.log(`[PDF_FONT_CHECK] JNN=${jnnOk} NNK=${nnkOk}`);
+
+      // JNN Nastaleeq needs extra settle time: the shaping engine (HarfBuzz)
+      // caches glyph metrics asynchronously after the font becomes "ready".
+      // 600ms is the empirical minimum for multi-paragraph Urdu documents.
+      await new Promise(r => setTimeout(r, 600));
       root.removeChild(warmup);
 
       console.log(`[PDF v2.0] Fonts loaded: ${[...fontsNeeded].join(', ')}`);
