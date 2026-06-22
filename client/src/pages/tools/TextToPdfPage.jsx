@@ -331,6 +331,10 @@ function pdfCompactify(el) {
     if (pt > 6)  s.paddingTop  = Math.round(pt  * 0.55) + 'px';
     const pb = parseFloat(s.paddingBottom);
     if (pb > 8)  s.paddingBottom = Math.round(pb * 0.55) + 'px';
+    // RTL Urdu/Arabic: JNN Nastaleeq inter-word space is calligraphically narrow.
+    // Without an explicit word-spacing, html2canvas rasterises adjacent words with
+    // only 2–3 physical pixels between them at scale:2, making them look merged.
+    if (s.direction === 'rtl' && !s.wordSpacing) s.wordSpacing = '3px';
   });
 }
 
@@ -594,20 +598,27 @@ class PageLayoutEngine {
   // Measure el's intrinsic height in an isolated probe (margins stripped so
   // CHUNK_GAP is the sole source of inter-chunk spacing).
   measureChunk(el) {
+    // Attach probe directly to document.body at a fixed off-screen position.
+    // position:fixed guarantees Chrome always computes layout regardless of how
+    // far off-screen the element is.
+    // overflow:hidden creates a BFC that exactly matches the content zone's BFC
+    // (which also has overflow:hidden), so child-margin collapse behaviour inside
+    // el is identical in both the probe and the real zone.
     const probe = document.createElement('div');
     probe.style.cssText =
-      `position:absolute;left:-99999px;top:0;` +
-      `width:${PL.contentW}px;visibility:hidden;`;
-    this.container.appendChild(probe);
+      `position:fixed;left:0;top:-${PL.cssH + 200}px;` +
+      `width:${PL.contentW}px;height:auto;` +
+      `overflow:hidden;visibility:hidden;pointer-events:none;`;
+    document.body.appendChild(probe);
     const savedMT = el.style.marginTop;
     const savedMB = el.style.marginBottom;
     el.style.marginTop    = '0';
     el.style.marginBottom = '0';
     probe.appendChild(el);
-    void probe.offsetHeight;
+    void probe.offsetHeight;        // force synchronous layout
     const h = el.offsetHeight;
     probe.removeChild(el);
-    probe.remove();
+    document.body.removeChild(probe);
     el.style.marginTop    = savedMT;
     el.style.marginBottom = savedMB;
     return h;
@@ -748,7 +759,11 @@ class PaginationEngine {
           ? (dir === 'ltr' ? '1.45' : '1.55')
           : (dir === 'ltr' ? '1.6'  : '2.0'));
     const ls  = block.letterSpacing ? `letter-spacing:${block.letterSpacing};` : '';
-    const ws  = block.wordSpacing   ? `word-spacing:${block.wordSpacing};`     : '';
+    // RTL free-text blocks bypass pdfCompactify, so apply the same
+    // word-spacing default here.  Explicit user value always wins.
+    const ws  = block.wordSpacing
+      ? `word-spacing:${block.wordSpacing};`
+      : (dir === 'rtl' ? 'word-spacing:3px;' : '');
     const mt  = block.marginTop     || '6px';
     const mb  = block.marginBottom  || '6px';
     const base =
