@@ -612,17 +612,30 @@ function splitOversizedChunk(el, mc, maxPx, depth = 0) {
     ' h=' + h + ' max=' + maxPx
   );
 
-  if (h <= maxPx || depth > 8) return [el];
+  if (h <= maxPx || depth > 8) {
+    console.log('[PDF_SPLIT_EARLY_RETURN] h<=max or depth>8');
+    return [el];
+  }
 
   const nodes = Array.from(el.childNodes);
-  if (nodes.length === 0) return [el];
+  console.log('[PDF_SPLIT_NODES] count=' + nodes.length +
+    ' tag=' + (el.tagName || 'text'));
+
+  if (nodes.length === 0) {
+    console.log('[PDF_SPLIT_EARLY_RETURN] no children');
+    return [el];
+  }
 
   if (
     nodes.length === 1 &&
     nodes[0].nodeType === Node.TEXT_NODE
   ) {
     const text = nodes[0].textContent;
-    if (text.length <= 2) return [el];
+    console.log('[PDF_SPLIT_TEXT] length=' + text.length);
+    if (text.length <= 2) {
+      console.log('[PDF_SPLIT_EARLY_RETURN] text too short');
+      return [el];
+    }
     const mid = Math.floor(text.length / 2);
     const a = el.cloneNode(false);
     a.appendChild(
@@ -641,7 +654,10 @@ function splitOversizedChunk(el, mc, maxPx, depth = 0) {
   }
 
   const mid = Math.floor(nodes.length / 2);
-  if (mid === 0) return [el];
+  if (mid === 0) {
+    console.log('[PDF_SPLIT_EARLY_RETURN] mid=0');
+    return [el];
+  }
 
   const firstEl = el.cloneNode(false);
   nodes.slice(0, mid).forEach(n =>
@@ -792,6 +808,9 @@ class PaginationEngine {
         usedHeight = 0;
 
         if (h > MAX_CONTENT_HEIGHT) {
+          console.log('[PDF_CHUNK_DEBUG] tag=' + chunk.tagName +
+            ' children=' + chunk.childNodes.length +
+            ' html=' + chunk.innerHTML.slice(0, 200));
           const parts = splitOversizedChunk(
             chunk, mc, MAX_CONTENT_HEIGHT
           );
