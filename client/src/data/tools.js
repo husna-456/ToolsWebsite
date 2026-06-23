@@ -367,11 +367,11 @@ export const TOOLS = {
   },
   'qr-code-generator': {
     slug: 'qr-code-generator', title: 'QR Code Generator',
-    shortDesc: 'Generate QR codes from any text or URL instantly.',
+    shortDesc: 'Professional QR code studio — custom colors, logos, styles, batch generation and more.',
     category: 'image-tools', icon: 'QrCode', maxChars: 0,
-    toolType: 'qr-code',
-    metaTitle: 'Free QR Code Generator — Create QR Codes Online',
-    metaDesc:  'Generate QR codes from any URL or text for free. Download as PNG. No signup.',
+    toolType: 'image-file',
+    metaTitle: 'Free Professional QR Code Generator — Custom Colors, Logo, Styles',
+    metaDesc:  'Create professional QR codes with custom colors, logos, dot styles, frames, and batch generation. Download PNG, SVG, PDF. Free, no signup.',
   },
 
   // ── New Core Image Tools (Step 12) ────────────────────────

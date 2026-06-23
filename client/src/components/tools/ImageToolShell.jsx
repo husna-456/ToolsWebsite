@@ -3,6 +3,7 @@ import Tesseract from 'tesseract.js';
 import ImageCropperTool from './ImageCropperTool';
 import ImageWatermarkTool from './ImageWatermarkTool';
 import MetadataExifTool from './MetadataExifTool';
+import QRCodeProTool from './QRCodeProTool';
 import {
   Upload, X, AlertCircle, Loader2, Check, Copy,
   ImageDown, RefreshCw, Plus, Trash2,
@@ -467,9 +468,10 @@ function ProgressBar({ value, label }) {
 // ── Main component ────────────────────────────────────────────
 export default function ImageToolShell({ tool }) {
   const { slug } = tool;
-  if (slug === 'image-cropper')   return <ImageCropperTool />;
-  if (slug === 'image-watermark')      return <ImageWatermarkTool />;
+  if (slug === 'image-cropper')         return <ImageCropperTool />;
+  if (slug === 'image-watermark')       return <ImageWatermarkTool />;
   if (slug === 'metadata-exif-remover') return <MetadataExifTool />;
+  if (slug === 'qr-code-generator')     return <QRCodeProTool />;
   const { upload, loading, error, progress, jsonResult, reset } = useFileUpload(slug);
   const { copied, copy } = useClipboard();
 
