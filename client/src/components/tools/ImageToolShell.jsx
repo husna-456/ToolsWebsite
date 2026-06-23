@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import Tesseract from 'tesseract.js';
 import ImageCropperTool from './ImageCropperTool';
+import ImageWatermarkTool from './ImageWatermarkTool';
 import {
   Upload, X, AlertCircle, Loader2, Check, Copy,
   ImageDown, RefreshCw, Plus, Trash2,
@@ -465,7 +466,8 @@ function ProgressBar({ value, label }) {
 // ── Main component ────────────────────────────────────────────
 export default function ImageToolShell({ tool }) {
   const { slug } = tool;
-  if (slug === 'image-cropper') return <ImageCropperTool />;
+  if (slug === 'image-cropper')   return <ImageCropperTool />;
+  if (slug === 'image-watermark') return <ImageWatermarkTool />;
   const { upload, loading, error, progress, jsonResult, reset } = useFileUpload(slug);
   const { copied, copy } = useClipboard();
 
