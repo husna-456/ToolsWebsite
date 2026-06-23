@@ -291,20 +291,47 @@ async function processImage(inputPath, slug, options = {}) {
     }
 
     case 'background-remover': {
+      console.log('[BG_BACKEND_START] background-remover requested');
       if (!process.env.REMOVEBG_API_KEY) {
+        console.log('[BG_BACKEND_START] REMOVEBG_API_KEY not set — returning comingSoon');
         return { comingSoon: true };
       }
+      console.log('[BG_FILE_RECEIVED] inputPath:', inputPath);
+
       const axios    = require('axios');
       const FormData = require('form-data');
       const form     = new FormData();
       form.append('image_file', fs.createReadStream(inputPath));
       form.append('size', 'auto');
-      const resp = await axios.post('https://api.remove.bg/v1.0/removebg', form, {
-        headers: { 'X-Api-Key': process.env.REMOVEBG_API_KEY, ...form.getHeaders() },
-        responseType: 'arraybuffer',
-      });
+
+      console.log('[BG_REMOVEBG_REQUEST] calling remove.bg API');
+      let resp;
+      try {
+        resp = await axios.post('https://api.remove.bg/v1.0/removebg', form, {
+          headers: { 'X-Api-Key': process.env.REMOVEBG_API_KEY, ...form.getHeaders() },
+          responseType: 'arraybuffer',
+          timeout: 60_000,
+        });
+        console.log('[BG_REMOVEBG_SUCCESS] status:', resp.status, 'bytes:', resp.data?.length);
+      } catch (apiErr) {
+        const status = apiErr.response?.status;
+        const msg =
+          status === 400 ? 'Invalid or unsupported image. Please upload a clear JPG or PNG.' :
+          status === 401 ? 'Invalid remove.bg API key. Please check REMOVEBG_API_KEY.' :
+          status === 402 ? 'remove.bg free quota exceeded. Please try again later.' :
+          status === 403 ? 'remove.bg access forbidden. Please check your subscription plan.' :
+          status === 429 ? 'Too many requests to remove.bg. Please wait a moment and try again.' :
+          apiErr.code === 'ECONNABORTED' ? 'remove.bg request timed out after 60 seconds.' :
+          `remove.bg error: ${apiErr.message}`;
+        console.error('[BG_REMOVEBG_ERROR] status:', status, '—', msg);
+        const err = new Error(msg);
+        err.statusCode = status >= 400 && status < 500 ? status : 502;
+        throw err;
+      }
+
       const output = outPath('png');
       fs.writeFileSync(output, resp.data);
+      console.log('[BG_SUCCESS] output:', output);
       return { outputPath: output, filename: 'background-removed.png', mimeType: 'image/png' };
     }
 

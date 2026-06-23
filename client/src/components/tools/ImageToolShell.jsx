@@ -472,7 +472,6 @@ export default function ImageToolShell({ tool }) {
   const isMultiFile = slug === 'image-merger';
   const isTextResult = TEXT_SLUGS.includes(slug);
   const isOCR = slug === 'image-ocr';
-  const isBgRemover = slug === 'background-remover';
 
   // Single-file state
   const [file,       setFile]      = useState(null);
@@ -491,10 +490,6 @@ export default function ImageToolShell({ tool }) {
   const [ocrError,    setOcrError]    = useState('');
   const [ocrResult,   setOcrResult]   = useState(null);
 
-  // Browser-side background removal state (bypasses server when isBgRemover)
-  const [bgLoading,  setBgLoading]  = useState(false);
-  const [bgProgress, setBgProgress] = useState(0);
-  const [bgError,    setBgError]    = useState('');
 
   const set = useCallback(key => val => setOpts(prev => ({ ...prev, [key]: val })), []);
 
@@ -594,86 +589,11 @@ export default function ImageToolShell({ tool }) {
     }
   }
 
-  async function handleBrowserBgRemoval() {
-    if (!file) return;
-    setBgError('');
-    setBgLoading(true);
-    setBgProgress(5);
-    console.log('[BG_START] Starting background removal', { name: file.name, size: file.size, type: file.type });
-
-    const TIMEOUT_MS = 120_000;
-    let timeoutId;
-    const timeoutPromise = new Promise((_, reject) => {
-      timeoutId = setTimeout(
-        () => reject(new Error('Timed out after 2 minutes. The AI model may be too large to load. Please try again.')),
-        TIMEOUT_MS,
-      );
-    });
-
-    try {
-      console.log('[BG_FILE_RECEIVED]', file.name, file.size, 'bytes');
-      console.log('[BG_MODEL_LOADING] Importing @imgly/background-removal…');
-
-      const { removeBackground } = await import('@imgly/background-removal');
-      setBgProgress(10);
-      console.log('[BG_MODEL_LOADED] Library imported — calling removeBackground…');
-
-      console.log('[BG_API_REQUEST] removeBackground called');
-      const removalPromise = removeBackground(file, {
-        model: 'small',
-        progress: (key, current, total) => {
-          console.log('[BG_IMAGE_PROCESSING]', key, current, '/', total);
-          if (total > 0) {
-            const pct = (current / total) * 100;
-            if (key.startsWith('fetch:')) {
-              // model download: 10 → 65 %
-              setBgProgress(prev => Math.max(prev, Math.min(65, Math.round(10 + pct * 0.55))));
-            } else {
-              // inference/compute: 65 → 95 %
-              setBgProgress(prev => Math.max(prev, Math.min(95, Math.round(65 + pct * 0.30))));
-            }
-          }
-        },
-      });
-
-      const blob = await Promise.race([removalPromise, timeoutPromise]);
-      clearTimeout(timeoutId);
-
-      console.log('[BG_API_RESPONSE] Blob received, size:', blob?.size);
-      setBgProgress(98);
-
-      const url = URL.createObjectURL(blob);
-      const a   = document.createElement('a');
-      a.href     = url;
-      a.download = 'background-removed.png';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      setBgProgress(100);
-      setDone(true);
-      console.log('[BG_SUCCESS] Done');
-
-    } catch (err) {
-      clearTimeout(timeoutId);
-      const msg = err?.message || String(err) || 'Background removal failed. Please try again.';
-      console.error('[BG_ERROR]', msg);
-      setBgError(msg);
-      setBgProgress(0);
-    } finally {
-      setBgLoading(false);
-    }
-  }
 
   async function handleProcess() {
     setDone(false);
     if (isOCR) {
       await handleBrowserOCR();
-      return;
-    }
-    if (isBgRemover) {
-      await handleBrowserBgRemoval();
       return;
     }
     if (isMultiFile) {
@@ -695,16 +615,14 @@ export default function ImageToolShell({ tool }) {
     setOcrResult(null);
     setOcrError('');
     setOcrProgress(0);
-    setBgError('');
-    setBgProgress(0);
     reset();
     if (inputRef.current) inputRef.current.value = '';
   }
 
   // Merge server-upload state with browser-side processing state
-  const effectiveLoading  = isOCR ? ocrLoading  : isBgRemover ? bgLoading  : loading;
-  const effectiveProgress = isOCR ? ocrProgress : isBgRemover ? bgProgress : progress;
-  const effectiveError    = isOCR ? ocrError    : isBgRemover ? bgError    : error;
+  const effectiveLoading  = isOCR ? ocrLoading  : loading;
+  const effectiveProgress = isOCR ? ocrProgress : progress;
+  const effectiveError    = isOCR ? ocrError    : error;
   const effectiveResult   = isOCR ? ocrResult   : jsonResult;
 
   // Determine result shape
@@ -890,12 +808,7 @@ export default function ImageToolShell({ tool }) {
                 <div className="flex flex-col items-center gap-3">
                   <Loader2 className="w-8 h-8 text-accent animate-spin" />
                   <p className="text-sm font-medium text-text-secondary">
-                    {isBgRemover
-                      ? bgProgress < 11  ? 'Initialising AI model…'
-                        : bgProgress < 66 ? `Downloading AI model… ${bgProgress}%`
-                        : bgProgress < 96 ? 'Removing background…'
-                        : 'Finalising…'
-                      : 'Processing your image…'}
+                    Processing your image…
                   </p>
                 </div>
                 <ProgressBar value={effectiveProgress} />
