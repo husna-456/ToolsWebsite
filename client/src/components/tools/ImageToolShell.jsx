@@ -4,6 +4,7 @@ import ImageCropperTool from './ImageCropperTool';
 import ImageWatermarkTool from './ImageWatermarkTool';
 import MetadataExifTool from './MetadataExifTool';
 import QRCodeProTool from './QRCodeProTool';
+import MemeStudioTool from './MemeStudioTool';
 import {
   Upload, X, AlertCircle, Loader2, Check, Copy,
   ImageDown, RefreshCw, Plus, Trash2,
@@ -472,6 +473,7 @@ export default function ImageToolShell({ tool }) {
   if (slug === 'image-watermark')       return <ImageWatermarkTool />;
   if (slug === 'metadata-exif-remover') return <MetadataExifTool />;
   if (slug === 'qr-code-generator')     return <QRCodeProTool />;
+  if (slug === 'meme-generator')        return <MemeStudioTool />;
   const { upload, loading, error, progress, jsonResult, reset } = useFileUpload(slug);
   const { copied, copy } = useClipboard();
 

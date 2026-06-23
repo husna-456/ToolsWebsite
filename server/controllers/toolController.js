@@ -513,4 +513,15 @@ const runBase64Convert = async (req, res, next) => {
   }
 };
 
-module.exports = { getTools, getCategories, getTool, getUsage, runTool, captureEmail, fetchSource, processFile, runQRCode, runBase64Convert, analyzeSeoTool, getAudioProgress };
+const runMemeCaption = async (req, res, next) => {
+  try {
+    const { topic, mode } = req.body;
+    if (!topic || typeof topic !== 'string') return res.status(400).json({ success: false, error: 'topic required' });
+    const { result } = await runGeminiTool('meme-caption', topic.slice(0, 300), { mode: mode || 'text meme' });
+    res.json({ success: true, caption: result });
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = { getTools, getCategories, getTool, getUsage, runTool, captureEmail, fetchSource, processFile, runQRCode, runBase64Convert, analyzeSeoTool, getAudioProgress, runMemeCaption };

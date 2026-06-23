@@ -37,6 +37,10 @@ ${text}`,
   'image-translator': (text, targetLang) => `Translate the following text to ${targetLang || 'English'}. Preserve meaning and formatting. Return ONLY the translated text, nothing else.
 
 ${text}`,
+
+  'meme-caption': (text, mode) => `Generate a funny, witty, and shareable meme caption for a "${mode || 'text meme'}" style meme.
+Theme/topic: ${text}
+Return ONLY 1-3 short punchy lines separated by newlines. No quotes. No intro. Just the caption text.`,
 };
 
 // ── System prompts — quality ke liye, tokens bachane ke liye alag rakhe ──
@@ -75,6 +79,8 @@ RULES:
   'citation-generator': `You are a citation formatting expert. Generate properly formatted academic citations in the requested format (APA, MLA, Chicago, Harvard). Return ONLY the formatted citation string — no explanation, no alternatives.`,
 
   'image-translator': `You are a professional translator. Translate text accurately while preserving meaning, context, and formatting. Return ONLY the translated text — no explanation, no original text.`,
+
+  'meme-caption': `You are a meme caption genius known for viral, funny content. Generate short, punchy, relatable meme captions. Be witty, creative, and culturally relevant. Return ONLY the caption lines — no explanation, no quotes, no intro.`,
 };
 
 const MAX_TOKENS = {
@@ -85,6 +91,7 @@ const MAX_TOKENS = {
   'summarizer':          512,
   'citation-generator':  200,
   'image-translator':   1500,
+  'meme-caption':        200,
 };
 
 // ── Input cleaner — extra spaces/lines hatao ─────────────────

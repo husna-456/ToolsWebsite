@@ -3,7 +3,7 @@ const router  = express.Router();
 const {
   getTools, getCategories, getTool, getUsage, runTool,
   captureEmail, fetchSource, processFile, runQRCode, runBase64Convert,
-  analyzeSeoTool, getAudioProgress,
+  analyzeSeoTool, getAudioProgress, runMemeCaption,
 } = require('../controllers/toolController');
 const { checkUsageLimit } = require('../middleware/usageCheck');
 const { adaptiveUpload }  = require('../middleware/upload');
@@ -21,6 +21,7 @@ router.post('/citation-generator/fetch-source', fetchSource);
 router.post('/qr-code-generator/run',           runQRCode);
 router.post('/base64-to-png/run',               runBase64Convert);
 router.post('/base64-to-jpg/run',               runBase64Convert);
+router.post('/meme-studio/caption',             runMemeCaption);
 
 // ── Text to PDF ───────────────────────────────────────────────
 router.post('/text-to-pdf/format',   textToPdfLimiter, textToPdfFormat);

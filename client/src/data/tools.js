@@ -392,12 +392,12 @@ export const TOOLS = {
     metaDesc:  'Remove EXIF data and metadata from images. Protect your privacy. Free, no signup.',
   },
   'meme-generator': {
-    slug: 'meme-generator', title: 'Meme Generator',
-    shortDesc: 'Add top and bottom text to any image to create memes.',
+    slug: 'meme-generator', title: 'Meme Studio',
+    shortDesc: 'Create viral text memes, fake tweets, WhatsApp chats, Instagram posts, breaking news, code memes & more with AI captions.',
     category: 'image-tools', icon: 'Laugh', maxChars: 0,
     toolType: 'image-file',
-    metaTitle: 'Free Meme Generator — Create Memes Online',
-    metaDesc:  'Create memes by adding text to any image. Impact font, custom color. Free, no signup.',
+    metaTitle: 'Free Meme Studio — Text Memes, Fake Tweets, Fake Chats & More',
+    metaDesc:  'Create viral memes online: text memes, fake tweets, WhatsApp chats, Instagram posts, breaking news banners, code memes, motivational quotes. AI captions. Free.',
   },
   'image-merger': {
     slug: 'image-merger', title: 'Image Merger',
