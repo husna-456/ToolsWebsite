@@ -866,69 +866,6 @@ async function processMedia(inputPath, slug, options = {}) {
       return { outputPath: output, filename: `converted.${fmt}`, mimeType: mimeMap[fmt] };
     }
 
-    case 'screen-recorder': {
-      // Transcode raw MediaRecorder output (WebM / MP4) to a properly encoded MP4:
-      //  - libx264 + AAC  → guaranteed audio track (fixes no-audio bug)
-      //  - -movflags +faststart → metadata at start of file (fixes seek bug)
-      //  - -map 0:a:0?    → audio stream is optional (works even if no mic was captured)
-      const output = outPath('mp4');
-      const ts     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-
-      await runFfmpeg(cmd => {
-        cmd.input(inputPath)
-           .outputOptions([
-             '-c:v libx264',
-             '-c:a aac',
-             '-b:a 192k',
-             '-ar 44100',
-             '-preset fast',
-             '-crf 23',
-             '-pix_fmt yuv420p',
-             '-movflags +faststart',
-             '-threads 0',
-             '-map 0:v:0',   // first video stream
-             '-map 0:a:0?',  // first audio stream — optional (? = skip if absent)
-           ])
-           .on('start',  c   => console.log(`[screen-recorder] FFmpeg: ${c}`))
-           .on('error',  (e, _o, s) => console.error(`[screen-recorder] Error: ${e.message}\n${s}`))
-           .output(output);
-      });
-
-      return {
-        outputPath: output,
-        filename:   `screen-recording-${ts}.mp4`,
-        mimeType:   'video/mp4',
-      };
-    }
-
-    case 'audio-recorder': {
-      // Transcode raw MediaRecorder WebM audio to seekable MP3:
-      //  - libmp3lame → widely compatible MP3
-      //  - -write_xing 1 → Xing/Info header so players know total duration (fixes seek bug)
-      const output = outPath('mp3');
-      const ts     = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-
-      await runFfmpeg(cmd => {
-        cmd.input(inputPath)
-           .outputOptions([
-             '-vn',              // drop any video stream
-             '-c:a libmp3lame',
-             '-b:a 192k',
-             '-ar 44100',
-             '-write_xing 1',   // Xing header → seekable MP3
-           ])
-           .on('start',  c         => console.log(`[audio-recorder] FFmpeg: ${c}`))
-           .on('error',  (e, _o, s) => console.error(`[audio-recorder] Error: ${e.message}\n${s}`))
-           .output(output);
-      });
-
-      return {
-        outputPath: output,
-        filename:   `audio-recording-${ts}.mp3`,
-        mimeType:   'audio/mpeg',
-      };
-    }
-
     case 'video-converter': {
       const validFmts = ['mp4', 'webm', 'mov', 'avi', 'mkv'];
       const mimeMap   = {

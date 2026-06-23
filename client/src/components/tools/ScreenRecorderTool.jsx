@@ -1,10 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Monitor, Mic, Square, Download, Trash2, AlertCircle,
-  Clock, Pause, Play, Info, Wifi, WifiOff, Volume2, Radio, Loader2,
+  Clock, Pause, Play, Info, Wifi, WifiOff, Volume2, Radio,
 } from 'lucide-react';
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
 
 function formatDuration(seconds) {
   const h = Math.floor(seconds / 3600);
@@ -22,67 +20,16 @@ const VIDEO_MIME_CANDIDATES = [
   'video/webm',
 ];
 
-// Upload blob to /api/tools/<slug>/process via XHR for real upload-progress events.
-// Returns the processed file as a Blob. onUploadDone fires when upload phase finishes.
-function uploadRecording(blob, slug, onUploadProgress, onUploadDone) {
-  return new Promise((resolve, reject) => {
-    const isAudio  = slug === 'audio-recorder';
-    const formData = new FormData();
-    formData.append(
-      'file',
-      new File([blob], 'recording.webm', { type: blob.type || (isAudio ? 'audio/webm' : 'video/webm') }),
-    );
-
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_BASE_URL}/api/tools/${slug}/process`);
-    xhr.responseType = 'blob';
-    xhr.timeout = 10 * 60 * 1000; // 10 min — allow large files + FFmpeg time
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onUploadProgress(Math.round((e.loaded / e.total) * 100));
-    };
-
-    // Upload finished → FFmpeg starts on server
-    xhr.upload.onload = () => onUploadDone();
-
-    xhr.onload = () => {
-      if (xhr.status === 200) {
-        resolve(xhr.response);
-      } else {
-        const reader = new FileReader();
-        reader.onload = () => {
-          try {
-            const body = JSON.parse(reader.result);
-            reject(new Error(body.error || `Server error ${xhr.status}`));
-          } catch {
-            reject(new Error(`Server error ${xhr.status}`));
-          }
-        };
-        reader.readAsText(xhr.response);
-      }
-    };
-
-    xhr.onerror   = () => reject(new Error('Upload failed. Please check your connection.'));
-    xhr.ontimeout = () => reject(new Error('Upload timed out. Try a shorter recording.'));
-
-    xhr.send(formData);
-  });
-}
-
-
 export default function ScreenRecorderTool({ tool }) {
-  const [mode,           setMode]           = useState('screen');
-  const [status,         setStatus]         = useState('idle');
-  const [duration,       setDuration]       = useState(0);
-  const [blobUrl,        setBlobUrl]        = useState(null);
-  const [filename,       setFilename]       = useState('');
-  const [error,          setError]          = useState('');
-  const [audioOn,        setAudioOn]        = useState(true);
-  const [gainValue,      setGainValue]      = useState(2.0);
-  const [mixMode,        setMixMode]        = useState('mixed');
-  // Screen recording server-pipeline states
-  const [uploadPct,      setUploadPct]      = useState(null);  // null = idle, 0–100 = uploading
-  const [serverProc,     setServerProc]     = useState(false); // FFmpeg running on server
+  const [mode,      setMode]      = useState('screen');
+  const [status,    setStatus]    = useState('idle');
+  const [duration,  setDuration]  = useState(0);
+  const [blobUrl,   setBlobUrl]   = useState(null);
+  const [filename,  setFilename]  = useState('');
+  const [error,     setError]     = useState('');
+  const [audioOn,   setAudioOn]   = useState(true);
+  const [gainValue, setGainValue] = useState(2.0);
+  const [mixMode,   setMixMode]   = useState('mixed');
 
   const mediaRecorderRef = useRef(null);
   const chunksRef        = useRef([]);
@@ -147,42 +94,25 @@ export default function ScreenRecorderTool({ tool }) {
 
       recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunksRef.current.push(e.data); };
 
-      recorder.onstop = async () => {
+      recorder.onstop = () => {
         clearInterval(timerRef.current);
         stream.getTracks().forEach(t => t.stop());
         streamRef.current = null;
 
         const blob  = new Blob(chunksRef.current, { type: mimeType });
-        chunksRef.current = []; // free memory early
-        const fname = `screen-recording-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.mp4`;
+        chunksRef.current = [];
 
-        // ── Phase 1: Upload ───────────────────────────────────
-        setUploadPct(0);
-        try {
-          const mp4Blob = await uploadRecording(
-            blob,
-            'screen-recorder',
-            setUploadPct,
-            () => { setUploadPct(null); setServerProc(true); },
-          );
+        const ext   = mimeType.includes('mp4') ? 'mp4' : 'webm';
+        const fname = `screen-recording-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`;
+        const url   = URL.createObjectURL(blob);
+        blobUrlRef.current = url;
+        setBlobUrl(url);
+        setFilename(fname);
+        setStatus('stopped');
 
-          const url = URL.createObjectURL(mp4Blob);
-          blobUrlRef.current = url;
-          setBlobUrl(url);
-          setFilename(fname);
-          setStatus('stopped');
-
-          // Auto-download the finished MP4
-          const a = document.createElement('a');
-          a.href = url; a.download = fname;
-          document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        } catch (err) {
-          setError(err.message || 'Processing failed. Please try again.');
-          setStatus('idle');
-        } finally {
-          setUploadPct(null);
-          setServerProc(false);
-        }
+        const a = document.createElement('a');
+        a.href = url; a.download = fname;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
       };
 
       stream.getVideoTracks()[0].onended = () => {
@@ -271,7 +201,7 @@ export default function ScreenRecorderTool({ tool }) {
       mediaRecorderRef.current = recorder;
       recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunksRef.current.push(e.data); };
 
-      recorder.onstop = async () => {
+      recorder.onstop = () => {
         clearInterval(timerRef.current);
         stopWaveform();
         micStream.getTracks().forEach(t => t.stop());
@@ -279,35 +209,21 @@ export default function ScreenRecorderTool({ tool }) {
         streamRef.current    = null;
         sysStreamRef.current = null;
 
-        const blob  = new Blob(chunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
+        const finalMime = recorder.mimeType || mimeType || 'audio/webm';
+        const blob      = new Blob(chunksRef.current, { type: finalMime });
         chunksRef.current = [];
-        const fname = `audio-recording-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.mp3`;
 
-        setUploadPct(0);
-        try {
-          const mp3Blob = await uploadRecording(
-            blob,
-            'audio-recorder',
-            setUploadPct,
-            () => { setUploadPct(null); setServerProc(true); },
-          );
+        const ext   = finalMime.includes('mp4') ? 'm4a' : finalMime.includes('ogg') ? 'ogg' : 'webm';
+        const fname = `audio-recording-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`;
+        const url   = URL.createObjectURL(blob);
+        blobUrlRef.current = url;
+        setBlobUrl(url);
+        setFilename(fname);
+        setStatus('stopped');
 
-          const url = URL.createObjectURL(mp3Blob);
-          blobUrlRef.current = url;
-          setBlobUrl(url);
-          setFilename(fname);
-          setStatus('stopped');
-
-          const a = document.createElement('a');
-          a.href = url; a.download = fname;
-          document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        } catch (err) {
-          setError(err.message || 'Processing failed. Please try again.');
-          setStatus('idle');
-        } finally {
-          setUploadPct(null);
-          setServerProc(false);
-        }
+        const a = document.createElement('a');
+        a.href = url; a.download = fname;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
       };
 
       recorder.start(1000);
@@ -389,12 +305,10 @@ export default function ScreenRecorderTool({ tool }) {
   }, []);
 
   // ── Derived flags ────────────────────────────────────────────
-  const isAudioMode  = mode === 'audio';
-  const isRecording  = status === 'recording';
-  const isPaused     = status === 'paused';
-  const isActive     = isRecording || isPaused;
-  const isUploading  = uploadPct !== null;
-  const isProcessing = isUploading || serverProc;
+  const isAudioMode = mode === 'audio';
+  const isRecording = status === 'recording';
+  const isPaused    = status === 'paused';
+  const isActive    = isRecording || isPaused;
 
   // ── Render ───────────────────────────────────────────────────
   return (
@@ -428,43 +342,8 @@ export default function ScreenRecorderTool({ tool }) {
           </div>
         )}
 
-        {/* ── Upload progress (screen recording → server) ── */}
-        {isUploading && (
-          <div className="flex flex-col items-center gap-4 py-6">
-            <Loader2 className="w-9 h-9 text-accent animate-spin" />
-            <div className="w-full space-y-2">
-              <div className="flex justify-between text-sm font-medium text-text-primary">
-                <span>Uploading recording…</span>
-                <span className="text-accent font-mono">{uploadPct}%</span>
-              </div>
-              <div className="w-full bg-border rounded-full h-2.5 overflow-hidden">
-                <div
-                  className="bg-accent h-2.5 rounded-full transition-all duration-300 ease-out"
-                  style={{ width: `${uploadPct}%` }}
-                />
-              </div>
-              <p className="text-xs text-text-muted text-center">
-                Larger recordings take longer — please keep this tab open
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* ── Server FFmpeg processing ── */}
-        {serverProc && (
-          <div className="flex flex-col items-center justify-center py-10 gap-3">
-            <Loader2 className="w-10 h-10 text-accent animate-spin" />
-            <p className="font-semibold text-text-primary">
-              {mode === 'audio' ? 'Processing audio…' : 'Processing video…'}
-            </p>
-            <p className="text-sm text-text-muted">
-              {mode === 'audio' ? 'Converting to seekable MP3' : 'FFmpeg is encoding audio + fixing seekability'}
-            </p>
-          </div>
-        )}
-
         {/* ── Mode selector (idle only) ── */}
-        {!isProcessing && status === 'idle' && (
+        {status === 'idle' && (
           <div className="grid grid-cols-2 gap-3">
             {[
               { id: 'screen', label: 'Record Screen', Icon: Monitor },
@@ -487,7 +366,7 @@ export default function ScreenRecorderTool({ tool }) {
         )}
 
         {/* ── Screen mode options (idle) ── */}
-        {!isProcessing && status === 'idle' && mode === 'screen' && (
+        {status === 'idle' && mode === 'screen' && (
           <>
             {!screenSupported ? (
               <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
@@ -503,7 +382,7 @@ export default function ScreenRecorderTool({ tool }) {
                 <Info className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>
                   Choose what to share — a browser tab, a window, or full screen.
-                  The recording is processed by our server for full audio and seek support.
+                  The recording is saved directly in your browser — no upload needed.
                 </span>
               </div>
             )}
@@ -526,7 +405,7 @@ export default function ScreenRecorderTool({ tool }) {
         )}
 
         {/* ── Audio mode options (idle) ── */}
-        {!isProcessing && status === 'idle' && mode === 'audio' && (
+        {status === 'idle' && mode === 'audio' && (
           <>
             <div className="grid grid-cols-2 gap-2">
               {[
@@ -585,7 +464,7 @@ export default function ScreenRecorderTool({ tool }) {
         )}
 
         {/* ── Active: screen recording indicator ── */}
-        {!isProcessing && isActive && mode === 'screen' && (
+        {isActive && mode === 'screen' && (
           <div className="flex flex-col items-center justify-center py-8 gap-4">
             <div className="relative w-20 h-20 rounded-full border-4 border-red-200 flex items-center justify-center">
               {!isPaused && <span className="absolute w-10 h-10 rounded-full bg-red-500/15 animate-ping" />}
@@ -604,7 +483,7 @@ export default function ScreenRecorderTool({ tool }) {
         )}
 
         {/* ── Active: audio-only waveform ── */}
-        {!isProcessing && isActive && mode === 'audio' && (
+        {isActive && mode === 'audio' && (
           <div className="flex flex-col items-center gap-4 py-2">
             <canvas ref={canvasRef} height={72} className="w-full rounded-xl border border-border" />
             <div className="text-center space-y-1">
@@ -618,7 +497,7 @@ export default function ScreenRecorderTool({ tool }) {
         )}
 
         {/* ── Completed: preview ── */}
-        {!isProcessing && status === 'stopped' && blobUrl && (
+        {status === 'stopped' && blobUrl && (
           <div className="space-y-3">
             {mode === 'screen' ? (
               <video
@@ -639,58 +518,56 @@ export default function ScreenRecorderTool({ tool }) {
         )}
 
         {/* ── Action buttons ── */}
-        {!isProcessing && (
-          <div className="flex flex-col sm:flex-row gap-3">
+        <div className="flex flex-col sm:flex-row gap-3">
 
-            {status === 'idle' && (
+          {status === 'idle' && (
+            <button
+              onClick={mode === 'screen' ? startScreenRecording : startAudioRecording}
+              disabled={mode === 'screen' && !screenSupported}
+              className="btn-primary w-full h-12 text-[15px] disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {mode === 'screen' ? <Monitor className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+              {mode === 'screen'
+                ? 'Start Screen Recording'
+                : mixMode === 'mixed' ? 'Start Recording (Mic + Class Audio)' : 'Start Recording (Mic Only)'}
+            </button>
+          )}
+
+          {isActive && (
+            <>
               <button
-                onClick={mode === 'screen' ? startScreenRecording : startAudioRecording}
-                disabled={mode === 'screen' && !screenSupported}
-                className="btn-primary w-full h-12 text-[15px] disabled:opacity-40 disabled:cursor-not-allowed"
+                onClick={togglePause}
+                className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold border border-border bg-surface-2 hover:bg-surface-3 text-text-primary transition-colors"
               >
-                {mode === 'screen' ? <Monitor className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                {mode === 'screen'
-                  ? 'Start Screen Recording'
-                  : mixMode === 'mixed' ? 'Start Recording (Mic + Class Audio)' : 'Start Recording (Mic Only)'}
+                {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                {isPaused ? 'Resume' : 'Pause'}
               </button>
-            )}
+              <button
+                onClick={stopRecording}
+                className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors shadow-sm"
+              >
+                <Square className="w-4 h-4 fill-white" />
+                Stop Recording
+              </button>
+            </>
+          )}
 
-            {isActive && (
-              <>
-                <button
-                  onClick={togglePause}
-                  className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold border border-border bg-surface-2 hover:bg-surface-3 text-text-primary transition-colors"
-                >
-                  {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
-                  {isPaused ? 'Resume' : 'Pause'}
-                </button>
-                <button
-                  onClick={stopRecording}
-                  className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors shadow-sm"
-                >
-                  <Square className="w-4 h-4 fill-white" />
-                  Stop Recording
-                </button>
-              </>
-            )}
-
-            {status === 'stopped' && (
-              <>
-                <button onClick={downloadRecording} className="btn-primary flex-1 h-12 text-[15px]">
-                  <Download className="w-4 h-4" />
-                  Download Again
-                </button>
-                <button onClick={discardRecording} className="btn-ghost h-12 px-5">
-                  <Trash2 className="w-4 h-4" />
-                  Discard
-                </button>
-              </>
-            )}
-          </div>
-        )}
+          {status === 'stopped' && (
+            <>
+              <button onClick={downloadRecording} className="btn-primary flex-1 h-12 text-[15px]">
+                <Download className="w-4 h-4" />
+                Download Again
+              </button>
+              <button onClick={discardRecording} className="btn-ghost h-12 px-5">
+                <Trash2 className="w-4 h-4" />
+                Discard
+              </button>
+            </>
+          )}
+        </div>
 
         {/* Duration summary */}
-        {!isProcessing && status === 'stopped' && duration > 0 && (
+        {status === 'stopped' && duration > 0 && (
           <div className="flex items-center justify-center gap-2 text-sm text-text-muted">
             <Clock className="w-4 h-4" />
             <span>Recorded {formatDuration(duration)}</span>
