@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   Type, MessageSquare, MessageCircle, Camera, Briefcase, Newspaper,
   Terminal, Quote, Clock, Download, RotateCcw, Wand2, X,
@@ -37,6 +37,30 @@ const CODE_THEMES = [
   { label: 'Dracula',      bg: '#282a36', text: '#f8f8f2', comment: '#6272a4', header: '#21222c' },
   { label: 'Monokai',      bg: '#272822', text: '#f8f8f2', comment: '#75715e', header: '#1e1f1c' },
   { label: 'GitHub Light', bg: '#ffffff', text: '#24292e', comment: '#6a737d', header: '#f6f8fa' },
+];
+
+// ── Text Meme canvas-specific data ───────────────────────────
+// stops[] → used by Canvas API; css → used for picker button preview
+const TM_GRADIENTS = [
+  { label: 'Midnight', stops: ['#0f0c29','#302b63','#24243e'] },
+  { label: 'Sunset',   stops: ['#f093fb','#f5576c'] },
+  { label: 'Ocean',    stops: ['#00c6ff','#0072ff'] },
+  { label: 'Fire',     stops: ['#f7971e','#ffd200'] },
+  { label: 'Forest',   stops: ['#134e5e','#71b280'] },
+  { label: 'Royal',    stops: ['#141e30','#243b55'] },
+  { label: 'Rose',     stops: ['#ff416c','#ff4b2b'] },
+  { label: 'Violet',   stops: ['#4776e6','#8e54e9'] },
+  { label: 'Dark',     stops: ['#1a1a2e','#16213e','#0f3460'] },
+  { label: 'Lime',     stops: ['#56ab2f','#a8e063'] },
+  { label: 'Cherry',   stops: ['#eb3349','#f45c43'] },
+  { label: 'Ice',      stops: ['#74b9ff','#a29bfe'] },
+];
+
+const ASPECT_RATIOS = [
+  { id: '1:1',  label: '1:1',   w: 1080, h: 1080, pb: '100%' },
+  { id: '4:5',  label: '4:5',   w: 1080, h: 1350, pb: '125%' },
+  { id: '9:16', label: '9:16',  w: 1080, h: 1920, pb: '177.78%' },
+  { id: '16:9', label: '16:9',  w: 1920, h: 1080, pb: '56.25%' },
 ];
 
 // ── Local fallback caption templates ─────────────────────────
@@ -87,7 +111,7 @@ const TEMPLATE_CATEGORIES = Object.keys(LOCAL_TEMPLATES);
 
 // ── Default state per mode ────────────────────────────────────
 const defaultData = {
-  'text-meme':  { topText: 'WHEN YOU FINALLY FIX THE BUG', bottomText: 'AND IT CREATES 5 MORE', bg: BG_GRADIENTS[0].value, font: 'Impact', textColor: '#ffffff', fontSize: 36 },
+  'text-meme':  { topText: 'WHEN YOU FINALLY FIX THE BUG', bottomText: 'AND IT CREATES 5 MORE', bgIdx: 0, font: 'Impact', textColor: '#ffffff', fontSize: 52, aspectRatio: '1:1', showGuides: false },
   'tweet':      { name: 'Tech Person', handle: 'techperson', text: 'I fixed a bug by renaming a variable to "actuallyWorksNow" and I regret nothing.', likes: '2.4K', retweets: '847', replies: '234', verified: true, date: 'Jun 20, 2026' },
   'whatsapp':   { contact: 'Mom', messages: [{ from: 'them', text: 'Did you eat?' }, { from: 'me', text: 'Yes mom' }, { from: 'them', text: 'Vegetables too?' }, { from: 'me', text: 'Define vegetables' }], time: '10:42 AM' },
   'instagram':  { username: 'devlife.memes', caption: 'My code at 9 AM vs 9 PM #coding #developer #memes', likes: '12,483', location: 'Stack Overflow', bgColor: '#e8f4f8', imageText: '🐛' },
@@ -103,28 +127,155 @@ const labelCls = 'block text-xs font-semibold text-gray-400 uppercase tracking-w
 
 // ── Preview components ────────────────────────────────────────
 
-function TextMemePreview({ d }) {
-  const textStyle = {
-    fontFamily: d.font || 'Impact',
-    fontSize: `${Math.max(d.fontSize || 36, 18)}px`,
-    color: d.textColor || '#ffffff',
-    textShadow: '3px 3px 0 #000,-3px 3px 0 #000,3px -3px 0 #000,-3px -3px 0 #000,0 3px 0 #000,0 -3px 0 #000,3px 0 0 #000,-3px 0 0 #000',
-    textAlign: 'center',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    lineHeight: 1.2,
-    wordBreak: 'break-word',
-    width: '100%',
-    minHeight: 40,
-  };
+// ── Canvas-based Text Meme (pixel-perfect, export = preview) ──
+function renderTextMemeCanvas(canvas, d) {
+  const W   = canvas.width;
+  const H   = canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+
+  // 1. Gradient background
+  const gradData = TM_GRADIENTS[d.bgIdx ?? 0] || TM_GRADIENTS[0];
+  const grad = ctx.createLinearGradient(0, 0, W, H);
+  gradData.stops.forEach((color, i, arr) => {
+    grad.addColorStop(arr.length === 1 ? 0 : i / (arr.length - 1), color);
+  });
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // 2. Safe-area guide overlay
+  if (d.showGuides) {
+    const m = Math.round(Math.min(W, H) * 0.05);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth   = Math.max(2, Math.round(W / 360));
+    ctx.setLineDash([Math.round(W / 90), Math.round(W / 135)]);
+    ctx.strokeRect(m, m, W - m * 2, H - m * 2);
+    // Corner L-marks
+    const cm = Math.round(Math.min(W, H) * 0.04);
+    ctx.setLineDash([]);
+    ctx.lineWidth   = Math.max(3, Math.round(W / 270));
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    [[m, m, 1, 1],[W - m, m, -1, 1],[m, H - m, 1, -1],[W - m, H - m, -1, -1]].forEach(([cx, cy, dx, dy]) => {
+      ctx.beginPath();
+      ctx.moveTo(cx + dx * cm, cy);
+      ctx.lineTo(cx, cy);
+      ctx.lineTo(cx, cy + dy * cm);
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
+  // 3. Text setup
+  const fontFam = `"${d.font || 'Impact'}", Impact, "Arial Black", sans-serif`;
+  const VPAD    = Math.round(H * 0.05);   // 5% from top/bottom edges
+  const HPAD    = Math.round(W * 0.055);  // 5.5% from left/right
+  const MAX_W   = W - HPAD * 2;
+  const baseSize = Math.min(d.fontSize || 52, Math.round(W * 0.115)); // cap at 11.5% of width
+  const LH_RATIO = 1.18;
+
+  // 4. Fit text into ≤ 2 lines by reducing font size
+  function fitText(raw) {
+    if (!raw || !raw.trim()) return null;
+    const upper = raw.toUpperCase().trim();
+    let size     = baseSize;
+
+    while (size >= 18) {
+      ctx.font = `900 ${size}px ${fontFam}`;
+      const words = upper.split(/\s+/);
+      const lines = [];
+      let cur = '';
+
+      for (const word of words) {
+        const candidate = cur ? `${cur} ${word}` : word;
+        if (ctx.measureText(candidate).width > MAX_W && cur) {
+          lines.push(cur);
+          cur = word;
+          if (lines.length >= 2) { cur = ''; break; }
+        } else {
+          cur = candidate;
+        }
+      }
+      if (cur) {
+        if (lines.length < 2) lines.push(cur);
+      }
+
+      const fits = lines.length <= 2 &&
+        lines.every(l => ctx.measureText(l).width <= MAX_W);
+      if (fits && lines.length <= 2) return { lines, size };
+      size -= 2;
+    }
+
+    // Minimum size fallback — just show first line
+    ctx.font = `900 18px ${fontFam}`;
+    return { lines: [upper.slice(0, 40)], size: 18 };
+  }
+
+  // 5. Draw a block of lines at a given top-Y
+  function drawBlock(fitted, startY) {
+    if (!fitted || !fitted.lines.length) return 0;
+    const { lines, size } = fitted;
+    const lh  = size * LH_RATIO;
+    const sw  = Math.max(3, size * 0.095); // stroke width ~9.5% of size
+    const cx  = W / 2;
+
+    ctx.font         = `900 ${size}px ${fontFam}`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'top';
+    ctx.lineJoin     = 'round';
+    ctx.lineCap      = 'round';
+
+    lines.forEach((line, i) => {
+      const y = startY + i * lh;
+      // Drop shadow for depth
+      ctx.save();
+      ctx.shadowColor   = 'rgba(0,0,0,0.55)';
+      ctx.shadowBlur    = size * 0.12;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = size * 0.05;
+      // Stroke
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth   = sw;
+      ctx.strokeText(line, cx, y);
+      ctx.restore();
+      // Fill (no shadow on fill to keep it crisp)
+      ctx.fillStyle = d.textColor || '#ffffff';
+      ctx.fillText(line, cx, y);
+    });
+
+    return lines.length * lh;
+  }
+
+  // 6. Top text — anchored to top edge
+  const topFit = fitText(d.topText);
+  drawBlock(topFit, VPAD);
+
+  // 7. Bottom text — anchored to bottom edge
+  const botFit = fitText(d.bottomText);
+  if (botFit) {
+    const totalH = botFit.lines.length * botFit.size * LH_RATIO;
+    const botStartY = H - VPAD - totalH;
+    drawBlock(botFit, botStartY);
+  }
+}
+
+function TextMemeCanvas({ d, canvasRef }) {
+  const ar = ASPECT_RATIOS.find(a => a.id === (d.aspectRatio || '1:1')) || ASPECT_RATIOS[0];
+
+  useEffect(() => {
+    const canvas = canvasRef?.current;
+    if (!canvas) return;
+    renderTextMemeCanvas(canvas, d);
+  }, [d, canvasRef]);
+
   return (
-    /* paddingBottom trick for square ratio — works with html2canvas unlike aspect-ratio CSS */
-    <div style={{ position: 'relative', width: '100%', paddingBottom: '100%', background: d.bg, borderRadius: 8 }}>
-      <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', alignItems: 'center', padding: '28px 20px', boxSizing: 'border-box' }}>
-        <div style={textStyle}>{d.topText}</div>
-        <div style={{ flex: 1 }} />
-        <div style={textStyle}>{d.bottomText}</div>
-      </div>
+    <div style={{ position: 'relative', width: '100%', paddingBottom: ar.pb, borderRadius: 8, overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,0.5)' }}>
+      <canvas
+        ref={canvasRef}
+        width={ar.w}
+        height={ar.h}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block', borderRadius: 8 }}
+      />
     </div>
   );
 }
@@ -317,33 +468,91 @@ function GradientPicker({ value, onChange }) {
 function TextMemeForm({ d, onChange }) {
   return (
     <div className="space-y-4">
+
+      {/* Text inputs */}
       <div>
         <label className={labelCls}>Top Text</label>
-        <textarea value={d.topText} onChange={e => onChange({ ...d, topText: e.target.value })} rows={2} className={`${inputCls} resize-none font-bold uppercase`} placeholder="Top text..." />
+        <textarea
+          value={d.topText}
+          onChange={e => onChange({ ...d, topText: e.target.value })}
+          rows={2}
+          className={`${inputCls} resize-none tracking-wide`}
+          placeholder="Top text (auto-uppercased in preview)"
+        />
       </div>
       <div>
         <label className={labelCls}>Bottom Text</label>
-        <textarea value={d.bottomText} onChange={e => onChange({ ...d, bottomText: e.target.value })} rows={2} className={`${inputCls} resize-none font-bold uppercase`} placeholder="Bottom text..." />
+        <textarea
+          value={d.bottomText}
+          onChange={e => onChange({ ...d, bottomText: e.target.value })}
+          rows={2}
+          className={`${inputCls} resize-none tracking-wide`}
+          placeholder="Bottom text (auto-uppercased in preview)"
+        />
       </div>
+
+      {/* Aspect ratio */}
+      <div>
+        <label className={labelCls}>Aspect Ratio</label>
+        <div className="grid grid-cols-4 gap-1.5">
+          {ASPECT_RATIOS.map(ar => (
+            <button
+              key={ar.id}
+              onClick={() => onChange({ ...d, aspectRatio: ar.id })}
+              className={`py-1.5 text-xs font-semibold rounded-md border transition-colors ${
+                (d.aspectRatio || '1:1') === ar.id
+                  ? 'bg-blue-600 border-blue-500 text-white'
+                  : 'bg-gray-800/60 border-gray-700/60 text-gray-400 hover:border-gray-500 hover:text-gray-200'
+              }`}
+            >{ar.label}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* Background */}
       <div>
         <label className={labelCls}>Background</label>
-        <GradientPicker value={d.bg} onChange={v => onChange({ ...d, bg: v })} />
+        <div className="grid grid-cols-6 gap-1.5">
+          {TM_GRADIENTS.map((g, i) => (
+            <button
+              key={i}
+              onClick={() => onChange({ ...d, bgIdx: i })}
+              title={g.label}
+              style={{ background: `linear-gradient(135deg,${g.stops.join(',')})`, borderRadius: 6, height: 30, border: (d.bgIdx ?? 0) === i ? '2px solid #3b82f6' : '2px solid transparent', transition: 'border-color .15s' }}
+            />
+          ))}
+        </div>
       </div>
+
+      {/* Font + Size */}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className={labelCls}>Font</label>
           <select value={d.font} onChange={e => onChange({ ...d, font: e.target.value })} className={inputCls}>
-            {['Impact', 'Arial Black', 'Georgia', 'Comic Sans MS', 'Helvetica'].map(f => <option key={f} value={f}>{f}</option>)}
+            {['Impact','Arial Black','Georgia','Helvetica','Comic Sans MS'].map(f => <option key={f} value={f}>{f}</option>)}
           </select>
         </div>
         <div>
-          <label className={labelCls}>Size — {d.fontSize}px</label>
-          <input type="range" min={16} max={64} value={d.fontSize} onChange={e => onChange({ ...d, fontSize: +e.target.value })} className="w-full accent-blue-500 mt-2" />
+          <label className={labelCls}>Max Size — {d.fontSize}px</label>
+          <input type="range" min={20} max={120} value={d.fontSize} onChange={e => onChange({ ...d, fontSize: +e.target.value })} className="w-full accent-blue-500 mt-2" />
         </div>
       </div>
-      <div>
-        <label className={labelCls}>Text Color</label>
-        <input type="color" value={d.textColor} onChange={e => onChange({ ...d, textColor: e.target.value })} className="h-9 w-14 rounded-md cursor-pointer border border-gray-700 bg-transparent" />
+
+      {/* Text color + safe guides */}
+      <div className="flex items-center gap-4">
+        <div>
+          <label className={labelCls}>Text Color</label>
+          <input type="color" value={d.textColor || '#ffffff'} onChange={e => onChange({ ...d, textColor: e.target.value })} className="h-9 w-14 rounded-md cursor-pointer border border-gray-700 bg-transparent" />
+        </div>
+        <div className="flex-1">
+          <label className={labelCls}>Safe-area guides</label>
+          <button
+            onClick={() => onChange({ ...d, showGuides: !d.showGuides })}
+            className={`relative w-11 h-6 rounded-full transition-colors ${d.showGuides ? 'bg-blue-500' : 'bg-gray-700'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${d.showGuides ? 'translate-x-5' : 'translate-x-0'}`} />
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -590,7 +799,8 @@ export default function MemeStudioTool() {
   });
   const [showHistory, setShowHistory] = useState(false);
 
-  const previewRef = useRef(null);
+  const previewRef        = useRef(null);
+  const textMemeCanvasRef = useRef(null);   // direct canvas access for text-meme export
   const d   = modeData[mode];
   const setD = useCallback(val => setModeData(prev => ({ ...prev, [mode]: val })), [mode]);
 
@@ -661,23 +871,27 @@ export default function MemeStudioTool() {
 
   // ── Export ───────────────────────────────────────────────────
   const exportImage = async (format) => {
-    const target = previewRef.current;
-    if (!target) return;
     setExporting(true);
     setExportMsg('');
     try {
-      await document.fonts.ready;
-      const html2canvas = (await import('html2canvas')).default;
-      const canvas = await html2canvas(target, {
-        useCORS: true,
-        allowTaint: false,
-        backgroundColor: '#ffffff',
-        scale: 2,
-        logging: false,
-        imageTimeout: 5000,
-      });
+      let exportCanvas;
+
+      if (mode === 'text-meme' && textMemeCanvasRef.current) {
+        // Direct canvas export — pixel-perfect match with preview
+        exportCanvas = textMemeCanvasRef.current;
+      } else {
+        const target = previewRef.current;
+        if (!target) { setExporting(false); return; }
+        await document.fonts.ready;
+        const h2c = (await import('html2canvas')).default;
+        exportCanvas = await h2c(target, {
+          useCORS: true, allowTaint: false, backgroundColor: '#ffffff',
+          scale: 2, logging: false, imageTimeout: 5000,
+        });
+      }
+
       const mime = format === 'jpg' ? 'image/jpeg' : 'image/png';
-      const url  = canvas.toDataURL(mime, 0.95);
+      const url  = exportCanvas.toDataURL(mime, 0.95);
       const a    = document.createElement('a');
       a.href     = url;
       a.download = `meme-${mode}-${Date.now()}.${format}`;
@@ -685,9 +899,10 @@ export default function MemeStudioTool() {
       a.click();
       document.body.removeChild(a);
       setExportMsg('success');
-      const thumb = canvas.toDataURL('image/jpeg', 0.3);
+
+      const thumb = exportCanvas.toDataURL('image/jpeg', 0.25);
       const entry = { id: Date.now(), mode, preview: thumb, data: { ...d } };
-      const nh = [entry, ...history].slice(0, MAX_HISTORY);
+      const nh    = [entry, ...history].slice(0, MAX_HISTORY);
       setHistory(nh);
       localStorage.setItem(HISTORY_KEY, JSON.stringify(nh));
     } catch (err) {
@@ -714,7 +929,7 @@ export default function MemeStudioTool() {
 
   const renderPreview = () => {
     switch (mode) {
-      case 'text-meme':  return <TextMemePreview d={d} />;
+      case 'text-meme':  return <TextMemeCanvas d={d} canvasRef={textMemeCanvasRef} />;
       case 'tweet':      return <TweetPreview d={d} />;
       case 'whatsapp':   return <WhatsAppPreview d={d} />;
       case 'instagram':  return <InstagramPreview d={d} />;
