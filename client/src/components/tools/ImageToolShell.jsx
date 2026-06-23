@@ -445,11 +445,11 @@ function FilePill({ file, onRemove }) {
   );
 }
 
-function ProgressBar({ value }) {
+function ProgressBar({ value, label }) {
   return (
     <div className="space-y-1.5">
       <div className="flex justify-between text-xs text-text-muted">
-        <span>{value < 65 ? 'Uploading…' : value < 95 ? 'Processing…' : 'Finalising…'}</span>
+        <span>{label ?? (value < 65 ? 'Uploading…' : value < 95 ? 'Processing…' : 'Finalising…')}</span>
         <span>{value}%</span>
       </div>
       <div className="h-2 bg-surface-2 rounded-full overflow-hidden border border-border">
@@ -472,6 +472,7 @@ export default function ImageToolShell({ tool }) {
   const isMultiFile = slug === 'image-merger';
   const isTextResult = TEXT_SLUGS.includes(slug);
   const isOCR = slug === 'image-ocr';
+  const isBgRemover = slug === 'background-remover';
 
   // Single-file state
   const [file,       setFile]      = useState(null);
@@ -489,6 +490,11 @@ export default function ImageToolShell({ tool }) {
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrError,    setOcrError]    = useState('');
   const [ocrResult,   setOcrResult]   = useState(null);
+
+  // Browser-side background removal state
+  const [bgLoading,  setBgLoading]  = useState(false);
+  const [bgProgress, setBgProgress] = useState(0);
+  const [bgError,    setBgError]    = useState('');
 
 
   const set = useCallback(key => val => setOpts(prev => ({ ...prev, [key]: val })), []);
@@ -549,6 +555,92 @@ export default function ImageToolShell({ tool }) {
     selectFiles(e.dataTransfer.files);
   }
 
+  function resizeImageForBgRemoval(file, maxDimension = 1024) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const maxDim = Math.max(img.naturalWidth, img.naturalHeight);
+        if (maxDim <= maxDimension) { resolve(file); return; }
+        const scale = maxDimension / maxDim;
+        const canvas = document.createElement('canvas');
+        canvas.width  = Math.round(img.naturalWidth  * scale);
+        canvas.height = Math.round(img.naturalHeight * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(blob => resolve(blob || file), 'image/jpeg', 0.85);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+
+  async function handleBrowserBgRemoval() {
+    if (!file) return;
+    setBgError('');
+    setBgLoading(true);
+    setBgProgress(5);
+    setDone(false);
+
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      setBgLoading(false);
+      setBgError('Model download timed out. Check your internet connection and try again, or use a smaller image.');
+    }, 5 * 60 * 1000);
+
+    try {
+      // Pre-resize to max 1024px to speed up inference
+      setBgProgress(8);
+      const processedFile = await resizeImageForBgRemoval(file, 1024);
+      setBgProgress(12);
+
+      const { removeBackground } = await import('@imgly/background-removal');
+      setBgProgress(15);
+
+      if (timedOut) return;
+
+      const blob = await removeBackground(processedFile, {
+        model: 'small',
+        debug: false,
+        progress: (key, current, total) => {
+          if (timedOut || total <= 0) return;
+          const pct = Math.round((current / total) * 100);
+          if (key.includes('fetch') || key.includes('download') || key.includes('load')) {
+            setBgProgress(Math.min(15 + Math.round(pct * 0.55), 70));
+          } else {
+            setBgProgress(Math.min(70 + Math.round(pct * 0.27), 97));
+          }
+        },
+      });
+
+      clearTimeout(timeoutId);
+      if (timedOut) return;
+
+      setBgProgress(100);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'background-removed.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      setDone(true);
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (timedOut) return;
+      const msg = err?.message || '';
+      if (msg.includes('SharedArrayBuffer')) {
+        setBgError('Your browser does not support this feature. Please try Chrome or Edge with HTTPS.');
+      } else {
+        setBgError('This image or model is too heavy for your browser. Try a smaller image.');
+      }
+    } finally {
+      if (!timedOut) setBgLoading(false);
+    }
+  }
+
   async function handleBrowserOCR() {
     if (!file) return;
     setOcrResult(null);
@@ -596,6 +688,10 @@ export default function ImageToolShell({ tool }) {
       await handleBrowserOCR();
       return;
     }
+    if (isBgRemover) {
+      await handleBrowserBgRemoval();
+      return;
+    }
     if (isMultiFile) {
       if (files.length < 2) return;
       await upload(files, opts);
@@ -615,14 +711,16 @@ export default function ImageToolShell({ tool }) {
     setOcrResult(null);
     setOcrError('');
     setOcrProgress(0);
+    setBgError('');
+    setBgProgress(0);
     reset();
     if (inputRef.current) inputRef.current.value = '';
   }
 
   // Merge server-upload state with browser-side processing state
-  const effectiveLoading  = isOCR ? ocrLoading  : loading;
-  const effectiveProgress = isOCR ? ocrProgress : progress;
-  const effectiveError    = isOCR ? ocrError    : error;
+  const effectiveLoading  = isOCR ? ocrLoading  : isBgRemover ? bgLoading  : loading;
+  const effectiveProgress = isOCR ? ocrProgress : isBgRemover ? bgProgress : progress;
+  const effectiveError    = isOCR ? ocrError    : isBgRemover ? bgError    : error;
   const effectiveResult   = isOCR ? ocrResult   : jsonResult;
 
   // Determine result shape
@@ -808,10 +906,28 @@ export default function ImageToolShell({ tool }) {
                 <div className="flex flex-col items-center gap-3">
                   <Loader2 className="w-8 h-8 text-accent animate-spin" />
                   <p className="text-sm font-medium text-text-secondary">
-                    Processing your image…
+                    {isBgRemover
+                      ? bgProgress < 16 ? 'Preparing image…'
+                        : bgProgress < 70 ? `Downloading AI model… ${bgProgress}%`
+                        : bgProgress < 98 ? 'Removing background…'
+                        : 'Finalising…'
+                      : 'Processing your image…'}
                   </p>
+                  {isBgRemover && bgProgress >= 16 && bgProgress < 70 && (
+                    <p className="text-xs text-text-muted text-center">
+                      First-time download (~44 MB) — subsequent uses are instant
+                    </p>
+                  )}
                 </div>
-                <ProgressBar value={effectiveProgress} />
+                <ProgressBar
+                  value={effectiveProgress}
+                  label={isBgRemover
+                    ? effectiveProgress < 16 ? 'Preparing…'
+                      : effectiveProgress < 70 ? 'Downloading model…'
+                      : effectiveProgress < 98 ? 'Removing background…'
+                      : 'Finalising…'
+                    : undefined}
+                />
               </div>
             )}
 
