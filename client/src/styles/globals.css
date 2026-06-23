@@ -20,7 +20,11 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     line-height: 1.625;
-    font-size: 1.125rem; /* text-lg base */
+    font-size: 1rem; /* text-base on mobile */
+  }
+
+  @media (min-width: 640px) {
+    body { font-size: 1.125rem; } /* text-lg on sm+ */
   }
 
   h1, h2, h3, h4, h5, h6 {
@@ -48,8 +52,8 @@
   /* ── Buttons ────────────────────────────────────────────── */
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2
-           text-white font-semibold text-lg
-           px-6 py-3 rounded-xl border-none cursor-pointer
+           text-white font-semibold text-base sm:text-lg
+           px-5 sm:px-6 py-3 rounded-xl border-none cursor-pointer
            transition-all duration-200
            active:scale-[0.98]
            disabled:opacity-40 disabled:cursor-not-allowed

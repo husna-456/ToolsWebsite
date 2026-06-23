@@ -101,7 +101,7 @@ export default function Navbar() {
         {/* Mobile hamburger */}
         <button
           onClick={() => setOpen(!open)}
-          className="md:hidden w-9 h-9 rounded-lg flex items-center justify-center text-[#475569] hover:text-[#0F172A] hover:bg-[#F8FAFC] transition-colors"
+          className="md:hidden w-11 h-11 rounded-lg flex items-center justify-center text-[#475569] hover:text-[#0F172A] hover:bg-[#F8FAFC] transition-colors"
           aria-label="Toggle menu"
           aria-expanded={open}
         >
@@ -112,7 +112,7 @@ export default function Navbar() {
       {/* Mobile drawer */}
       <div
         className={`md:hidden overflow-hidden transition-all duration-200 ease-in-out border-t border-[#E2E8F0] ${
-          open ? 'max-h-72 opacity-100' : 'max-h-0 opacity-0 border-transparent'
+          open ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0 border-transparent'
         }`}
       >
         <div className="px-4 py-3 space-y-1 bg-white">

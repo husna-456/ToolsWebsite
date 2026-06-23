@@ -354,7 +354,7 @@ export default function MetadataExifTool() {
           </label>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] divide-y lg:divide-y-0 lg:divide-x divide-border min-h-[520px]">
+        <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] divide-y lg:divide-y-0 lg:divide-x divide-border lg:min-h-[520px]">
 
           {/* ── LEFT: File list ────────────────────────────── */}
           <div className="flex flex-col">

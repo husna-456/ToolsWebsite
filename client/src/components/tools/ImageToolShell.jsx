@@ -889,7 +889,7 @@ export default function ImageToolShell({ tool }) {
             )}
           </div>
 
-          <div className="flex-1 p-4 flex flex-col" style={{ minHeight: '300px' }}>
+          <div className="flex-1 p-4 flex flex-col" style={{ minHeight: '200px' }}>
 
             {/* Empty state */}
             {!effectiveLoading && !effectiveError && !showResult && (

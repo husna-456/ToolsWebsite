@@ -302,14 +302,14 @@ export default function ToolPageLayout({ slug, children }) {
       <header className="mb-10">
         <div className="flex items-start gap-5">
           {/* Icon */}
-          <div className="w-16 h-16 bg-[#EFF6FF] rounded-2xl flex items-center justify-center border shadow-sm shrink-0" style={{ borderColor: 'color-mix(in srgb, var(--brand), transparent 80%)' }}>
+          <div className="w-12 h-12 sm:w-16 sm:h-16 bg-[#EFF6FF] rounded-2xl flex items-center justify-center border shadow-sm shrink-0" style={{ borderColor: 'color-mix(in srgb, var(--brand), transparent 80%)' }}>
             <ToolIcon name={tool.icon} size="lg" />
           </div>
 
           {/* Meta */}
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap mb-2">
-              <h1 className="font-display font-bold text-3xl text-primary tracking-tight leading-tight">
+              <h1 className="font-display font-bold text-2xl sm:text-3xl text-primary tracking-tight leading-tight">
                 {tool.title}
               </h1>
               <span className="badge-accent">Free · No Signup</span>

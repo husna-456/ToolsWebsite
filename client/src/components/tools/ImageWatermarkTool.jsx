@@ -563,7 +563,7 @@ export default function ImageWatermarkTool() {
   // ── Render ────────────────────────────────────────────────────
   return (
     <div className="panel-card shadow-lg">
-      <div className="grid grid-cols-1 lg:grid-cols-[420px_1fr] divide-y lg:divide-y-0 lg:divide-x divide-border min-h-[600px]">
+      <div className="grid grid-cols-1 lg:grid-cols-[420px_1fr] divide-y lg:divide-y-0 lg:divide-x divide-border lg:min-h-[600px]">
 
         {/* ── LEFT PANEL: Controls ─────────────────────────── */}
         <div className="flex flex-col overflow-y-auto" style={{ maxHeight: '85vh' }}>
