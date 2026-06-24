@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { io } from 'socket.io-client';
+import fixWebmDuration from 'fix-webm-duration';
 import {
   Monitor, Mic, MicOff, Square, Download, Trash2, AlertCircle,
   Clock, Pause, Play, Info, Wifi, WifiOff, Volume2, Radio,
@@ -175,13 +176,15 @@ export default function ScreenRecorderTool({ tool }) {
   const [mixMode,   setMixMode]   = useState('mixed');
 
   // ── MP4 export state ──────────────────────────────────────────
-  const [fileSize,     setFileSize]     = useState(0);
-  const [recordedMime, setRecordedMime] = useState('');
-  const [convState,    setConvState]    = useState('idle'); // idle|loading|converting|done|error
-  const [convProgress, setConvProgress] = useState(0);
-  const [convError,    setConvError]    = useState('');
-  const [mp4BlobUrl,   setMp4BlobUrl]   = useState(null);
-  const [mp4Filename,  setMp4Filename]  = useState('');
+  const [fileSize,       setFileSize]       = useState(0);
+  const [recordedMime,   setRecordedMime]   = useState('');
+  const [convState,      setConvState]      = useState('idle'); // idle|loading|converting|done|error
+  const [convProgress,   setConvProgress]   = useState(0);
+  const [convError,      setConvError]      = useState('');
+  const [mp4BlobUrl,     setMp4BlobUrl]     = useState(null);
+  const [mp4Filename,    setMp4Filename]    = useState('');
+  // Audio track count captured from stream (-1 = not yet known)
+  const [audioTrackCount, setAudioTrackCount] = useState(-1);
 
   // ── Tab ────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState('record');  // 'record' | 'live' | 'annotate'
@@ -207,6 +210,7 @@ export default function ScreenRecorderTool({ tool }) {
   const streamRef        = useRef(null);
   const sysStreamRef     = useRef(null);
   const timerRef         = useRef(null);
+  const startTimeRef     = useRef(0);       // epoch ms when recording started
   const blobUrlRef       = useRef(null);
   const mp4BlobUrlRef    = useRef(null);
   const canvasRef        = useRef(null);    // audio waveform
@@ -272,50 +276,113 @@ export default function ScreenRecorderTool({ tool }) {
     chunksRef.current = [];
   }
 
-  // ── Existing Screen recording (unchanged) ─────────────────────
+  // ── Screen recording ──────────────────────────────────────────
   const startScreenRecording = useCallback(async () => {
     prepareNew();
+    setAudioTrackCount(-1);
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 30, max: 60 }, cursor: 'never', displaySurface: 'browser' },
-        ...(audioOn
-          ? { audio: { echoCancellation: false, noiseSuppression: false, sampleRate: 44100 } }
-          : { audio: false }),
+        video: {
+          frameRate: { ideal: 30, max: 60 },
+          width:     { ideal: 1920 },
+          height:    { ideal: 1080 },
+          cursor:    'always',
+        },
+        // Pass a boolean so the browser shows the "Share system audio" checkbox.
+        // Passing constraints object here has no effect on display audio in Chrome.
+        audio: audioOn,
         selfBrowserSurface: 'exclude',
-        preferCurrentTab: false,
-        systemAudio: 'exclude',
+        // Do NOT pass systemAudio:'exclude' — that hides the audio checkbox entirely.
       });
+
+      const vTracks = stream.getVideoTracks().length;
+      const aTracks = stream.getAudioTracks().length;
+      console.log(`[Recorder] Stream — video: ${vTracks}, audio: ${aTracks}`);
+      stream.getVideoTracks().forEach((t, i) => console.log(`  video[${i}]: ${t.label}`, t.getSettings()));
+      stream.getAudioTracks().forEach((t, i) => console.log(`  audio[${i}]: ${t.label}`, t.getSettings()));
+      if (audioOn && aTracks === 0) {
+        console.warn('[Recorder] No audio tracks — user did not tick "Share system audio" in the dialog.');
+      }
+      setAudioTrackCount(aTracks);
+
       streamRef.current = stream;
+
       const mimeType = VIDEO_MIME_CANDIDATES.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
-      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2_500_000, audioBitsPerSecond: 128_000 });
+      console.log(`[Recorder] MIME: ${mimeType}`);
+      console.log(`[Recorder] isTypeSupported checks:`, VIDEO_MIME_CANDIDATES.map(m => `${m}:${MediaRecorder.isTypeSupported(m)}`));
+
+      const recorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: 2_500_000,
+        audioBitsPerSecond: 128_000,
+      });
       mediaRecorderRef.current = recorder;
-      recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunksRef.current.push(e.data); };
-      recorder.onstop = () => {
+
+      recorder.ondataavailable = (e) => {
+        if (e.data?.size > 0) {
+          chunksRef.current.push(e.data);
+          console.log(`[Recorder] Chunk #${chunksRef.current.length}: ${(e.data.size / 1024).toFixed(1)} KB`);
+        }
+      };
+
+      // onstop is async so we can await fixWebmDuration
+      recorder.onstop = async () => {
         clearInterval(timerRef.current);
         stream.getTracks().forEach(t => t.stop());
         streamRef.current = null;
-        const finalMime = recorder.mimeType || mimeType;
-        const blob  = new Blob(chunksRef.current, { type: finalMime });
+
+        const actualDurationMs = Date.now() - startTimeRef.current;
+        const finalMime  = recorder.mimeType || mimeType;
+        const chunkCount = chunksRef.current.length;
+        const rawBlob    = new Blob(chunksRef.current, { type: finalMime });
         chunksRef.current = [];
+
+        console.log(`[Recorder] onstop — chunks: ${chunkCount}, size: ${(rawBlob.size / (1024 * 1024)).toFixed(2)} MB, duration: ${actualDurationMs}ms, mime: ${finalMime}`);
+
+        // Transition to processing state while we fix the metadata
+        setStatus('processing');
+
+        // Fix missing WebM Duration element so players can seek and show correct duration.
+        // Chrome's MediaRecorder omits Duration in the live-stream segment header,
+        // causing "0:00" duration and broken seek bars in all players.
+        let finalBlob = rawBlob;
+        if (!finalMime.includes('mp4')) {
+          try {
+            finalBlob = await fixWebmDuration(rawBlob, actualDurationMs, () => {});
+            console.log(`[Recorder] Fixed WebM — size: ${(finalBlob.size / (1024 * 1024)).toFixed(2)} MB`);
+          } catch (fixErr) {
+            console.warn('[Recorder] Duration fix failed, using raw blob:', fixErr);
+            finalBlob = rawBlob;
+          }
+        }
+
         const ext   = finalMime.includes('mp4') ? 'mp4' : 'webm';
         const fname = `screen-recording-${new Date().toISOString().slice(0, 10)}.${ext}`;
-        const url   = URL.createObjectURL(blob);
+        const url   = URL.createObjectURL(finalBlob);
         blobUrlRef.current = url;
-        // Clear any previous mp4 export
+
         if (mp4BlobUrlRef.current) { URL.revokeObjectURL(mp4BlobUrlRef.current); mp4BlobUrlRef.current = null; }
         setMp4BlobUrl(null); setMp4Filename(''); setConvState('idle'); setConvError('');
-        setBlobUrl(url); setFilename(fname); setFileSize(blob.size);
-        setRecordedMime(finalMime); setStatus('stopped');
+        setBlobUrl(url); setFilename(fname); setFileSize(finalBlob.size);
+        setRecordedMime(finalMime);
+        setStatus('stopped');
+
         const a = document.createElement('a');
         a.href = url; a.download = fname;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
       };
-      stream.getVideoTracks()[0].onended = () => { if (recorder.state !== 'inactive') recorder.stop(); };
-      recorder.start(2000);
+
+      stream.getVideoTracks()[0].onended = () => {
+        if (recorder.state !== 'inactive') recorder.stop();
+      };
+
+      startTimeRef.current = Date.now();
+      recorder.start(1000);
       setStatus('recording');
       timerRef.current = setInterval(() => setDuration(d => d + 1), 1000);
+
     } catch (err) {
-      if (err.name === 'NotAllowedError')       setError('Permission denied. Please allow screen sharing when prompted.');
+      if (err.name === 'NotAllowedError')        setError('Permission denied. Please allow screen sharing when prompted.');
       else if (err.name === 'NotSupportedError') setError('Screen recording is not supported in this browser. Try Audio Only mode instead.');
       else                                       setError(err.message || 'Could not start recording. Please try again.');
     }
@@ -458,6 +525,7 @@ export default function ScreenRecorderTool({ tool }) {
     if (mp4BlobUrlRef.current) { URL.revokeObjectURL(mp4BlobUrlRef.current); mp4BlobUrlRef.current = null; }
     setBlobUrl(null); setFilename(''); setDuration(0); setFileSize(0); setRecordedMime('');
     setMp4BlobUrl(null); setMp4Filename(''); setConvState('idle'); setConvError('');
+    setAudioTrackCount(-1);
     setStatus('idle'); chunksRef.current = [];
   }, []);
 
@@ -852,6 +920,7 @@ export default function ScreenRecorderTool({ tool }) {
   const isAudioMode    = mode === 'audio';
   const isRecording    = status === 'recording';
   const isPaused       = status === 'paused';
+  const isProcessing   = status === 'processing';
   const isActive       = isRecording || isPaused;
   const isShareActive  = sharePhase === 'active' || sharePhase === 'paused';
   const isSharePaused  = sharePhase === 'paused';
@@ -912,6 +981,12 @@ export default function ScreenRecorderTool({ tool }) {
             <span className="flex items-center gap-1 text-xs text-gray-400">
               <Users className="w-3.5 h-3.5" /> {viewerCount}
             </span>
+          )}
+          {isProcessing && (
+            <div className="flex items-center gap-2 text-sm font-medium text-accent">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>Fixing metadata…</span>
+            </div>
           )}
           {isActive && (
             <div className="flex items-center gap-2">
@@ -1060,6 +1135,27 @@ export default function ScreenRecorderTool({ tool }) {
                 </div>
               </div>
             )}
+            {/* No-audio warning — shown during recording if stream had no audio tracks */}
+            {isActive && mode === 'screen' && audioOn && audioTrackCount === 0 && (
+              <div className="flex items-start gap-3 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>
+                  No system audio captured. In the Chrome dialog, tick <strong>"Share system audio"</strong> before clicking Share. Stop and re-record to include audio.
+                </span>
+              </div>
+            )}
+            {/* Processing state — fixing WebM metadata after recording stops */}
+            {isProcessing && (
+              <div className="flex flex-col items-center justify-center py-8 gap-4">
+                <div className="w-16 h-16 rounded-full border-4 border-accent/30 flex items-center justify-center">
+                  <Loader2 className="w-8 h-8 text-accent animate-spin" />
+                </div>
+                <div className="text-center space-y-1">
+                  <p className="font-semibold text-text-primary">Finalising recording…</p>
+                  <p className="text-sm text-text-muted">Writing duration metadata for proper seeking and playback</p>
+                </div>
+              </div>
+            )}
             {status === 'stopped' && blobUrl && (
               <div className="space-y-4">
                 {/* Preview */}
@@ -1073,7 +1169,7 @@ export default function ScreenRecorderTool({ tool }) {
                     </div>}
 
                 {/* File info card */}
-                <div className="grid grid-cols-3 gap-2 p-3 rounded-xl bg-surface-2 border border-border text-center text-xs">
+                <div className="grid grid-cols-4 gap-2 p-3 rounded-xl bg-surface-2 border border-border text-center text-xs">
                   <div>
                     <p className="text-text-muted mb-0.5">Format</p>
                     <p className="font-semibold text-text-primary uppercase">
@@ -1088,7 +1184,23 @@ export default function ScreenRecorderTool({ tool }) {
                     <p className="text-text-muted mb-0.5">Size</p>
                     <p className="font-semibold text-text-primary">{formatFileSize(fileSize)}</p>
                   </div>
+                  <div>
+                    <p className="text-text-muted mb-0.5">Audio</p>
+                    <p className={`font-semibold ${audioTrackCount > 0 ? 'text-green-600' : audioTrackCount === 0 ? 'text-red-500' : 'text-text-primary'}`}>
+                      {audioTrackCount > 0 ? 'Yes' : audioTrackCount === 0 ? 'None' : '—'}
+                    </p>
+                  </div>
                 </div>
+
+                {/* Audio missing warning */}
+                {mode === 'screen' && audioOn && audioTrackCount === 0 && (
+                  <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>
+                      No audio was captured. Next time, tick <strong>"Share system audio"</strong> in Chrome's share dialog before clicking Share.
+                    </span>
+                  </div>
+                )}
 
                 {/* MP4 export section — screen mode only */}
                 {mode === 'screen' && !recordedMime.includes('mp4') && (
