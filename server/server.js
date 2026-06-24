@@ -1,4 +1,5 @@
 require('dotenv').config();
+const http       = require('http');
 const express    = require('express');
 const cors       = require('cors');
 const rateLimit  = require('express-rate-limit');
@@ -15,7 +16,8 @@ process.on('unhandledRejection', (reason) => {
   console.error('[FATAL] Unhandled Rejection — server kept alive:', reason);
 });
 
-const app = express();
+const app        = express();
+const httpServer = http.createServer(app);
 
 // ── Database ─────────────────────────────────────────────────
 connectDB();
@@ -101,10 +103,90 @@ app.get('/api/health', (req, res) =>
 app.use(notFound);
 app.use(errorHandler);
 
+// ── Live Share — Socket.IO signaling ─────────────────────────
+const { Server: SocketIO } = require('socket.io');
+const io = new SocketIO(httpServer, {
+  cors: corsOptions,
+  path: '/socket.io',
+});
+
+// sessionId → { hostId, viewers: Set<socketId> }
+const liveSessions = new Map();
+
+io.on('connection', (socket) => {
+
+  // Host creates a session
+  socket.on('share:create', ({ sessionId }) => {
+    socket.join(sessionId);
+    liveSessions.set(sessionId, { hostId: socket.id, viewers: new Set() });
+  });
+
+  // Viewer joins
+  socket.on('share:join', ({ sessionId }) => {
+    const s = liveSessions.get(sessionId);
+    if (!s) { socket.emit('share:not-found'); return; }
+    socket.join(sessionId);
+    s.viewers.add(socket.id);
+    io.to(s.hostId).emit('share:viewer-joined', { viewerId: socket.id });
+    io.to(s.hostId).emit('share:viewer-count',  { count: s.viewers.size });
+    socket.emit('share:joined', { sessionId });
+  });
+
+  // WebRTC signaling relay (host ↔ viewer)
+  socket.on('share:offer',         ({ targetId, offer })     => io.to(targetId).emit('share:offer',         { fromId: socket.id, offer }));
+  socket.on('share:answer',        ({ targetId, answer })    => io.to(targetId).emit('share:answer',        { fromId: socket.id, answer }));
+  socket.on('share:ice-candidate', ({ targetId, candidate }) => io.to(targetId).emit('share:ice-candidate', { fromId: socket.id, candidate }));
+
+  // Send current annotation state to a specific newly-joined viewer
+  socket.on('share:sync-to-viewer', ({ targetId, event }) => io.to(targetId).emit('share:annotation', event));
+
+  // Annotation event broadcast — host → all viewers in room
+  socket.on('share:annotation', ({ sessionId, event }) => socket.to(sessionId).emit('share:annotation', event));
+
+  // Pause / Resume signals to viewers
+  socket.on('share:pause',  ({ sessionId }) => socket.to(sessionId).emit('share:paused'));
+  socket.on('share:resume', ({ sessionId }) => socket.to(sessionId).emit('share:resumed'));
+
+  // Host stops
+  socket.on('share:stop', ({ sessionId }) => {
+    const s = liveSessions.get(sessionId);
+    if (s?.hostId === socket.id) {
+      io.to(sessionId).emit('share:ended');
+      liveSessions.delete(sessionId);
+    }
+  });
+
+  // Viewer explicitly leaves
+  socket.on('share:leave', ({ sessionId }) => {
+    const s = liveSessions.get(sessionId);
+    if (s) {
+      s.viewers.delete(socket.id);
+      io.to(s.hostId).emit('share:viewer-left',  { viewerId: socket.id });
+      io.to(s.hostId).emit('share:viewer-count', { count: s.viewers.size });
+    }
+  });
+
+  socket.on('disconnect', () => {
+    for (const [sessionId, s] of liveSessions.entries()) {
+      if (s.hostId === socket.id) {
+        io.to(sessionId).emit('share:ended');
+        liveSessions.delete(sessionId);
+        break;
+      }
+      if (s.viewers.has(socket.id)) {
+        s.viewers.delete(socket.id);
+        io.to(s.hostId).emit('share:viewer-left',  { viewerId: socket.id });
+        io.to(s.hostId).emit('share:viewer-count', { count: s.viewers.size });
+        break;
+      }
+    }
+  });
+});
+
 // ── Start ─────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Mode: ${process.env.NODE_ENV || 'development'}`);
 });

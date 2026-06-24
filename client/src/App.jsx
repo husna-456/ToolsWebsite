@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from '@/context/AuthContext';
+import ShareViewerPage from '@/pages/ShareViewerPage';
 
 import MainLayout      from '@/layouts/MainLayout';
 import AdminLayout     from '@/layouts/AdminLayout';
@@ -53,6 +54,9 @@ export default function App() {
             <Route path="/terms"              element={<TermsPage />} />
             <Route path="*"                   element={<NotFound />} />
           </Route>
+
+          {/* ── Live Share viewer (fullscreen, no layout) ── */}
+          <Route path="/share/:sessionId" element={<ShareViewerPage />} />
 
           {/* ── Admin login (no layout) ── */}
           <Route path="/admin/login" element={<AdminLogin />} />
