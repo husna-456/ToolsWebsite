@@ -3,10 +3,10 @@ import { io } from 'socket.io-client';
 import fixWebmDuration from 'fix-webm-duration';
 import {
   Monitor, Mic, MicOff, Square, Download, Trash2, AlertCircle,
-  Clock, Pause, Play, Info, Wifi, WifiOff, Volume2, Radio,
+  Clock, Pause, Play, Info, Volume2, Radio,
   Share2, Pen, Highlighter, ArrowUpRight, Type, X, Layers,
   Circle, Eraser, Undo2, Redo2, Users, Link, Copy, Check, EyeOff,
-  Loader2, FileVideo, CheckCircle2,
+  Loader2,
 } from 'lucide-react';
 
 const SOCKET_URL  = import.meta.env.VITE_API_BASE_URL || 'https://globaltechtools.thefiveriverz.com';
@@ -17,6 +17,13 @@ const ICE_SERVERS = [
 ];
 const CANVAS_W = 1280;
 const CANVAS_H = 720;
+
+// Prefer vp8 — widest compatibility; vp9 produces slightly better quality but
+// some players struggle with it.  No opus suffix since we record video-only.
+const VIDEO_MIME_CANDIDATES = [
+  'video/webm;codecs=vp8',
+  'video/webm',
+];
 
 function formatDuration(seconds) {
   const h = Math.floor(seconds / 3600);
@@ -31,30 +38,6 @@ function formatFileSize(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
-
-// ffmpeg singleton — loaded once on first MP4 export, reused after
-let _ffmpegInstance = null;
-
-async function getFFmpeg(onProgress) {
-  if (!_ffmpegInstance) {
-    const { createFFmpeg } = await import('@ffmpeg/ffmpeg');
-    _ffmpegInstance = createFFmpeg({
-      corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
-      log: false,
-    });
-    await _ffmpegInstance.load();
-  }
-  _ffmpegInstance.setProgress(onProgress);
-  return _ffmpegInstance;
-}
-
-// Chrome MediaRecorder never supports video/mp4 for recording — only WebM variants
-const VIDEO_MIME_CANDIDATES = [
-  'video/webm;codecs=vp9,opus',
-  'video/webm;codecs=vp8,opus',
-  'video/webm;codecs=h264,opus',
-  'video/webm',
-];
 
 const ANNOT_TOOLS = [
   { id: 'pen',       label: 'Pen',        Icon: Pen },
@@ -149,29 +132,18 @@ function AnnotationToolbar({
 
 export default function ScreenRecorderTool({ tool }) {
 
-  // ── Recording state ───────────────────────────────────────────
-  const [mode,      setMode]      = useState('screen');
-  const [status,    setStatus]    = useState('idle');  // idle|recording|paused|processing|stopped
-  const [duration,  setDuration]  = useState(0);
-  const [blobUrl,   setBlobUrl]   = useState(null);
-  const [filename,  setFilename]  = useState('');
-  const [error,     setError]     = useState('');
-  const [audioOn,   setAudioOn]   = useState(true);
+  // ── Record tab state ──────────────────────────────────────────
+  const [mode,     setMode]     = useState('screen');
+  const [status,   setStatus]   = useState('idle'); // idle|recording|paused|processing|stopped
+  const [duration, setDuration] = useState(0);
+  const [blobUrl,  setBlobUrl]  = useState(null);
+  const [filename, setFilename] = useState('');
+  const [fileSize, setFileSize] = useState(0);
+  const [error,    setError]    = useState('');
+
+  // Audio-only mode state
   const [gainValue, setGainValue] = useState(2.0);
   const [mixMode,   setMixMode]   = useState('mixed');
-
-  // ── MP4 export state ──────────────────────────────────────────
-  const [fileSize,     setFileSize]     = useState(0);
-  const [recordedMime, setRecordedMime] = useState('');
-  const [convState,    setConvState]    = useState('idle');
-  const [convProgress, setConvProgress] = useState(0);
-  const [convError,    setConvError]    = useState('');
-  const [mp4BlobUrl,   setMp4BlobUrl]   = useState(null);
-  const [mp4Filename,  setMp4Filename]  = useState('');
-
-  // ── Debug / diagnostics ───────────────────────────────────────
-  const [audioTrackCount, setAudioTrackCount] = useState(-1);
-  const [debugInfo,       setDebugInfo]       = useState(null);
 
   // ── Tab ────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState('record');
@@ -194,14 +166,11 @@ export default function ScreenRecorderTool({ tool }) {
   // ── Core recording refs ───────────────────────────────────────
   const mediaRecorderRef = useRef(null);
   const chunksRef        = useRef([]);
-  const streamRef        = useRef(null);      // displayStream from getDisplayMedia
-  const sysStreamRef     = useRef(null);      // audio-mode system stream
-  const micStreamRef     = useRef(null);      // mic stream for screen recording
-  const screenAudioCtxRef= useRef(null);      // AudioContext for screen recording mix
+  const streamRef        = useRef(null);
+  const sysStreamRef     = useRef(null);  // audio-only mode
   const timerRef         = useRef(null);
   const startTimeRef     = useRef(0);
   const blobUrlRef       = useRef(null);
-  const mp4BlobUrlRef    = useRef(null);
 
   // ── Audio waveform refs (audio mode only) ─────────────────────
   const canvasRef    = useRef(null);
@@ -234,14 +203,11 @@ export default function ScreenRecorderTool({ tool }) {
 
   useEffect(() => {
     return () => {
-      if (blobUrlRef.current)    URL.revokeObjectURL(blobUrlRef.current);
-      if (mp4BlobUrlRef.current) URL.revokeObjectURL(mp4BlobUrlRef.current);
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
       clearInterval(timerRef.current);
       stopWaveform();
       streamRef.current?.getTracks().forEach(t => t.stop());
       sysStreamRef.current?.getTracks().forEach(t => t.stop());
-      micStreamRef.current?.getTracks().forEach(t => t.stop());
-      screenAudioCtxRef.current?.close();
       shareStreamRef.current?.getTracks().forEach(t => t.stop());
       socketRef.current?.disconnect();
       peersRef.current.forEach(pc => pc.close());
@@ -262,137 +228,53 @@ export default function ScreenRecorderTool({ tool }) {
   function prepareNew() {
     setError('');
     if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
-    setBlobUrl(null); setFilename(''); setDuration(0);
+    setBlobUrl(null); setFilename(''); setDuration(0); setFileSize(0);
     chunksRef.current = [];
   }
 
   // ══════════════════════════════════════════════════════════════
-  // SCREEN RECORDING — complete pipeline
+  // SCREEN RECORDING — video only, no audio
   // ══════════════════════════════════════════════════════════════
   const startScreenRecording = useCallback(async () => {
     prepareNew();
-    setAudioTrackCount(-1);
-    setDebugInfo(null);
-
     try {
-      // ── 1. Capture display (video + optional system/tab audio) ──────
-      // Always request audio:true so Chrome shows "Share system audio" checkbox.
+      // Video only — audio:false so Chrome never asks about system audio
       const displayStream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 30, max: 60 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-        audio: true,
-        selfBrowserSurface: 'exclude',
+        audio: false,
       });
 
-      const videoTracks    = displayStream.getVideoTracks();
-      const sysAudioTracks = displayStream.getAudioTracks();
-      console.log('[Rec] displayStream — video:', videoTracks.length, videoTracks[0]?.label);
-      console.log('[Rec] displayStream — audio:', sysAudioTracks.length, sysAudioTracks[0]?.label);
-
+      const videoTracks = displayStream.getVideoTracks();
       if (videoTracks.length === 0) {
         displayStream.getTracks().forEach(t => t.stop());
         setError('No video track captured. Please try again.');
         return;
       }
 
-      // ── 2. Capture microphone separately ────────────────────────────
-      // getDisplayMedia only yields tab/system audio when user ticks the box
-      // AND shares a Tab (not Entire Screen).  Mic gives reliable audio in all cases.
-      let micStream = null;
-      if (audioOn) {
-        try {
-          micStream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-          });
-          micStreamRef.current = micStream;
-          console.log('[Rec] getUserMedia — mic tracks:', micStream.getAudioTracks().length, micStream.getAudioTracks()[0]?.label);
-        } catch (micErr) {
-          console.warn('[Rec] Mic unavailable:', micErr.name, micErr.message);
-        }
-      }
-
-      // ── 3. Mix audio sources in AudioContext ────────────────────────
-      const hasSysAudio = sysAudioTracks.length > 0;
-      const hasMicAudio = !!(micStream?.getAudioTracks().length);
-      let mixedAudioTrack = null;
-
-      if (hasSysAudio || hasMicAudio) {
-        const audioCtx = new AudioContext();
-        screenAudioCtxRef.current = audioCtx;
-        const dest = audioCtx.createMediaStreamDestination();
-
-        if (hasSysAudio) {
-          audioCtx.createMediaStreamSource(new MediaStream(sysAudioTracks)).connect(dest);
-          console.log('[Rec] System audio → mixed');
-        }
-        if (hasMicAudio) {
-          const gain = audioCtx.createGain();
-          gain.gain.value = 1.5;
-          audioCtx.createMediaStreamSource(micStream).connect(gain);
-          gain.connect(dest);
-          console.log('[Rec] Mic audio (×1.5 gain) → mixed');
-        }
-
-        mixedAudioTrack = dest.stream.getAudioTracks()[0] ?? null;
-        console.log('[Rec] Mixed track:', mixedAudioTrack?.label, 'enabled:', mixedAudioTrack?.enabled);
-      } else {
-        console.warn('[Rec] No audio source available — recording video only');
-      }
-
-      // ── 4. Build the recording stream ────────────────────────────────
-      const recordingTracks = [videoTracks[0]];
-      if (mixedAudioTrack) recordingTracks.push(mixedAudioTrack);
-      const recordingStream = new MediaStream(recordingTracks);
-
-      const finalVideoCount = recordingStream.getVideoTracks().length;
-      const finalAudioCount = recordingStream.getAudioTracks().length;
-      console.log('[Rec] Recording stream — video:', finalVideoCount, 'audio:', finalAudioCount);
-      setAudioTrackCount(finalAudioCount);
-
       streamRef.current = displayStream;
 
-      // ── 5. Choose MIME type ──────────────────────────────────────────
       const mimeType = VIDEO_MIME_CANDIDATES.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
-      console.log('[Rec] MIME:', mimeType);
-      console.log('[Rec] Support:', VIDEO_MIME_CANDIDATES.map(m => `${m}=${MediaRecorder.isTypeSupported(m)}`).join(' | '));
-
-      // ── 6. MediaRecorder ────────────────────────────────────────────
-      const recorder = new MediaRecorder(recordingStream, {
+      const recorder  = new MediaRecorder(new MediaStream([videoTracks[0]]), {
         mimeType,
         videoBitsPerSecond: 2_500_000,
-        ...(finalAudioCount > 0 ? { audioBitsPerSecond: 128_000 } : {}),
       });
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (e) => {
-        if (e.data?.size > 0) {
-          chunksRef.current.push(e.data);
-          console.log(`[Rec] chunk #${chunksRef.current.length}: ${(e.data.size / 1024).toFixed(1)} KB`);
-        }
+        if (e.data?.size > 0) chunksRef.current.push(e.data);
       };
 
-      // ── 7. onstop: fix WebM duration, then offer download ────────────
       recorder.onstop = async () => {
         clearInterval(timerRef.current);
-
-        // Stop all source streams
         displayStream.getTracks().forEach(t => t.stop());
-        micStream?.getTracks().forEach(t => t.stop());
-        if (screenAudioCtxRef.current) {
-          try { await screenAudioCtxRef.current.close(); } catch {}
-          screenAudioCtxRef.current = null;
-        }
-        streamRef.current    = null;
-        micStreamRef.current = null;
+        streamRef.current = null;
 
         const actualDurationMs = Date.now() - startTimeRef.current;
         const finalMime        = recorder.mimeType || mimeType;
-        const chunkCount       = chunksRef.current.length;
         const rawBlob          = new Blob(chunksRef.current, { type: finalMime });
         chunksRef.current = [];
 
-        console.log(`[Rec] onstop — chunks: ${chunkCount}, raw: ${(rawBlob.size/(1024*1024)).toFixed(2)} MB, duration: ${actualDurationMs}ms, mime: ${finalMime}`);
-
-        if (rawBlob.size === 0 || chunkCount === 0) {
+        if (rawBlob.size === 0) {
           setError('Recording produced no data. Please try again.');
           setStatus('idle');
           return;
@@ -400,44 +282,23 @@ export default function ScreenRecorderTool({ tool }) {
 
         setStatus('processing');
 
-        // Chrome's MediaRecorder writes a live-stream WebM segment without a
-        // Duration element in SegmentInfo.  Without Duration, players cannot seek
-        // and show 0:00.  fixWebmDuration parses the EBML tree and writes the
-        // correct Duration field before the file is downloaded.
-        let finalBlob     = rawBlob;
-        let durationFixed = false;
-        if (!finalMime.includes('mp4')) {
-          try {
-            finalBlob     = await fixWebmDuration(rawBlob, actualDurationMs);
-            durationFixed = true;
-            console.log(`[Rec] WebM fixed — ${(finalBlob.size/(1024*1024)).toFixed(2)} MB`);
-          } catch (fixErr) {
-            console.warn('[Rec] fixWebmDuration failed — using raw blob:', fixErr);
-          }
+        // Chrome's MediaRecorder emits a WebM live-stream without a Duration
+        // element in the EBML header — players can't seek and show 0:00.
+        // fixWebmDuration injects the correct Duration before we offer the download.
+        let finalBlob = rawBlob;
+        try {
+          finalBlob = await fixWebmDuration(rawBlob, actualDurationMs);
+        } catch (fixErr) {
+          console.warn('[Rec] fixWebmDuration failed, using raw blob:', fixErr);
         }
 
-        setDebugInfo({
-          mimeType:     finalMime,
-          videoTracks:  finalVideoCount,
-          audioTracks:  finalAudioCount,
-          hasSysAudio,
-          hasMicAudio,
-          chunks:       chunkCount,
-          rawSize:      rawBlob.size,
-          fixedSize:    finalBlob.size,
-          durationMs:   actualDurationMs,
-          durationFixed,
-        });
-
-        const ext   = finalMime.includes('mp4') ? 'mp4' : 'webm';
-        const fname = `screen-recording-${new Date().toISOString().slice(0, 10)}.${ext}`;
+        const fname = `screen-recording-${new Date().toISOString().slice(0, 10)}.webm`;
         const url   = URL.createObjectURL(finalBlob);
         blobUrlRef.current = url;
 
-        if (mp4BlobUrlRef.current) { URL.revokeObjectURL(mp4BlobUrlRef.current); mp4BlobUrlRef.current = null; }
-        setMp4BlobUrl(null); setMp4Filename(''); setConvState('idle'); setConvError('');
-        setBlobUrl(url); setFilename(fname); setFileSize(finalBlob.size);
-        setRecordedMime(finalMime);
+        setBlobUrl(url);
+        setFilename(fname);
+        setFileSize(finalBlob.size);
         setStatus('stopped');
 
         const a = document.createElement('a');
@@ -445,30 +306,23 @@ export default function ScreenRecorderTool({ tool }) {
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
       };
 
-      // Wire up "user clicked Stop sharing" in browser UI
       videoTracks[0].onended = () => {
         if (recorder.state !== 'inactive') recorder.stop();
       };
 
-      // ── 8. Go ───────────────────────────────────────────────────────
       startTimeRef.current = Date.now();
       recorder.start(1000);
       setStatus('recording');
       timerRef.current = setInterval(() => setDuration(d => d + 1), 1000);
 
     } catch (err) {
-      micStreamRef.current?.getTracks().forEach(t => t.stop());
-      micStreamRef.current = null;
-      try { screenAudioCtxRef.current?.close(); } catch {}
-      screenAudioCtxRef.current = null;
-
       if (err.name === 'NotAllowedError')        setError('Screen share permission denied. Please allow screen sharing when prompted.');
       else if (err.name === 'NotSupportedError') setError('Screen recording not supported in this browser. Try Chrome or Edge.');
       else                                       setError(err.message || 'Could not start recording. Please try again.');
     }
-  }, [audioOn]);
+  }, []);
 
-  // ── Audio-only recording (unchanged) ──────────────────────────
+  // ── Audio-only recording ───────────────────────────────────────
   const startAudioRecording = useCallback(async () => {
     prepareNew();
     try {
@@ -601,77 +455,13 @@ export default function ScreenRecorderTool({ tool }) {
   }, [blobUrl, filename]);
 
   const discardRecording = useCallback(() => {
-    if (blobUrlRef.current)    { URL.revokeObjectURL(blobUrlRef.current);    blobUrlRef.current    = null; }
-    if (mp4BlobUrlRef.current) { URL.revokeObjectURL(mp4BlobUrlRef.current); mp4BlobUrlRef.current = null; }
-    setBlobUrl(null); setFilename(''); setDuration(0); setFileSize(0); setRecordedMime('');
-    setMp4BlobUrl(null); setMp4Filename(''); setConvState('idle'); setConvError('');
-    setAudioTrackCount(-1); setDebugInfo(null);
+    if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
+    setBlobUrl(null); setFilename(''); setDuration(0); setFileSize(0);
     setStatus('idle'); chunksRef.current = [];
   }, []);
 
-  // ── MP4 export via ffmpeg.wasm ────────────────────────────────
-  const exportToMp4 = useCallback(async () => {
-    if (!blobUrl || convState === 'loading' || convState === 'converting') return;
-    setConvError('');
-    setConvProgress(0);
-    setConvState('loading');
-    try {
-      const { fetchFile } = await import('@ffmpeg/ffmpeg');
-      const ffmpeg = await getFFmpeg(({ ratio }) => {
-        setConvProgress(Math.max(1, Math.round(ratio * 100)));
-        setConvState('converting');
-      });
-      setConvState('converting');
-
-      const response = await fetch(blobUrl);
-      const webmBlob = await response.blob();
-
-      ffmpeg.FS('writeFile', 'input.webm', await fetchFile(webmBlob));
-      await ffmpeg.run(
-        '-i', 'input.webm',
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '23',
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-movflags', '+faststart',
-        'output.mp4'
-      );
-
-      const data    = ffmpeg.FS('readFile', 'output.mp4');
-      const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
-      const mp4Name = filename.replace(/\.(webm|mkv|ogv)$/, '.mp4') || `screen-recording-${new Date().toISOString().slice(0, 10)}.mp4`;
-      const mp4Url  = URL.createObjectURL(mp4Blob);
-
-      if (mp4BlobUrlRef.current) URL.revokeObjectURL(mp4BlobUrlRef.current);
-      mp4BlobUrlRef.current = mp4Url;
-      setMp4BlobUrl(mp4Url);
-      setMp4Filename(mp4Name);
-      setConvState('done');
-
-      const a = document.createElement('a');
-      a.href = mp4Url; a.download = mp4Name;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-
-      try { ffmpeg.FS('unlink', 'input.webm'); } catch {}
-      try { ffmpeg.FS('unlink', 'output.mp4'); } catch {}
-    } catch (err) {
-      setConvError(err.message?.includes('Out of memory')
-        ? 'File too large to convert in browser. Try a shorter recording.'
-        : 'MP4 conversion failed. ' + (err.message || 'Please try again.'));
-      setConvState('error');
-    }
-  }, [blobUrl, filename, convState]);
-
-  const downloadMp4Again = useCallback(() => {
-    if (!mp4BlobUrl || !mp4Filename) return;
-    const a = document.createElement('a');
-    a.href = mp4BlobUrl; a.download = mp4Filename;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  }, [mp4BlobUrl, mp4Filename]);
-
   // ════════════════════════════════════════════════════════════════
-  // Share Live: WebRTC helpers
+  // Share Live — WebRTC helpers (unchanged)
   // ════════════════════════════════════════════════════════════════
 
   const emitAnnot = useCallback((event) => {
@@ -808,7 +598,7 @@ export default function ScreenRecorderTool({ tool }) {
     });
   }, [sessionId]);
 
-  // ── Annotation canvas helpers ─────────────────────────────────
+  // ── Annotation helpers (unchanged) ────────────────────────────
   const pushUndo = useCallback((canvas) => {
     const ctx  = canvas.getContext('2d');
     const snap = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -998,7 +788,6 @@ export default function ScreenRecorderTool({ tool }) {
   const isShareActive = sharePhase === 'active' || sharePhase === 'paused';
   const isSharePaused = sharePhase === 'paused';
 
-  // ── Text overlay for annotation canvas ───────────────────────
   function TextOverlay() {
     if (!textState) return null;
     return (
@@ -1113,41 +902,19 @@ export default function ScreenRecorderTool({ tool }) {
               </div>
             )}
 
-            {/* Screen mode options */}
+            {/* Screen mode: info hint */}
             {status === 'idle' && mode === 'screen' && (
-              <>
-                {!screenSupported ? (
-                  <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
-                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>Screen recording not supported. Use <button className="font-semibold underline" onClick={() => setMode('audio')}>Audio Only</button> or try Chrome.</span>
-                  </div>
-                ) : !error && (
-                  <div className="flex items-start gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl text-blue-700 text-sm">
-                    <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                    <div className="space-y-1 text-xs">
-                      <p className="font-semibold text-sm">Two permission prompts will appear:</p>
-                      <ol className="list-decimal list-inside space-y-0.5 text-blue-600">
-                        <li>Screen share dialog — pick Tab, Window, or Entire Screen</li>
-                        <li>Microphone — allow for your voice in the recording</li>
-                      </ol>
-                      <p className="text-blue-500 mt-1">To also include system/tab audio: tick <strong>"Share system audio"</strong> in step 1.</p>
-                    </div>
-                  </div>
-                )}
-                {screenSupported && (
-                  <div className="flex flex-wrap items-center gap-3 p-4 bg-surface-2 rounded-xl border border-border">
-                    <button onClick={() => setAudioOn(a => !a)}
-                      className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all ${
-                        audioOn ? 'bg-white border-accent text-accent shadow-sm' : 'bg-white border-border text-text-muted'
-                      }`}
-                    >
-                      {audioOn ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
-                      {audioOn ? 'Mic + system audio: ON' : 'Audio: OFF'}
-                    </button>
-                    <p className="text-xs text-text-muted">Captures your microphone and optionally tab/system audio.</p>
-                  </div>
-                )}
-              </>
+              !screenSupported ? (
+                <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>Screen recording not supported. Use <button className="font-semibold underline" onClick={() => setMode('audio')}>Audio Only</button> or try Chrome or Edge.</span>
+                </div>
+              ) : !error && (
+                <div className="flex items-start gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl text-blue-700 text-sm">
+                  <Info className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>Click <strong>Start Screen Recording</strong>, then choose a Tab, Window, or Entire Screen in the browser dialog. Records video only.</span>
+                </div>
+              )
             )}
 
             {/* Audio mode options */}
@@ -1197,7 +964,7 @@ export default function ScreenRecorderTool({ tool }) {
               </>
             )}
 
-            {/* Screen — recording active */}
+            {/* Screen recording active */}
             {isActive && mode === 'screen' && (
               <div className="flex flex-col items-center justify-center py-8 gap-4">
                 <div className="relative w-20 h-20 rounded-full border-4 border-red-200 flex items-center justify-center">
@@ -1208,17 +975,11 @@ export default function ScreenRecorderTool({ tool }) {
                   <p className="font-semibold text-text-primary">{isPaused ? 'Recording paused' : 'Recording in progress'}</p>
                   <p className="text-4xl font-mono font-bold text-primary">{formatDuration(duration)}</p>
                   {!isPaused && <p className="text-sm text-text-muted">Click Stop or use the browser's "Stop sharing" button</p>}
-                  {audioTrackCount === 0 && audioOn && (
-                    <p className="text-xs text-amber-600 mt-1">No audio captured yet — mic permission may still be pending</p>
-                  )}
-                  {audioTrackCount > 0 && (
-                    <p className="text-xs text-green-600 mt-1">{audioTrackCount} audio track{audioTrackCount > 1 ? 's' : ''} recording</p>
-                  )}
                 </div>
               </div>
             )}
 
-            {/* Audio — recording active */}
+            {/* Audio recording active */}
             {isActive && mode === 'audio' && (
               <div className="flex flex-col items-center gap-4 py-2">
                 <canvas ref={canvasRef} height={72} className="w-full rounded-xl border border-border" />
@@ -1232,7 +993,7 @@ export default function ScreenRecorderTool({ tool }) {
               </div>
             )}
 
-            {/* Processing state */}
+            {/* Processing */}
             {isProcessing && (
               <div className="flex flex-col items-center justify-center py-8 gap-4">
                 <div className="w-16 h-16 rounded-full border-4 border-accent/30 flex items-center justify-center">
@@ -1240,30 +1001,30 @@ export default function ScreenRecorderTool({ tool }) {
                 </div>
                 <div className="text-center space-y-1">
                   <p className="font-semibold text-text-primary">Finalising recording…</p>
-                  <p className="text-sm text-text-muted">Writing duration metadata so the file can be seeked and shows the correct length</p>
+                  <p className="text-sm text-text-muted">Writing duration metadata so the video can be seeked</p>
                 </div>
               </div>
             )}
 
-            {/* Stopped — preview + info + export */}
+            {/* Stopped — preview + info */}
             {status === 'stopped' && blobUrl && (
               <div className="space-y-4">
                 {mode === 'screen'
                   ? <video src={blobUrl} controls className="w-full rounded-xl border border-border bg-black" style={{ maxHeight: '360px' }} />
-                  : <div className="p-6 bg-surface-2 rounded-xl border border-border flex flex-col items-center gap-4">
+                  : (
+                    <div className="p-6 bg-surface-2 rounded-xl border border-border flex flex-col items-center gap-4">
                       <div className="w-14 h-14 bg-accent/10 rounded-full flex items-center justify-center border border-accent/20">
                         <Mic className="w-7 h-7 text-accent" />
                       </div>
                       <audio src={blobUrl} controls className="w-full" />
-                    </div>}
+                    </div>
+                  )}
 
                 {/* File info */}
-                <div className="grid grid-cols-4 gap-2 p-3 rounded-xl bg-surface-2 border border-border text-center text-xs">
+                <div className="grid grid-cols-3 gap-2 p-3 rounded-xl bg-surface-2 border border-border text-center text-xs">
                   <div>
                     <p className="text-text-muted mb-0.5">Format</p>
-                    <p className="font-semibold text-text-primary uppercase">
-                      {recordedMime.includes('mp4') ? 'MP4' : 'WebM'}
-                    </p>
+                    <p className="font-semibold text-text-primary">WebM</p>
                   </div>
                   <div>
                     <p className="text-text-muted mb-0.5">Duration</p>
@@ -1273,118 +1034,15 @@ export default function ScreenRecorderTool({ tool }) {
                     <p className="text-text-muted mb-0.5">Size</p>
                     <p className="font-semibold text-text-primary">{formatFileSize(fileSize)}</p>
                   </div>
-                  <div>
-                    <p className="text-text-muted mb-0.5">Audio</p>
-                    <p className={`font-semibold ${audioTrackCount > 0 ? 'text-green-600' : audioTrackCount === 0 ? 'text-red-500' : 'text-text-primary'}`}>
-                      {audioTrackCount > 0 ? 'Yes' : audioTrackCount === 0 ? 'None' : '—'}
-                    </p>
-                  </div>
                 </div>
-
-                {/* Audio missing warning */}
-                {mode === 'screen' && audioOn && audioTrackCount === 0 && (
-                  <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs">
-                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>
-                      No audio was captured. This usually happens when microphone permission is denied.
-                      Try again and allow microphone access when prompted.
-                    </span>
-                  </div>
-                )}
-
-                {/* Debug panel */}
-                {debugInfo && (
-                  <details className="rounded-xl border border-border overflow-hidden">
-                    <summary className="px-4 py-2.5 bg-surface-2 text-xs font-medium text-text-muted cursor-pointer select-none hover:text-text-primary">
-                      Recording diagnostics
-                    </summary>
-                    <div className="p-4 font-mono text-xs space-y-1" style={{ background: '#0a0a10', color: '#a0a0b0' }}>
-                      <div className="grid grid-cols-2 gap-x-6 gap-y-1">
-                        <span className="text-gray-500">MIME type</span>
-                        <span className="text-green-400">{debugInfo.mimeType}</span>
-                        <span className="text-gray-500">Video tracks</span>
-                        <span className={debugInfo.videoTracks > 0 ? 'text-green-400' : 'text-red-400'}>{debugInfo.videoTracks}</span>
-                        <span className="text-gray-500">Audio tracks</span>
-                        <span className={debugInfo.audioTracks > 0 ? 'text-green-400' : 'text-red-400'}>
-                          {debugInfo.audioTracks} {debugInfo.audioTracks > 0 && `(sys:${debugInfo.hasSysAudio?1:0} mic:${debugInfo.hasMicAudio?1:0})`}
-                        </span>
-                        <span className="text-gray-500">Chunk count</span>
-                        <span>{debugInfo.chunks}</span>
-                        <span className="text-gray-500">Raw blob size</span>
-                        <span>{formatFileSize(debugInfo.rawSize)}</span>
-                        <span className="text-gray-500">Fixed blob size</span>
-                        <span>{formatFileSize(debugInfo.fixedSize)}</span>
-                        <span className="text-gray-500">Duration</span>
-                        <span>{formatDuration(Math.round(debugInfo.durationMs / 1000))} ({debugInfo.durationMs} ms)</span>
-                        <span className="text-gray-500">Duration fixed</span>
-                        <span className={debugInfo.durationFixed ? 'text-green-400' : 'text-red-400'}>
-                          {debugInfo.durationFixed ? 'Yes — seekable' : 'No — may not seek'}
-                        </span>
-                      </div>
-                    </div>
-                  </details>
-                )}
-
-                {/* MP4 export section */}
-                {mode === 'screen' && !recordedMime.includes('mp4') && (
-                  <div className="space-y-3">
-                    {convState !== 'done' && (
-                      <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                        <span>
-                          This is a <strong>WebM</strong> file. For WhatsApp and Windows Media Player compatibility, export as <strong>MP4</strong>.
-                        </span>
-                      </div>
-                    )}
-
-                    {fileSize > 16 * 1024 * 1024 && (
-                      <div className="flex items-start gap-2.5 p-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                        <span>File is larger than 16 MB. WhatsApp's video limit is 16 MB.</span>
-                      </div>
-                    )}
-
-                    {(convState === 'loading' || convState === 'converting') && (
-                      <div className="space-y-2 p-3 rounded-xl bg-blue-50 border border-blue-200">
-                        <div className="flex items-center gap-2 text-blue-700 text-xs font-medium">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          {convState === 'loading'
-                            ? 'Loading conversion engine… (first time ~15 MB)'
-                            : `Converting to MP4… ${convProgress}%`}
-                        </div>
-                        <div className="w-full bg-blue-200 rounded-full h-1.5">
-                          <div className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
-                            style={{ width: `${convState === 'loading' ? 5 : convProgress}%` }} />
-                        </div>
-                        <p className="text-[11px] text-blue-500">Do not close this tab during conversion.</p>
-                      </div>
-                    )}
-
-                    {convState === 'error' && convError && (
-                      <div className="flex items-start gap-2.5 p-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" /><span>{convError}</span>
-                      </div>
-                    )}
-
-                    {convState === 'done' && (
-                      <div className="flex items-center gap-2 p-3 rounded-xl bg-green-50 border border-green-200 text-green-700 text-xs font-medium">
-                        <CheckCircle2 className="w-4 h-4" />
-                        MP4 exported — WhatsApp compatible (H.264 / AAC)
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {convState === 'done' && mp4BlobUrl && (
-                  <video src={mp4BlobUrl} controls className="w-full rounded-xl border border-border bg-black" style={{ maxHeight: '300px' }} />
-                )}
               </div>
             )}
 
             {/* Action buttons */}
             <div className="flex flex-col sm:flex-row gap-3">
               {status === 'idle' && (
-                <button onClick={mode === 'screen' ? startScreenRecording : startAudioRecording}
+                <button
+                  onClick={mode === 'screen' ? startScreenRecording : startAudioRecording}
                   disabled={mode === 'screen' && !screenSupported}
                   className="btn-primary w-full h-12 text-[15px] disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -1407,34 +1065,14 @@ export default function ScreenRecorderTool({ tool }) {
                 </>
               )}
               {status === 'stopped' && (
-                <div className="flex flex-col gap-3 w-full">
-                  <div className="flex gap-3">
-                    <button onClick={downloadRecording}
-                      className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold border border-border bg-surface-2 hover:bg-surface-3 text-text-primary transition-colors">
-                      <Download className="w-4 h-4" />
-                      {recordedMime.includes('mp4') ? 'Download MP4' : 'Download WebM'}
-                    </button>
-                    {mode === 'screen' && !recordedMime.includes('mp4') && (
-                      convState === 'done' ? (
-                        <button onClick={downloadMp4Again}
-                          className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold bg-green-600 hover:bg-green-700 text-white transition-colors">
-                          <Download className="w-4 h-4" />Download MP4
-                        </button>
-                      ) : (
-                        <button onClick={exportToMp4}
-                          disabled={convState === 'loading' || convState === 'converting'}
-                          className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold btn-primary disabled:opacity-60 disabled:cursor-not-allowed">
-                          {(convState === 'loading' || convState === 'converting')
-                            ? <Loader2 className="w-4 h-4 animate-spin" />
-                            : <FileVideo className="w-4 h-4" />}
-                          {convState === 'loading' ? 'Loading…' : convState === 'converting' ? `${convProgress}%` : convState === 'error' ? 'Retry MP4' : 'Export MP4'}
-                        </button>
-                      )
-                    )}
-                    <button onClick={discardRecording} className="btn-ghost h-12 px-4">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+                <div className="flex gap-3 w-full">
+                  <button onClick={downloadRecording}
+                    className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold border border-border bg-surface-2 hover:bg-surface-3 text-text-primary transition-colors">
+                    <Download className="w-4 h-4" />Download
+                  </button>
+                  <button onClick={discardRecording} className="btn-ghost h-12 px-4">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
               )}
             </div>
