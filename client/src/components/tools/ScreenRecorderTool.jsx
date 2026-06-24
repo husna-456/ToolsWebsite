@@ -6,7 +6,7 @@ import {
   Clock, Pause, Play, Info, Volume2, Radio,
   Share2, Pen, Highlighter, ArrowUpRight, Type, X, Layers,
   Circle, Eraser, Undo2, Redo2, Users, Link, Copy, Check, EyeOff,
-  Loader2,
+  Loader2, CheckCircle2, FileVideo, Cpu,
 } from 'lucide-react';
 
 const SOCKET_URL  = import.meta.env.VITE_API_BASE_URL || 'https://globaltechtools.thefiveriverz.com';
@@ -18,12 +18,24 @@ const ICE_SERVERS = [
 const CANVAS_W = 1280;
 const CANVAS_H = 720;
 
-// Prefer vp8 — widest compatibility; vp9 produces slightly better quality but
-// some players struggle with it.  No opus suffix since we record video-only.
-const VIDEO_MIME_CANDIDATES = [
-  'video/webm;codecs=vp8',
-  'video/webm',
-];
+// With audio: prefer vp8+opus (widest compat). Without audio: vp8-only.
+const MIME_WITH_AUDIO  = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm'];
+const MIME_VIDEO_ONLY  = ['video/webm;codecs=vp8', 'video/webm'];
+
+// ffmpeg singleton — loaded once per session, re-used for every MP4 export
+let _ffmpegInstance = null;
+async function getFFmpeg(onProgress) {
+  if (!_ffmpegInstance) {
+    const { createFFmpeg } = await import('@ffmpeg/ffmpeg');
+    _ffmpegInstance = createFFmpeg({
+      corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+      log: false,
+    });
+    await _ffmpegInstance.load();
+  }
+  _ffmpegInstance.setProgress(onProgress);
+  return _ffmpegInstance;
+}
 
 function formatDuration(seconds) {
   const h = Math.floor(seconds / 3600);
@@ -77,14 +89,8 @@ function AnnotationToolbar({
       <div className="w-px h-6 bg-gray-700" />
       <div className="flex items-center gap-0.5">
         {ANNOT_TOOLS.map(({ id, label, Icon }) => (
-          <button
-            key={id}
-            title={label}
-            onClick={() => setAnnotTool(id)}
-            className={`p-1.5 rounded-lg transition-colors ${
-              annotTool === id ? 'bg-accent text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
-            }`}
-          >
+          <button key={id} title={label} onClick={() => setAnnotTool(id)}
+            className={`p-1.5 rounded-lg transition-colors ${annotTool === id ? 'bg-accent text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'}`}>
             <Icon className="w-4 h-4" />
           </button>
         ))}
@@ -92,25 +98,17 @@ function AnnotationToolbar({
       <div className="w-px h-6 bg-gray-700" />
       <div className="flex items-center gap-1">
         {ANNOT_COLORS.map(c => (
-          <button
-            key={c}
-            onClick={() => setAnnotColor(c)}
-            style={{
-              width: 18, height: 18, borderRadius: '50%', background: c, flexShrink: 0,
+          <button key={c} onClick={() => setAnnotColor(c)}
+            style={{ width: 18, height: 18, borderRadius: '50%', background: c, flexShrink: 0,
               border: annotColor === c ? '2px solid white' : '2px solid #444',
-              outline: annotColor === c ? '1px solid #888' : 'none',
-            }}
+              outline: annotColor === c ? '1px solid #888' : 'none' }}
           />
         ))}
       </div>
       <div className="w-px h-6 bg-gray-700" />
-      <input
-        type="range" min="1" max="12" step="1"
-        value={annotSize}
+      <input type="range" min="1" max="12" step="1" value={annotSize}
         onChange={e => setAnnotSize(Number(e.target.value))}
-        className="w-20 accent-accent"
-        title="Stroke size"
-      />
+        className="w-20 accent-accent" title="Stroke size" />
       <div className="w-px h-6 bg-gray-700" />
       <button onClick={onUndo} disabled={!canUndo} title="Undo"
         className="p-1.5 rounded-lg transition-colors text-gray-400 hover:bg-gray-800 hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">
@@ -123,8 +121,7 @@ function AnnotationToolbar({
       <div className="w-px h-6 bg-gray-700" />
       <button onClick={onClear}
         className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:bg-gray-800 hover:text-red-400 transition-colors">
-        <Trash2 className="w-3.5 h-3.5" />
-        Clear
+        <Trash2 className="w-3.5 h-3.5" />Clear
       </button>
     </div>
   );
@@ -140,10 +137,18 @@ export default function ScreenRecorderTool({ tool }) {
   const [filename, setFilename] = useState('');
   const [fileSize, setFileSize] = useState(0);
   const [error,    setError]    = useState('');
+  const [hasAudio, setHasAudio] = useState(null); // null=unknown | true | false
 
-  // Audio-only mode state
+  // Audio-only mode
   const [gainValue, setGainValue] = useState(2.0);
   const [mixMode,   setMixMode]   = useState('mixed');
+
+  // MP4 export
+  const [convState,    setConvState]    = useState('idle'); // idle|loading|converting|done|error
+  const [convProgress, setConvProgress] = useState(0);
+  const [convError,    setConvError]    = useState('');
+  const [mp4BlobUrl,   setMp4BlobUrl]   = useState(null);
+  const [mp4Filename,  setMp4Filename]  = useState('');
 
   // ── Tab ────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState('record');
@@ -167,12 +172,13 @@ export default function ScreenRecorderTool({ tool }) {
   const mediaRecorderRef = useRef(null);
   const chunksRef        = useRef([]);
   const streamRef        = useRef(null);
-  const sysStreamRef     = useRef(null);  // audio-only mode
+  const sysStreamRef     = useRef(null); // audio-only mode system stream
   const timerRef         = useRef(null);
   const startTimeRef     = useRef(0);
   const blobUrlRef       = useRef(null);
+  const mp4BlobUrlRef    = useRef(null);
 
-  // ── Audio waveform refs (audio mode only) ─────────────────────
+  // ── Audio waveform refs (audio-only mode) ─────────────────────
   const canvasRef    = useRef(null);
   const analyserRef  = useRef(null);
   const audioCtxRef  = useRef(null);
@@ -203,7 +209,8 @@ export default function ScreenRecorderTool({ tool }) {
 
   useEffect(() => {
     return () => {
-      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+      if (blobUrlRef.current)    URL.revokeObjectURL(blobUrlRef.current);
+      if (mp4BlobUrlRef.current) URL.revokeObjectURL(mp4BlobUrlRef.current);
       clearInterval(timerRef.current);
       stopWaveform();
       streamRef.current?.getTracks().forEach(t => t.stop());
@@ -226,37 +233,49 @@ export default function ScreenRecorderTool({ tool }) {
   const screenSupported = !!(navigator.mediaDevices?.getDisplayMedia);
 
   function prepareNew() {
-    setError('');
-    if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
+    setError(''); setHasAudio(null);
+    if (blobUrlRef.current)    { URL.revokeObjectURL(blobUrlRef.current);    blobUrlRef.current    = null; }
+    if (mp4BlobUrlRef.current) { URL.revokeObjectURL(mp4BlobUrlRef.current); mp4BlobUrlRef.current = null; }
     setBlobUrl(null); setFilename(''); setDuration(0); setFileSize(0);
+    setMp4BlobUrl(null); setMp4Filename(''); setConvState('idle'); setConvError('');
     chunksRef.current = [];
   }
 
   // ══════════════════════════════════════════════════════════════
-  // SCREEN RECORDING — video only, no audio
+  // SCREEN RECORDING
+  // audio:true lets Chrome show the "Share tab audio" checkbox;
+  // we detect whether the user actually enabled it and adapt MIME.
   // ══════════════════════════════════════════════════════════════
   const startScreenRecording = useCallback(async () => {
     prepareNew();
     try {
-      // Video only — audio:false so Chrome never asks about system audio
       const displayStream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 30, max: 60 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-        audio: false,
+        audio: true, // reveals "Share tab audio" checkbox in Chrome — user opt-in
       });
 
       const videoTracks = displayStream.getVideoTracks();
+      const audioTracks = displayStream.getAudioTracks();
+
       if (videoTracks.length === 0) {
         displayStream.getTracks().forEach(t => t.stop());
         setError('No video track captured. Please try again.');
         return;
       }
 
+      const audioDetected = audioTracks.length > 0;
+      setHasAudio(audioDetected);
       streamRef.current = displayStream;
 
-      const mimeType = VIDEO_MIME_CANDIDATES.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
-      const recorder  = new MediaRecorder(new MediaStream([videoTracks[0]]), {
+      // Choose MIME based on whether tab audio was actually provided
+      const candidates = audioDetected ? MIME_WITH_AUDIO : MIME_VIDEO_ONLY;
+      const mimeType   = candidates.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
+
+      const tracks = [videoTracks[0], ...(audioDetected ? audioTracks : [])];
+      const recorder = new MediaRecorder(new MediaStream(tracks), {
         mimeType,
         videoBitsPerSecond: 2_500_000,
+        ...(audioDetected ? { audioBitsPerSecond: 128_000 } : {}),
       });
       mediaRecorderRef.current = recorder;
 
@@ -282,9 +301,8 @@ export default function ScreenRecorderTool({ tool }) {
 
         setStatus('processing');
 
-        // Chrome's MediaRecorder emits a WebM live-stream without a Duration
-        // element in the EBML header — players can't seek and show 0:00.
-        // fixWebmDuration injects the correct Duration before we offer the download.
+        // Chrome omits the Duration element from WebM live-stream segments —
+        // players can't seek and show 0:00.  fixWebmDuration patches it in-place.
         let finalBlob = rawBlob;
         try {
           finalBlob = await fixWebmDuration(rawBlob, actualDurationMs);
@@ -296,9 +314,7 @@ export default function ScreenRecorderTool({ tool }) {
         const url   = URL.createObjectURL(finalBlob);
         blobUrlRef.current = url;
 
-        setBlobUrl(url);
-        setFilename(fname);
-        setFileSize(finalBlob.size);
+        setBlobUrl(url); setFilename(fname); setFileSize(finalBlob.size);
         setStatus('stopped');
 
         const a = document.createElement('a');
@@ -399,27 +415,27 @@ export default function ScreenRecorderTool({ tool }) {
           micGain.connect(analyser);
           if (sysGain) sysGain.connect(analyser);
           analyserRef.current = analyser;
-          const canvas    = canvasRef.current;
-          const canvasCtx = canvas.getContext('2d');
-          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          const canvas = canvasRef.current;
+          const ctx    = canvas.getContext('2d');
+          const data   = new Uint8Array(analyser.frequencyBinCount);
           function draw() {
             animFrameRef.current = requestAnimationFrame(draw);
-            analyser.getByteTimeDomainData(dataArray);
+            analyser.getByteTimeDomainData(data);
             canvas.width = canvas.clientWidth || 300;
-            canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
-            canvasCtx.fillStyle = 'rgba(99,102,241,0.06)';
-            canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-            canvasCtx.lineWidth = 2.5; canvasCtx.strokeStyle = '#6366f1';
-            canvasCtx.beginPath();
-            const sliceWidth = canvas.width / dataArray.length;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'rgba(99,102,241,0.06)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.lineWidth = 2.5; ctx.strokeStyle = '#6366f1';
+            ctx.beginPath();
+            const sliceWidth = canvas.width / data.length;
             let x = 0;
-            for (let i = 0; i < dataArray.length; i++) {
-              const y = ((dataArray[i] / 128.0) * canvas.height) / 2;
-              i === 0 ? canvasCtx.moveTo(x, y) : canvasCtx.lineTo(x, y);
+            for (let i = 0; i < data.length; i++) {
+              const y = ((data[i] / 128.0) * canvas.height) / 2;
+              i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
               x += sliceWidth;
             }
-            canvasCtx.lineTo(canvas.width, canvas.height / 2);
-            canvasCtx.stroke();
+            ctx.lineTo(canvas.width, canvas.height / 2);
+            ctx.stroke();
           }
           draw();
         } catch { /* AudioContext unavailable */ }
@@ -455,15 +471,64 @@ export default function ScreenRecorderTool({ tool }) {
   }, [blobUrl, filename]);
 
   const discardRecording = useCallback(() => {
-    if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
+    if (blobUrlRef.current)    { URL.revokeObjectURL(blobUrlRef.current);    blobUrlRef.current    = null; }
+    if (mp4BlobUrlRef.current) { URL.revokeObjectURL(mp4BlobUrlRef.current); mp4BlobUrlRef.current = null; }
     setBlobUrl(null); setFilename(''); setDuration(0); setFileSize(0);
+    setHasAudio(null); setMp4BlobUrl(null); setMp4Filename(''); setConvState('idle'); setConvError('');
     setStatus('idle'); chunksRef.current = [];
   }, []);
 
-  // ════════════════════════════════════════════════════════════════
-  // Share Live — WebRTC helpers (unchanged)
-  // ════════════════════════════════════════════════════════════════
+  // ── MP4 export via ffmpeg.wasm (client-side only) ─────────────
+  const exportToMp4 = useCallback(async () => {
+    if (!blobUrl || convState === 'loading' || convState === 'converting') return;
+    setConvError(''); setConvProgress(0); setConvState('loading');
+    try {
+      const { fetchFile } = await import('@ffmpeg/ffmpeg');
+      const ffmpeg = await getFFmpeg(({ ratio }) => {
+        setConvProgress(Math.max(1, Math.round(ratio * 100)));
+        setConvState('converting');
+      });
+      setConvState('converting');
+      const response = await fetch(blobUrl);
+      const webmBlob = await response.blob();
+      ffmpeg.FS('writeFile', 'input.webm', await fetchFile(webmBlob));
+      await ffmpeg.run(
+        '-i', 'input.webm',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-movflags', '+faststart',
+        'output.mp4'
+      );
+      const data    = ffmpeg.FS('readFile', 'output.mp4');
+      const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+      const mp4Name = filename.replace(/\.webm$/, '.mp4') || `screen-recording-${new Date().toISOString().slice(0, 10)}.mp4`;
+      const mp4Url  = URL.createObjectURL(mp4Blob);
+      if (mp4BlobUrlRef.current) URL.revokeObjectURL(mp4BlobUrlRef.current);
+      mp4BlobUrlRef.current = mp4Url;
+      setMp4BlobUrl(mp4Url); setMp4Filename(mp4Name); setConvState('done');
+      const a = document.createElement('a');
+      a.href = mp4Url; a.download = mp4Name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      try { ffmpeg.FS('unlink', 'input.webm'); } catch {}
+      try { ffmpeg.FS('unlink', 'output.mp4'); } catch {}
+    } catch (err) {
+      setConvError(err.message?.includes('Out of memory')
+        ? 'File too large to convert in browser. Try a shorter recording.'
+        : 'MP4 conversion failed. ' + (err.message || 'Please try again.'));
+      setConvState('error');
+    }
+  }, [blobUrl, filename, convState]);
 
+  const downloadMp4Again = useCallback(() => {
+    if (!mp4BlobUrl || !mp4Filename) return;
+    const a = document.createElement('a');
+    a.href = mp4BlobUrl; a.download = mp4Filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }, [mp4BlobUrl, mp4Filename]);
+
+  // ════════════════════════════════════════════════════════════════
+  // Share Live — WebRTC helpers
+  // ════════════════════════════════════════════════════════════════
   const emitAnnot = useCallback((event) => {
     if (socketRef.current && sessionId) {
       socketRef.current.emit('share:annotation', { sessionId, event });
@@ -479,8 +544,7 @@ export default function ScreenRecorderTool({ tool }) {
     };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-        peersRef.current.delete(viewerId);
-        pc.close();
+        peersRef.current.delete(viewerId); pc.close();
       }
     };
     return pc;
@@ -490,20 +554,12 @@ export default function ScreenRecorderTool({ tool }) {
     const socket = socketRef.current;
     const sid    = sessionId;
     if (socket && sid) socket.emit('share:stop', { sessionId: sid });
-    socket?.disconnect();
-    socketRef.current = null;
-
+    socket?.disconnect(); socketRef.current = null;
     shareStreamRef.current?.getTracks().forEach(t => t.stop());
     shareStreamRef.current = null;
     if (shareVideoRef.current) shareVideoRef.current.srcObject = null;
-
-    peersRef.current.forEach(pc => pc.close());
-    peersRef.current.clear();
-
-    setSharePhase('idle');
-    setSessionId('');
-    setViewerCount(0);
-
+    peersRef.current.forEach(pc => pc.close()); peersRef.current.clear();
+    setSharePhase('idle'); setSessionId(''); setViewerCount(0);
     const ov = overlayRef.current;
     if (ov) ov.getContext('2d').clearRect(0, 0, ov.width, ov.height);
     undoStackRef.current = []; redoStackRef.current = [];
@@ -513,13 +569,10 @@ export default function ScreenRecorderTool({ tool }) {
   const startLiveShare = useCallback(async () => {
     setShareError('');
     if (!screenSupported) return;
-
     const newSid = Array.from(crypto.getRandomValues(new Uint8Array(5)))
       .map(b => b.toString(36)).join('').slice(0, 8);
-
     const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
     socketRef.current = socket;
-
     socket.on('share:viewer-joined', async ({ viewerId }) => {
       const stream = shareStreamRef.current;
       if (!stream) return;
@@ -528,31 +581,21 @@ export default function ScreenRecorderTool({ tool }) {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       socket.emit('share:offer', { targetId: viewerId, offer, sessionId: newSid });
-
       const ov = overlayRef.current;
-      if (ov) {
-        const dataUrl = ov.toDataURL('image/png', 0.8);
-        socket.emit('share:sync-to-viewer', { targetId: viewerId, event: { type: 'sync', dataUrl } });
-      }
+      if (ov) socket.emit('share:sync-to-viewer', { targetId: viewerId, event: { type: 'sync', dataUrl: ov.toDataURL('image/png', 0.8) } });
     });
-
     socket.on('share:answer', async ({ fromId, answer }) => {
       await peersRef.current.get(fromId)?.setRemoteDescription(answer);
     });
-
     socket.on('share:ice-candidate', ({ fromId, candidate }) => {
       peersRef.current.get(fromId)?.addIceCandidate(candidate).catch(() => {});
     });
-
     socket.on('share:viewer-left', ({ viewerId }) => {
-      peersRef.current.get(viewerId)?.close();
-      peersRef.current.delete(viewerId);
+      peersRef.current.get(viewerId)?.close(); peersRef.current.delete(viewerId);
     });
-
     socket.on('share:viewer-count', ({ count }) => setViewerCount(count));
     socket.on('connect', () => socket.emit('share:create', { sessionId: newSid }));
     socket.on('connect_error', () => setShareError('Could not connect to signaling server. Check your connection.'));
-
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 30, max: 60 } },
@@ -561,16 +604,11 @@ export default function ScreenRecorderTool({ tool }) {
       });
       shareStreamRef.current = stream;
       if (shareVideoRef.current) shareVideoRef.current.srcObject = stream;
-
       stream.getVideoTracks()[0].onended = () => stopLiveShare();
-
-      setSessionId(newSid);
-      setSharePhase('active');
+      setSessionId(newSid); setSharePhase('active');
     } catch (err) {
-      if (err.name !== 'NotAllowedError')
-        setShareError(err.message || 'Could not start screen share.');
-      socket.disconnect();
-      socketRef.current = null;
+      if (err.name !== 'NotAllowedError') setShareError(err.message || 'Could not start screen share.');
+      socket.disconnect(); socketRef.current = null;
     }
   }, [screenSupported, shareMic, createPeer, stopLiveShare]);
 
@@ -580,56 +618,42 @@ export default function ScreenRecorderTool({ tool }) {
     const vid = stream.getVideoTracks()[0];
     if (!vid) return;
     if (sharePhase === 'active') {
-      vid.enabled = false;
-      socketRef.current?.emit('share:pause', { sessionId });
-      setSharePhase('paused');
+      vid.enabled = false; socketRef.current?.emit('share:pause', { sessionId }); setSharePhase('paused');
     } else {
-      vid.enabled = true;
-      socketRef.current?.emit('share:resume', { sessionId });
-      setSharePhase('active');
+      vid.enabled = true;  socketRef.current?.emit('share:resume', { sessionId }); setSharePhase('active');
     }
   }, [sharePhase, sessionId]);
 
   const copyShareLink = useCallback(() => {
     if (!sessionId) return;
     navigator.clipboard.writeText(`${SHARE_BASE}/share/${sessionId}`).then(() => {
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 2000);
+      setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2000);
     });
   }, [sessionId]);
 
-  // ── Annotation helpers (unchanged) ────────────────────────────
+  // ── Annotation helpers ────────────────────────────────────────
   const pushUndo = useCallback((canvas) => {
-    const ctx  = canvas.getContext('2d');
-    const snap = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const snap = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
     undoStackRef.current.push(snap);
     if (undoStackRef.current.length > 40) undoStackRef.current.shift();
-    redoStackRef.current = [];
-    setUndoLen(undoStackRef.current.length);
-    setRedoLen(0);
+    redoStackRef.current = []; setUndoLen(undoStackRef.current.length); setRedoLen(0);
   }, []);
 
   const doUndo = useCallback((canvas) => {
     if (!canvas || undoStackRef.current.length === 0) return;
     const ctx  = canvas.getContext('2d');
-    const snap = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    redoStackRef.current.push(snap);
-    const prev = undoStackRef.current.pop();
-    ctx.putImageData(prev, 0, 0);
-    setUndoLen(undoStackRef.current.length);
-    setRedoLen(redoStackRef.current.length);
+    redoStackRef.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+    ctx.putImageData(undoStackRef.current.pop(), 0, 0);
+    setUndoLen(undoStackRef.current.length); setRedoLen(redoStackRef.current.length);
     emitAnnot({ type: 'sync', dataUrl: canvas.toDataURL('image/png', 0.8) });
   }, [emitAnnot]);
 
   const doRedo = useCallback((canvas) => {
     if (!canvas || redoStackRef.current.length === 0) return;
     const ctx  = canvas.getContext('2d');
-    const snap = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    undoStackRef.current.push(snap);
-    const next = redoStackRef.current.pop();
-    ctx.putImageData(next, 0, 0);
-    setUndoLen(undoStackRef.current.length);
-    setRedoLen(redoStackRef.current.length);
+    undoStackRef.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+    ctx.putImageData(redoStackRef.current.pop(), 0, 0);
+    setUndoLen(undoStackRef.current.length); setRedoLen(redoStackRef.current.length);
     emitAnnot({ type: 'sync', dataUrl: canvas.toDataURL('image/png', 0.8) });
   }, [emitAnnot]);
 
@@ -644,21 +668,14 @@ export default function ScreenRecorderTool({ tool }) {
     if (!canvas || annotTool === 'text') return;
     pushUndo(canvas);
     const pos = getCanvasPos(e, canvas);
-    isDrawingRef.current = true;
-    startPtRef.current   = pos;
+    isDrawingRef.current = true; startPtRef.current = pos;
     const ctx = canvas.getContext('2d');
-
-    if (annotTool === 'eraser') {
-      ctx.globalCompositeOperation = 'destination-out';
-      return;
-    }
+    if (annotTool === 'eraser') { ctx.globalCompositeOperation = 'destination-out'; return; }
     ctx.globalCompositeOperation = 'source-over';
-
     if (annotTool === 'pen' || annotTool === 'highlight') {
-      ctx.beginPath();
-      ctx.strokeStyle = annotColor;
-      ctx.lineWidth   = annotTool === 'highlight' ? annotSize * 6 : annotSize;
-      ctx.lineCap     = 'round'; ctx.lineJoin = 'round';
+      ctx.beginPath(); ctx.strokeStyle = annotColor;
+      ctx.lineWidth = annotTool === 'highlight' ? annotSize * 6 : annotSize;
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       if (annotTool === 'highlight') ctx.globalAlpha = 0.35;
       ctx.moveTo(pos.x, pos.y);
       const evType = annotTool === 'highlight' ? 'hl-start' : 'pen-start';
@@ -672,23 +689,17 @@ export default function ScreenRecorderTool({ tool }) {
     if (!isDrawingRef.current || !canvas) return;
     const pos = getCanvasPos(e, canvas);
     const ctx = canvas.getContext('2d');
-
     if (annotTool === 'eraser') {
       const r = annotSize * 8;
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2); ctx.fill();
       emitAnnot({ type: 'erase', x: pos.x / CANVAS_W, y: pos.y / CANVAS_H, radius: r / Math.min(CANVAS_W, CANVAS_H) });
       return;
     }
-
     if (annotTool === 'pen') {
-      ctx.lineTo(pos.x, pos.y); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(pos.x, pos.y);
+      ctx.lineTo(pos.x, pos.y); ctx.stroke(); ctx.beginPath(); ctx.moveTo(pos.x, pos.y);
       emitAnnot({ type: 'pen-move', x: pos.x / CANVAS_W, y: pos.y / CANVAS_H });
     } else if (annotTool === 'highlight') {
-      ctx.lineTo(pos.x, pos.y); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(pos.x, pos.y);
+      ctx.lineTo(pos.x, pos.y); ctx.stroke(); ctx.beginPath(); ctx.moveTo(pos.x, pos.y);
       emitAnnot({ type: 'hl-move', x: pos.x / CANVAS_W, y: pos.y / CANVAS_H });
     } else if (annotTool === 'arrow' || annotTool === 'rect' || annotTool === 'circle') {
       if (savedImgRef.current) ctx.putImageData(savedImgRef.current, 0, 0);
@@ -718,24 +729,18 @@ export default function ScreenRecorderTool({ tool }) {
     isDrawingRef.current = false;
     if (!canvas) { savedImgRef.current = null; startPtRef.current = null; return; }
     const ctx = canvas.getContext('2d');
-    ctx.globalAlpha = 1;
-    ctx.globalCompositeOperation = 'source-over';
-
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     if (annotTool === 'highlight') emitAnnot({ type: 'hl-end' });
-
     if (annotTool === 'arrow' || annotTool === 'rect' || annotTool === 'circle') {
       const pos = getCanvasPos(e, canvas);
       const s   = startPtRef.current;
       if (annotTool === 'arrow') {
-        emitAnnot({ type: 'arrow', color: annotColor, size: annotSize,
-          x1: s.x / CANVAS_W, y1: s.y / CANVAS_H, x2: pos.x / CANVAS_W, y2: pos.y / CANVAS_H });
+        emitAnnot({ type: 'arrow', color: annotColor, size: annotSize, x1: s.x/CANVAS_W, y1: s.y/CANVAS_H, x2: pos.x/CANVAS_W, y2: pos.y/CANVAS_H });
       } else if (annotTool === 'rect') {
-        emitAnnot({ type: 'rect', color: annotColor, size: annotSize,
-          x1: s.x / CANVAS_W, y1: s.y / CANVAS_H, x2: pos.x / CANVAS_W, y2: pos.y / CANVAS_H });
+        emitAnnot({ type: 'rect', color: annotColor, size: annotSize, x1: s.x/CANVAS_W, y1: s.y/CANVAS_H, x2: pos.x/CANVAS_W, y2: pos.y/CANVAS_H });
       } else {
         const r = Math.hypot(pos.x - s.x, pos.y - s.y);
-        emitAnnot({ type: 'circle', color: annotColor, size: annotSize,
-          cx: s.x / CANVAS_W, cy: s.y / CANVAS_H, r: r / Math.min(CANVAS_W, CANVAS_H) });
+        emitAnnot({ type: 'circle', color: annotColor, size: annotSize, cx: s.x/CANVAS_W, cy: s.y/CANVAS_H, r: r/Math.min(CANVAS_W, CANVAS_H) });
       }
     }
     savedImgRef.current = null; startPtRef.current = null;
@@ -745,26 +750,18 @@ export default function ScreenRecorderTool({ tool }) {
     if (annotTool !== 'text' || !canvas) return;
     const pos  = getCanvasPos(e, canvas);
     const rect = canvas.getBoundingClientRect();
-    setTextState({
-      x: pos.x, y: pos.y,
-      pctX: (e.clientX - rect.left) / rect.width,
-      pctY: (e.clientY - rect.top)  / rect.height,
-      value: '', canvas,
-    });
+    setTextState({ x: pos.x, y: pos.y, pctX: (e.clientX - rect.left) / rect.width, pctY: (e.clientY - rect.top) / rect.height, value: '', canvas });
   }, [annotTool]);
 
   const commitText = useCallback(() => {
     if (!textState?.canvas) return;
     const canvas = textState.canvas;
     pushUndo(canvas);
-    const ctx    = canvas.getContext('2d');
-    const fSize  = Math.max(16, annotSize * 5);
-    ctx.font         = `bold ${fSize}px sans-serif`;
-    ctx.fillStyle    = annotColor;
-    ctx.textBaseline = 'middle';
+    const ctx   = canvas.getContext('2d');
+    const fSize = Math.max(16, annotSize * 5);
+    ctx.font = `bold ${fSize}px sans-serif`; ctx.fillStyle = annotColor; ctx.textBaseline = 'middle';
     ctx.fillText(textState.value || '', textState.x, textState.y);
-    emitAnnot({ type: 'text', color: annotColor, size: fSize,
-      x: textState.x / CANVAS_W, y: textState.y / CANVAS_H, text: textState.value || '' });
+    emitAnnot({ type: 'text', color: annotColor, size: fSize, x: textState.x/CANVAS_W, y: textState.y/CANVAS_H, text: textState.value || '' });
     setTextState(null);
   }, [textState, annotColor, annotSize, pushUndo, emitAnnot]);
 
@@ -791,9 +788,7 @@ export default function ScreenRecorderTool({ tool }) {
   function TextOverlay() {
     if (!textState) return null;
     return (
-      <input
-        autoFocus
-        value={textState.value}
+      <input autoFocus value={textState.value}
         onChange={e => setTextState(s => ({ ...s, value: e.target.value }))}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') commitText(); }}
         onBlur={commitText}
@@ -846,8 +841,7 @@ export default function ScreenRecorderTool({ tool }) {
           )}
           {isProcessing && (
             <div className="flex items-center gap-2 text-sm font-medium text-accent">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>Fixing metadata…</span>
+              <Loader2 className="w-4 h-4 animate-spin" /><span>Fixing metadata…</span>
             </div>
           )}
           {isActive && (
@@ -869,8 +863,7 @@ export default function ScreenRecorderTool({ tool }) {
               activeTab === id ? 'border-accent text-accent' : 'border-transparent text-text-muted hover:text-text-primary'
             }`}
           >
-            <Icon className="w-3.5 h-3.5" />
-            {label}
+            <Icon className="w-3.5 h-3.5" />{label}
           </button>
         ))}
       </div>
@@ -889,8 +882,7 @@ export default function ScreenRecorderTool({ tool }) {
             {/* Mode selector */}
             {status === 'idle' && (
               <div className="grid grid-cols-2 gap-3">
-                {[{ id: 'screen', label: 'Record Screen', Icon: Monitor }, { id: 'audio', label: 'Audio Only', Icon: Mic }]
-                  .map(({ id, label, Icon }) => (
+                {[{ id: 'screen', label: 'Record Screen', Icon: Monitor }, { id: 'audio', label: 'Audio Only', Icon: Mic }].map(({ id, label, Icon }) => (
                   <button key={id} onClick={() => { setMode(id); setError(''); }}
                     className={`flex flex-col items-center gap-2 px-3 py-4 rounded-2xl border-2 text-sm font-semibold transition-all ${
                       mode === id ? 'border-accent bg-accent/5 text-accent' : 'border-border text-text-muted hover:border-accent/40 hover:text-text-primary'
@@ -902,27 +894,105 @@ export default function ScreenRecorderTool({ tool }) {
               </div>
             )}
 
-            {/* Screen mode: info hint */}
+            {/* ── Screen mode: idle ─────────────────────────────── */}
             {status === 'idle' && mode === 'screen' && (
-              !screenSupported ? (
-                <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>Screen recording not supported. Use <button className="font-semibold underline" onClick={() => setMode('audio')}>Audio Only</button> or try Chrome or Edge.</span>
-                </div>
-              ) : !error && (
-                <div className="flex items-start gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl text-blue-700 text-sm">
-                  <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>Click <strong>Start Screen Recording</strong>, then choose a Tab, Window, or Entire Screen in the browser dialog. Records video only.</span>
-                </div>
-              )
+              <>
+                {!screenSupported ? (
+                  <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>Screen recording not supported. Use <button className="font-semibold underline" onClick={() => setMode('audio')}>Audio Only</button> or try Chrome / Edge.</span>
+                  </div>
+                ) : (
+                  <>
+                    {/* How-to-get-audio guide */}
+                    <div className="rounded-xl border border-blue-200 overflow-hidden" style={{ background: '#eff6ff' }}>
+                      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-blue-200" style={{ background: '#dbeafe' }}>
+                        <Info className="w-4 h-4 text-blue-600 shrink-0" />
+                        <span className="text-sm font-semibold text-blue-700">How to record with audio</span>
+                      </div>
+                      <div className="p-4 space-y-3 text-xs">
+                        <div className="flex gap-3">
+                          <span className="mt-0.5 w-5 h-5 rounded-md bg-green-100 border border-green-300 text-green-700 flex items-center justify-center font-bold shrink-0 text-[10px]">✓</span>
+                          <div>
+                            <p className="font-semibold text-blue-800">Chrome Tab → tick "Share tab audio"</p>
+                            <p className="text-blue-600 mt-0.5">Captures sound from that specific tab — websites, YouTube videos, online meetings.</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-3">
+                          <span className="mt-0.5 w-5 h-5 rounded-md bg-gray-100 border border-gray-300 text-gray-500 flex items-center justify-center font-bold shrink-0 text-[10px]">✗</span>
+                          <div>
+                            <p className="font-semibold text-blue-800">Window or Entire Screen</p>
+                            <p className="text-blue-600 mt-0.5">Video only — browsers cannot access system-wide audio. For that, a desktop app is required (see below).</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Web vs Desktop comparison */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-3.5 rounded-xl bg-surface-2 border border-border space-y-2">
+                        <div className="flex items-center gap-1.5">
+                          <Monitor className="w-3.5 h-3.5 text-accent" />
+                          <span className="text-xs font-semibold text-text-primary">Web Version (Now)</span>
+                        </div>
+                        <ul className="text-[11px] text-text-muted space-y-1 leading-relaxed">
+                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-green-500 shrink-0 mt-0.5" /><span>Tab audio when user enables it</span></li>
+                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-green-500 shrink-0 mt-0.5" /><span>No install — works in browser</span></li>
+                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-green-500 shrink-0 mt-0.5" /><span>WebM + optional MP4 export</span></li>
+                          <li className="flex gap-1.5"><AlertCircle className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" /><span>No system-wide audio</span></li>
+                        </ul>
+                      </div>
+                      <div className="p-3.5 rounded-xl border space-y-2" style={{ background: '#f5f3ff', borderColor: '#c4b5fd' }}>
+                        <div className="flex items-center gap-1.5">
+                          <Cpu className="w-3.5 h-3.5 text-purple-600" />
+                          <span className="text-xs font-semibold text-purple-800">Desktop App (Planned)</span>
+                        </div>
+                        <ul className="text-[11px] text-purple-700 space-y-1 leading-relaxed">
+                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" /><span>Full system audio capture</span></li>
+                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" /><span>Mic + system audio mix</span></li>
+                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" /><span>Native MP4 export (bundled ffmpeg)</span></li>
+                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" /><span>Record any app — iTop style</span></li>
+                        </ul>
+                      </div>
+                    </div>
+
+                    {/* Future desktop app plan */}
+                    <details className="rounded-xl border border-border overflow-hidden text-sm">
+                      <summary className="flex items-center gap-2 px-4 py-3 bg-surface-2 cursor-pointer select-none font-medium text-text-muted hover:text-text-primary transition-colors">
+                        <Cpu className="w-4 h-4 shrink-0" />
+                        <span>Desktop App Roadmap (Electron)</span>
+                      </summary>
+                      <div className="p-4 space-y-3 text-xs text-text-muted border-t border-border">
+                        <p>A future desktop app will use Electron to unlock full iTop-style recording capabilities:</p>
+                        <ul className="space-y-2">
+                          {[
+                            ['DesktopCapturer API', 'Capture any window, app, or entire screen — not just browser tabs'],
+                            ['System audio loopback', 'Record all system sounds: Spotify, Discord, YouTube, games, everything'],
+                            ['Mic + system audio mix', 'Voiceover over system audio via AudioContext — full mixing control'],
+                            ['Bundled ffmpeg', 'Native MP4 export without browser memory limits or CDN loading'],
+                            ['No tab restriction', 'Works on Windows, Mac, and Linux — record any installed application'],
+                          ].map(([title, desc]) => (
+                            <li key={title} className="flex gap-2">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-purple-500 shrink-0 mt-0.5" />
+                              <span><strong className="text-text-primary">{title}</strong> — {desc}</span>
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="italic text-text-muted pt-1 border-t border-border">
+                          Web version covers most browser-based recording needs. Desktop app will unlock everything a tool like iTop offers.
+                        </p>
+                      </div>
+                    </details>
+                  </>
+                )}
+              </>
             )}
 
-            {/* Audio mode options */}
+            {/* ── Audio mode: idle ──────────────────────────────── */}
             {status === 'idle' && mode === 'audio' && (
               <>
                 <div className="grid grid-cols-2 gap-2">
-                  {[{ id: 'mixed', label: 'Mic + Class Audio', Icon: Radio }, { id: 'mic', label: 'Mic Only', Icon: Mic }]
-                    .map(({ id, label, Icon }) => (
+                  {[{ id: 'mixed', label: 'Mic + Class Audio', Icon: Radio }, { id: 'mic', label: 'Mic Only', Icon: Mic }].map(({ id, label, Icon }) => (
                     <button key={id} onClick={() => { setMixMode(id); setError(''); }}
                       className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded-xl border-2 text-xs font-semibold transition-all ${
                         mixMode === id ? 'border-accent bg-accent/5 text-accent' : 'border-border text-text-muted hover:border-accent/40'
@@ -964,7 +1034,7 @@ export default function ScreenRecorderTool({ tool }) {
               </>
             )}
 
-            {/* Screen recording active */}
+            {/* ── Recording active: screen ──────────────────────── */}
             {isActive && mode === 'screen' && (
               <div className="flex flex-col items-center justify-center py-8 gap-4">
                 <div className="relative w-20 h-20 rounded-full border-4 border-red-200 flex items-center justify-center">
@@ -975,11 +1045,19 @@ export default function ScreenRecorderTool({ tool }) {
                   <p className="font-semibold text-text-primary">{isPaused ? 'Recording paused' : 'Recording in progress'}</p>
                   <p className="text-4xl font-mono font-bold text-primary">{formatDuration(duration)}</p>
                   {!isPaused && <p className="text-sm text-text-muted">Click Stop or use the browser's "Stop sharing" button</p>}
+                  {hasAudio === true && (
+                    <p className="flex items-center justify-center gap-1 text-xs text-green-600 mt-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Tab audio is being captured
+                    </p>
+                  )}
+                  {hasAudio === false && (
+                    <p className="text-xs text-amber-600 mt-1">No audio track — recording video only</p>
+                  )}
                 </div>
               </div>
             )}
 
-            {/* Audio recording active */}
+            {/* ── Recording active: audio ───────────────────────── */}
             {isActive && mode === 'audio' && (
               <div className="flex flex-col items-center gap-4 py-2">
                 <canvas ref={canvasRef} height={72} className="w-full rounded-xl border border-border" />
@@ -993,7 +1071,7 @@ export default function ScreenRecorderTool({ tool }) {
               </div>
             )}
 
-            {/* Processing */}
+            {/* ── Processing ────────────────────────────────────── */}
             {isProcessing && (
               <div className="flex flex-col items-center justify-center py-8 gap-4">
                 <div className="w-16 h-16 rounded-full border-4 border-accent/30 flex items-center justify-center">
@@ -1001,16 +1079,16 @@ export default function ScreenRecorderTool({ tool }) {
                 </div>
                 <div className="text-center space-y-1">
                   <p className="font-semibold text-text-primary">Finalising recording…</p>
-                  <p className="text-sm text-text-muted">Writing duration metadata so the video can be seeked</p>
+                  <p className="text-sm text-text-muted">Patching duration metadata so the video can be seeked and shows the correct length</p>
                 </div>
               </div>
             )}
 
-            {/* Stopped — preview + info */}
+            {/* ── Stopped: preview + info ───────────────────────── */}
             {status === 'stopped' && blobUrl && (
               <div className="space-y-4">
                 {mode === 'screen'
-                  ? <video src={blobUrl} controls className="w-full rounded-xl border border-border bg-black" style={{ maxHeight: '360px' }} />
+                  ? <video src={blobUrl} controls className="w-full rounded-xl border border-border bg-black" style={{ maxHeight: 360 }} />
                   : (
                     <div className="p-6 bg-surface-2 rounded-xl border border-border flex flex-col items-center gap-4">
                       <div className="w-14 h-14 bg-accent/10 rounded-full flex items-center justify-center border border-accent/20">
@@ -1020,21 +1098,75 @@ export default function ScreenRecorderTool({ tool }) {
                     </div>
                   )}
 
-                {/* File info */}
-                <div className="grid grid-cols-3 gap-2 p-3 rounded-xl bg-surface-2 border border-border text-center text-xs">
-                  <div>
-                    <p className="text-text-muted mb-0.5">Format</p>
-                    <p className="font-semibold text-text-primary">WebM</p>
+                {/* File info card */}
+                {mode === 'screen' ? (
+                  <div className="grid grid-cols-4 gap-2 p-3 rounded-xl bg-surface-2 border border-border text-center text-xs">
+                    <div><p className="text-text-muted mb-0.5">Format</p><p className="font-semibold text-text-primary">WebM</p></div>
+                    <div><p className="text-text-muted mb-0.5">Duration</p><p className="font-semibold text-text-primary">{formatDuration(duration)}</p></div>
+                    <div><p className="text-text-muted mb-0.5">Size</p><p className="font-semibold text-text-primary">{formatFileSize(fileSize)}</p></div>
+                    <div>
+                      <p className="text-text-muted mb-0.5">Audio</p>
+                      <p className={`font-semibold ${hasAudio === true ? 'text-green-600' : hasAudio === false ? 'text-amber-500' : 'text-text-primary'}`}>
+                        {hasAudio === true ? 'Tab audio' : hasAudio === false ? 'None' : '—'}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-text-muted mb-0.5">Duration</p>
-                    <p className="font-semibold text-text-primary">{formatDuration(duration)}</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2 p-3 rounded-xl bg-surface-2 border border-border text-center text-xs">
+                    <div><p className="text-text-muted mb-0.5">Duration</p><p className="font-semibold text-text-primary">{formatDuration(duration)}</p></div>
+                    <div><p className="text-text-muted mb-0.5">Size</p><p className="font-semibold text-text-primary">{formatFileSize(fileSize || 0)}</p></div>
                   </div>
-                  <div>
-                    <p className="text-text-muted mb-0.5">Size</p>
-                    <p className="font-semibold text-text-primary">{formatFileSize(fileSize)}</p>
+                )}
+
+                {/* Audio missing tip */}
+                {mode === 'screen' && hasAudio === false && (
+                  <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>
+                      Audio was not provided by the browser. For website or video sound, choose <strong>Chrome Tab</strong> in the sharing dialog and enable <strong>"Share tab audio"</strong>.
+                    </span>
                   </div>
-                </div>
+                )}
+
+                {/* MP4 export (screen recordings only) */}
+                {mode === 'screen' && (
+                  <div className="space-y-3">
+                    {convState === 'idle' && (
+                      <p className="text-[11px] text-text-muted text-center">
+                        WebM plays in Chrome, Firefox, and Edge. For Windows Media Player or WhatsApp, export as MP4.
+                      </p>
+                    )}
+                    {(convState === 'loading' || convState === 'converting') && (
+                      <div className="space-y-2 p-3 rounded-xl bg-blue-50 border border-blue-200">
+                        <div className="flex items-center gap-2 text-blue-700 text-xs font-medium">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          {convState === 'loading' ? 'Loading conversion engine… (first time ~15 MB)' : `Converting to MP4… ${convProgress}%`}
+                        </div>
+                        <div className="w-full bg-blue-200 rounded-full h-1.5">
+                          <div className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
+                            style={{ width: `${convState === 'loading' ? 5 : convProgress}%` }} />
+                        </div>
+                        <p className="text-[11px] text-blue-500">Do not close this tab during conversion.</p>
+                      </div>
+                    )}
+                    {convState === 'error' && convError && (
+                      <div className="flex items-start gap-2.5 p-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" /><span>{convError}</span>
+                      </div>
+                    )}
+                    {convState === 'done' && (
+                      <>
+                        <div className="flex items-center gap-2 p-3 rounded-xl bg-green-50 border border-green-200 text-green-700 text-xs font-medium">
+                          <CheckCircle2 className="w-4 h-4" />
+                          MP4 exported — compatible with Windows Media Player and WhatsApp
+                        </div>
+                        {mp4BlobUrl && (
+                          <video src={mp4BlobUrl} controls className="w-full rounded-xl border border-border bg-black" style={{ maxHeight: 300 }} />
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1065,14 +1197,33 @@ export default function ScreenRecorderTool({ tool }) {
                 </>
               )}
               {status === 'stopped' && (
-                <div className="flex gap-3 w-full">
-                  <button onClick={downloadRecording}
-                    className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold border border-border bg-surface-2 hover:bg-surface-3 text-text-primary transition-colors">
-                    <Download className="w-4 h-4" />Download
-                  </button>
-                  <button onClick={discardRecording} className="btn-ghost h-12 px-4">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                <div className="flex flex-col gap-3 w-full">
+                  <div className="flex gap-3">
+                    <button onClick={downloadRecording}
+                      className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold border border-border bg-surface-2 hover:bg-surface-3 text-text-primary transition-colors">
+                      <Download className="w-4 h-4" />Download WebM
+                    </button>
+                    {mode === 'screen' && (
+                      convState === 'done' ? (
+                        <button onClick={downloadMp4Again}
+                          className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold bg-green-600 hover:bg-green-700 text-white transition-colors">
+                          <Download className="w-4 h-4" />Download MP4
+                        </button>
+                      ) : (
+                        <button onClick={exportToMp4}
+                          disabled={convState === 'loading' || convState === 'converting'}
+                          className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold btn-primary disabled:opacity-60 disabled:cursor-not-allowed">
+                          {(convState === 'loading' || convState === 'converting')
+                            ? <Loader2 className="w-4 h-4 animate-spin" />
+                            : <FileVideo className="w-4 h-4" />}
+                          {convState === 'loading' ? 'Loading…' : convState === 'converting' ? `${convProgress}%` : convState === 'error' ? 'Retry MP4' : 'Export MP4'}
+                        </button>
+                      )
+                    )}
+                    <button onClick={discardRecording} className="btn-ghost h-12 px-4">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
