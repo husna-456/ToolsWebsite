@@ -8,6 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.11.6",
     "@imgly/background-removal": "^1.7.0",
     "axios": "^1.6.8",
     "exifr": "^7.1.3",

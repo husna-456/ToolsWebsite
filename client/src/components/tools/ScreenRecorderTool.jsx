@@ -5,6 +5,7 @@ import {
   Clock, Pause, Play, Info, Wifi, WifiOff, Volume2, Radio,
   Share2, Pen, Highlighter, ArrowUpRight, Type, X, Layers,
   Circle, Eraser, Undo2, Redo2, Users, Link, Copy, Check, EyeOff,
+  Loader2, FileVideo, CheckCircle2,
 } from 'lucide-react';
 
 const SOCKET_URL  = import.meta.env.VITE_API_BASE_URL || 'https://globaltechtools.thefiveriverz.com';
@@ -22,6 +23,28 @@ function formatDuration(seconds) {
   const s = seconds % 60;
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function formatFileSize(bytes) {
+  if (!bytes) return '—';
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Module-level singleton — loaded once, reused across exports
+let _ffmpegInstance = null;
+
+async function getFFmpeg(onProgress) {
+  if (!_ffmpegInstance) {
+    const { createFFmpeg } = await import('@ffmpeg/ffmpeg');
+    _ffmpegInstance = createFFmpeg({
+      corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+      log: false,
+    });
+    await _ffmpegInstance.load();
+  }
+  _ffmpegInstance.setProgress(onProgress);
+  return _ffmpegInstance;
 }
 
 const VIDEO_MIME_CANDIDATES = [
@@ -151,6 +174,15 @@ export default function ScreenRecorderTool({ tool }) {
   const [gainValue, setGainValue] = useState(2.0);
   const [mixMode,   setMixMode]   = useState('mixed');
 
+  // ── MP4 export state ──────────────────────────────────────────
+  const [fileSize,     setFileSize]     = useState(0);
+  const [recordedMime, setRecordedMime] = useState('');
+  const [convState,    setConvState]    = useState('idle'); // idle|loading|converting|done|error
+  const [convProgress, setConvProgress] = useState(0);
+  const [convError,    setConvError]    = useState('');
+  const [mp4BlobUrl,   setMp4BlobUrl]   = useState(null);
+  const [mp4Filename,  setMp4Filename]  = useState('');
+
   // ── Tab ────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState('record');  // 'record' | 'live' | 'annotate'
 
@@ -176,6 +208,7 @@ export default function ScreenRecorderTool({ tool }) {
   const sysStreamRef     = useRef(null);
   const timerRef         = useRef(null);
   const blobUrlRef       = useRef(null);
+  const mp4BlobUrlRef    = useRef(null);
   const canvasRef        = useRef(null);    // audio waveform
   const analyserRef      = useRef(null);
   const audioCtxRef      = useRef(null);
@@ -208,7 +241,8 @@ export default function ScreenRecorderTool({ tool }) {
 
   useEffect(() => {
     return () => {
-      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+      if (blobUrlRef.current)    URL.revokeObjectURL(blobUrlRef.current);
+      if (mp4BlobUrlRef.current) URL.revokeObjectURL(mp4BlobUrlRef.current);
       clearInterval(timerRef.current);
       stopWaveform();
       streamRef.current?.getTracks().forEach(t => t.stop());
@@ -260,13 +294,18 @@ export default function ScreenRecorderTool({ tool }) {
         clearInterval(timerRef.current);
         stream.getTracks().forEach(t => t.stop());
         streamRef.current = null;
-        const blob  = new Blob(chunksRef.current, { type: mimeType });
+        const finalMime = recorder.mimeType || mimeType;
+        const blob  = new Blob(chunksRef.current, { type: finalMime });
         chunksRef.current = [];
-        const ext   = mimeType.includes('mp4') ? 'mp4' : 'webm';
-        const fname = `screen-recording-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`;
+        const ext   = finalMime.includes('mp4') ? 'mp4' : 'webm';
+        const fname = `screen-recording-${new Date().toISOString().slice(0, 10)}.${ext}`;
         const url   = URL.createObjectURL(blob);
         blobUrlRef.current = url;
-        setBlobUrl(url); setFilename(fname); setStatus('stopped');
+        // Clear any previous mp4 export
+        if (mp4BlobUrlRef.current) { URL.revokeObjectURL(mp4BlobUrlRef.current); mp4BlobUrlRef.current = null; }
+        setMp4BlobUrl(null); setMp4Filename(''); setConvState('idle'); setConvError('');
+        setBlobUrl(url); setFilename(fname); setFileSize(blob.size);
+        setRecordedMime(finalMime); setStatus('stopped');
         const a = document.createElement('a');
         a.href = url; a.download = fname;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
@@ -415,10 +454,73 @@ export default function ScreenRecorderTool({ tool }) {
   }, [blobUrl, filename]);
 
   const discardRecording = useCallback(() => {
-    if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
-    setBlobUrl(null); setFilename(''); setDuration(0);
+    if (blobUrlRef.current)    { URL.revokeObjectURL(blobUrlRef.current);    blobUrlRef.current    = null; }
+    if (mp4BlobUrlRef.current) { URL.revokeObjectURL(mp4BlobUrlRef.current); mp4BlobUrlRef.current = null; }
+    setBlobUrl(null); setFilename(''); setDuration(0); setFileSize(0); setRecordedMime('');
+    setMp4BlobUrl(null); setMp4Filename(''); setConvState('idle'); setConvError('');
     setStatus('idle'); chunksRef.current = [];
   }, []);
+
+  const exportToMp4 = useCallback(async () => {
+    if (!blobUrl || convState === 'loading' || convState === 'converting') return;
+    setConvError('');
+    setConvProgress(0);
+    setConvState('loading');
+    try {
+      const { fetchFile } = await import('@ffmpeg/ffmpeg');
+      const ffmpeg = await getFFmpeg(({ ratio }) => {
+        setConvProgress(Math.max(1, Math.round(ratio * 100)));
+        setConvState('converting');
+      });
+      setConvState('converting');
+
+      const response = await fetch(blobUrl);
+      const webmBlob = await response.blob();
+
+      ffmpeg.FS('writeFile', 'input.webm', await fetchFile(webmBlob));
+      await ffmpeg.run(
+        '-i', 'input.webm',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-crf', '23',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-movflags', '+faststart',
+        'output.mp4'
+      );
+
+      const data    = ffmpeg.FS('readFile', 'output.mp4');
+      const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+      const mp4Name = filename.replace(/\.(webm|mkv|ogv)$/, '.mp4').replace('screen-recording', 'screen-recording') || `screen-recording-${new Date().toISOString().slice(0, 10)}.mp4`;
+      const mp4Url  = URL.createObjectURL(mp4Blob);
+
+      if (mp4BlobUrlRef.current) URL.revokeObjectURL(mp4BlobUrlRef.current);
+      mp4BlobUrlRef.current = mp4Url;
+      setMp4BlobUrl(mp4Url);
+      setMp4Filename(mp4Name);
+      setConvState('done');
+
+      // Auto-download
+      const a = document.createElement('a');
+      a.href = mp4Url; a.download = mp4Name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+
+      try { ffmpeg.FS('unlink', 'input.webm'); } catch {}
+      try { ffmpeg.FS('unlink', 'output.mp4'); } catch {}
+    } catch (err) {
+      setConvError(err.message?.includes('Out of memory')
+        ? 'File too large to convert in browser. Try a shorter recording.'
+        : 'MP4 conversion failed. ' + (err.message || 'Please try again.'));
+      setConvState('error');
+    }
+  }, [blobUrl, filename, convState]);
+
+  const downloadMp4Again = useCallback(() => {
+    if (!mp4BlobUrl || !mp4Filename) return;
+    const a = document.createElement('a');
+    a.href = mp4BlobUrl; a.download = mp4Filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }, [mp4BlobUrl, mp4Filename]);
 
   // ════════════════════════════════════════════════════════════
   // ── Share Live: WebRTC helpers ────────────────────────────────
@@ -959,7 +1061,8 @@ export default function ScreenRecorderTool({ tool }) {
               </div>
             )}
             {status === 'stopped' && blobUrl && (
-              <div className="space-y-3">
+              <div className="space-y-4">
+                {/* Preview */}
                 {mode === 'screen'
                   ? <video src={blobUrl} controls className="w-full rounded-xl border border-border bg-black" style={{ maxHeight: '360px' }} />
                   : <div className="p-6 bg-surface-2 rounded-xl border border-border flex flex-col items-center gap-4">
@@ -968,9 +1071,92 @@ export default function ScreenRecorderTool({ tool }) {
                       </div>
                       <audio src={blobUrl} controls className="w-full" />
                     </div>}
-                <p className="text-xs text-text-muted text-center break-all">{filename}</p>
+
+                {/* File info card */}
+                <div className="grid grid-cols-3 gap-2 p-3 rounded-xl bg-surface-2 border border-border text-center text-xs">
+                  <div>
+                    <p className="text-text-muted mb-0.5">Format</p>
+                    <p className="font-semibold text-text-primary uppercase">
+                      {recordedMime.includes('mp4') ? 'MP4' : 'WebM'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-text-muted mb-0.5">Duration</p>
+                    <p className="font-semibold text-text-primary">{formatDuration(duration)}</p>
+                  </div>
+                  <div>
+                    <p className="text-text-muted mb-0.5">Size</p>
+                    <p className="font-semibold text-text-primary">{formatFileSize(fileSize)}</p>
+                  </div>
+                </div>
+
+                {/* MP4 export section — screen mode only */}
+                {mode === 'screen' && !recordedMime.includes('mp4') && (
+                  <div className="space-y-3">
+                    {/* WhatsApp notice */}
+                    {convState !== 'done' && (
+                      <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <span>
+                          This file is <strong>WebM</strong> format. It may not play in Windows Media Player or send correctly on <strong>WhatsApp</strong>.
+                          Export as MP4 for full compatibility.
+                        </span>
+                      </div>
+                    )}
+
+                    {/* WhatsApp size warning */}
+                    {fileSize > 16 * 1024 * 1024 && (
+                      <div className="flex items-start gap-2.5 p-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <span>File is larger than 16 MB. WhatsApp's video limit is 16 MB. Try recording a shorter clip for WhatsApp.</span>
+                      </div>
+                    )}
+
+                    {/* Conversion progress */}
+                    {(convState === 'loading' || convState === 'converting') && (
+                      <div className="space-y-2 p-3 rounded-xl bg-blue-50 border border-blue-200">
+                        <div className="flex items-center gap-2 text-blue-700 text-xs font-medium">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          {convState === 'loading'
+                            ? 'Loading conversion engine… (first time only, ~15 MB)'
+                            : `Converting to MP4… ${convProgress}%`}
+                        </div>
+                        <div className="w-full bg-blue-200 rounded-full h-1.5">
+                          <div
+                            className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
+                            style={{ width: `${convState === 'loading' ? 5 : convProgress}%` }}
+                          />
+                        </div>
+                        <p className="text-[11px] text-blue-500">Do not close this tab during conversion.</p>
+                      </div>
+                    )}
+
+                    {/* Conversion error */}
+                    {convState === 'error' && convError && (
+                      <div className="flex items-start gap-2.5 p-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <span>{convError}</span>
+                      </div>
+                    )}
+
+                    {/* Success badge */}
+                    {convState === 'done' && (
+                      <div className="flex items-center gap-2 p-3 rounded-xl bg-green-50 border border-green-200 text-green-700 text-xs font-medium">
+                        <CheckCircle2 className="w-4 h-4" />
+                        MP4 exported — WhatsApp compatible (H.264 / AAC)
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* MP4 done preview */}
+                {convState === 'done' && mp4BlobUrl && (
+                  <video src={mp4BlobUrl} controls className="w-full rounded-xl border border-border bg-black" style={{ maxHeight: '300px' }} />
+                )}
               </div>
             )}
+
+            {/* Action buttons */}
             <div className="flex flex-col sm:flex-row gap-3">
               {status === 'idle' && (
                 <button onClick={mode === 'screen' ? startScreenRecording : startAudioRecording}
@@ -996,14 +1182,42 @@ export default function ScreenRecorderTool({ tool }) {
                 </>
               )}
               {status === 'stopped' && (
-                <>
-                  <button onClick={downloadRecording} className="btn-primary flex-1 h-12 text-[15px]">
-                    <Download className="w-4 h-4" />Download Again
-                  </button>
-                  <button onClick={discardRecording} className="btn-ghost h-12 px-5">
-                    <Trash2 className="w-4 h-4" />Discard
-                  </button>
-                </>
+                <div className="flex flex-col gap-3 w-full">
+                  <div className="flex gap-3">
+                    {/* Download WebM / original */}
+                    <button onClick={downloadRecording}
+                      className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold border border-border bg-surface-2 hover:bg-surface-3 text-text-primary transition-colors">
+                      <Download className="w-4 h-4" />
+                      {recordedMime.includes('mp4') ? 'Download MP4' : 'Download WebM'}
+                    </button>
+
+                    {/* Export / Download MP4 — screen mode only */}
+                    {mode === 'screen' && !recordedMime.includes('mp4') && (
+                      convState === 'done' ? (
+                        <button onClick={downloadMp4Again}
+                          className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold bg-green-600 hover:bg-green-700 text-white transition-colors">
+                          <Download className="w-4 h-4" />Download MP4
+                        </button>
+                      ) : (
+                        <button onClick={exportToMp4}
+                          disabled={convState === 'loading' || convState === 'converting'}
+                          className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold btn-primary disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
+                          {(convState === 'loading' || convState === 'converting')
+                            ? <Loader2 className="w-4 h-4 animate-spin" />
+                            : <FileVideo className="w-4 h-4" />}
+                          {convState === 'loading' ? 'Loading…'
+                            : convState === 'converting' ? `${convProgress}%`
+                            : convState === 'error' ? 'Retry MP4'
+                            : 'Export MP4'}
+                        </button>
+                      )
+                    )}
+
+                    <button onClick={discardRecording} className="btn-ghost h-12 px-4">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
             {status === 'stopped' && duration > 0 && (
