@@ -6,7 +6,7 @@ import {
   Clock, Pause, Play, Info, Volume2, Radio,
   Share2, Pen, Highlighter, ArrowUpRight, Type, X, Layers,
   Circle, Eraser, Undo2, Redo2, Users, Link, Copy, Check, EyeOff,
-  Loader2, CheckCircle2, FileVideo, Cpu,
+  Loader2, CheckCircle2,
 } from 'lucide-react';
 
 const SOCKET_URL  = import.meta.env.VITE_API_BASE_URL || 'https://globaltechtools.thefiveriverz.com';
@@ -18,24 +18,9 @@ const ICE_SERVERS = [
 const CANVAS_W = 1280;
 const CANVAS_H = 720;
 
-// With audio: prefer vp8+opus (widest compat). Without audio: vp8-only.
+// MIME preference order: with audio (opus), without audio (vp8-only)
 const MIME_WITH_AUDIO  = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm'];
 const MIME_VIDEO_ONLY  = ['video/webm;codecs=vp8', 'video/webm'];
-
-// ffmpeg singleton — loaded once per session, re-used for every MP4 export
-let _ffmpegInstance = null;
-async function getFFmpeg(onProgress) {
-  if (!_ffmpegInstance) {
-    const { createFFmpeg } = await import('@ffmpeg/ffmpeg');
-    _ffmpegInstance = createFFmpeg({
-      corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
-      log: false,
-    });
-    await _ffmpegInstance.load();
-  }
-  _ffmpegInstance.setProgress(onProgress);
-  return _ffmpegInstance;
-}
 
 function formatDuration(seconds) {
   const h = Math.floor(seconds / 3600);
@@ -130,25 +115,22 @@ function AnnotationToolbar({
 export default function ScreenRecorderTool({ tool }) {
 
   // ── Record tab state ──────────────────────────────────────────
-  const [mode,     setMode]     = useState('screen');
-  const [status,   setStatus]   = useState('idle'); // idle|recording|paused|processing|stopped
-  const [duration, setDuration] = useState(0);
-  const [blobUrl,  setBlobUrl]  = useState(null);
-  const [filename, setFilename] = useState('');
-  const [fileSize, setFileSize] = useState(0);
-  const [error,    setError]    = useState('');
-  const [hasAudio, setHasAudio] = useState(null); // null=unknown | true | false
+  const [mode,      setMode]      = useState('screen');
+  const [status,    setStatus]    = useState('idle'); // idle|recording|paused|processing|stopped
+  const [duration,  setDuration]  = useState(0);
+  const [blobUrl,   setBlobUrl]   = useState(null);
+  const [filename,  setFilename]  = useState('');
+  const [fileSize,  setFileSize]  = useState(0);
+  const [error,     setError]     = useState('');
+  const [hasAudio,  setHasAudio]  = useState(null); // null=unknown | true | false
+
+  // Debug panel state — populated during/after screen recording
+  const [debugInfo, setDebugInfo] = useState(null);
+  // { videoTracks, audioTracks, mimeType, chunkCount, blobSize, durationFixed }
 
   // Audio-only mode
   const [gainValue, setGainValue] = useState(2.0);
   const [mixMode,   setMixMode]   = useState('mixed');
-
-  // MP4 export
-  const [convState,    setConvState]    = useState('idle'); // idle|loading|converting|done|error
-  const [convProgress, setConvProgress] = useState(0);
-  const [convError,    setConvError]    = useState('');
-  const [mp4BlobUrl,   setMp4BlobUrl]   = useState(null);
-  const [mp4Filename,  setMp4Filename]  = useState('');
 
   // ── Tab ────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState('record');
@@ -176,7 +158,6 @@ export default function ScreenRecorderTool({ tool }) {
   const timerRef         = useRef(null);
   const startTimeRef     = useRef(0);
   const blobUrlRef       = useRef(null);
-  const mp4BlobUrlRef    = useRef(null);
 
   // ── Audio waveform refs (audio-only mode) ─────────────────────
   const canvasRef    = useRef(null);
@@ -209,8 +190,7 @@ export default function ScreenRecorderTool({ tool }) {
 
   useEffect(() => {
     return () => {
-      if (blobUrlRef.current)    URL.revokeObjectURL(blobUrlRef.current);
-      if (mp4BlobUrlRef.current) URL.revokeObjectURL(mp4BlobUrlRef.current);
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
       clearInterval(timerRef.current);
       stopWaveform();
       streamRef.current?.getTracks().forEach(t => t.stop());
@@ -233,25 +213,23 @@ export default function ScreenRecorderTool({ tool }) {
   const screenSupported = !!(navigator.mediaDevices?.getDisplayMedia);
 
   function prepareNew() {
-    setError(''); setHasAudio(null);
-    if (blobUrlRef.current)    { URL.revokeObjectURL(blobUrlRef.current);    blobUrlRef.current    = null; }
-    if (mp4BlobUrlRef.current) { URL.revokeObjectURL(mp4BlobUrlRef.current); mp4BlobUrlRef.current = null; }
+    setError(''); setHasAudio(null); setDebugInfo(null);
+    if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
     setBlobUrl(null); setFilename(''); setDuration(0); setFileSize(0);
-    setMp4BlobUrl(null); setMp4Filename(''); setConvState('idle'); setConvError('');
     chunksRef.current = [];
   }
 
   // ══════════════════════════════════════════════════════════════
   // SCREEN RECORDING
-  // audio:true lets Chrome show the "Share tab audio" checkbox;
-  // we detect whether the user actually enabled it and adapt MIME.
+  // audio:true causes Chrome to show the "Share tab audio" checkbox.
+  // We detect after the fact whether any audio tracks were granted.
   // ══════════════════════════════════════════════════════════════
   const startScreenRecording = useCallback(async () => {
     prepareNew();
     try {
       const displayStream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 30, max: 60 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-        audio: true, // reveals "Share tab audio" checkbox in Chrome — user opt-in
+        audio: true, // shows "Share tab audio" checkbox in Chrome — user must opt in
       });
 
       const videoTracks = displayStream.getVideoTracks();
@@ -267,11 +245,21 @@ export default function ScreenRecorderTool({ tool }) {
       setHasAudio(audioDetected);
       streamRef.current = displayStream;
 
-      // Choose MIME based on whether tab audio was actually provided
+      // Pick the best supported MIME type for the detected tracks
       const candidates = audioDetected ? MIME_WITH_AUDIO : MIME_VIDEO_ONLY;
       const mimeType   = candidates.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
 
-      const tracks = [videoTracks[0], ...(audioDetected ? audioTracks : [])];
+      // Seed debug info with what we know before recording starts
+      setDebugInfo({
+        videoTracks:   videoTracks.length,
+        audioTracks:   audioTracks.length,
+        mimeType,
+        chunkCount:    0,
+        blobSize:      0,
+        durationFixed: null,
+      });
+
+      const tracks   = [videoTracks[0], ...(audioDetected ? audioTracks : [])];
       const recorder = new MediaRecorder(new MediaStream(tracks), {
         mimeType,
         videoBitsPerSecond: 2_500_000,
@@ -279,8 +267,12 @@ export default function ScreenRecorderTool({ tool }) {
       });
       mediaRecorderRef.current = recorder;
 
+      // Collect chunks; update live chunk count in debug panel
       recorder.ondataavailable = (e) => {
-        if (e.data?.size > 0) chunksRef.current.push(e.data);
+        if (e.data?.size > 0) {
+          chunksRef.current.push(e.data);
+          setDebugInfo(prev => prev ? { ...prev, chunkCount: chunksRef.current.length } : prev);
+        }
       };
 
       recorder.onstop = async () => {
@@ -290,8 +282,12 @@ export default function ScreenRecorderTool({ tool }) {
 
         const actualDurationMs = Date.now() - startTimeRef.current;
         const finalMime        = recorder.mimeType || mimeType;
-        const rawBlob          = new Blob(chunksRef.current, { type: finalMime });
+
+        // Build blob only here, after all chunks are collected
+        const rawBlob = new Blob(chunksRef.current, { type: finalMime });
         chunksRef.current = [];
+
+        setDebugInfo(prev => prev ? { ...prev, blobSize: rawBlob.size } : prev);
 
         if (rawBlob.size === 0) {
           setError('Recording produced no data. Please try again.');
@@ -301,14 +297,19 @@ export default function ScreenRecorderTool({ tool }) {
 
         setStatus('processing');
 
-        // Chrome omits the Duration element from WebM live-stream segments —
-        // players can't seek and show 0:00.  fixWebmDuration patches it in-place.
-        let finalBlob = rawBlob;
+        // Chrome does not write a Duration element in live WebM segments —
+        // players show 0:00 and cannot seek. fixWebmDuration patches the header.
+        let finalBlob    = rawBlob;
+        let durationFixed = false;
         try {
-          finalBlob = await fixWebmDuration(rawBlob, actualDurationMs);
+          finalBlob    = await fixWebmDuration(rawBlob, actualDurationMs);
+          durationFixed = true;
         } catch (fixErr) {
           console.warn('[Rec] fixWebmDuration failed, using raw blob:', fixErr);
+          durationFixed = false;
         }
+
+        setDebugInfo(prev => prev ? { ...prev, blobSize: finalBlob.size, durationFixed } : prev);
 
         const fname = `screen-recording-${new Date().toISOString().slice(0, 10)}.webm`;
         const url   = URL.createObjectURL(finalBlob);
@@ -317,17 +318,19 @@ export default function ScreenRecorderTool({ tool }) {
         setBlobUrl(url); setFilename(fname); setFileSize(finalBlob.size);
         setStatus('stopped');
 
+        // Auto-download
         const a = document.createElement('a');
         a.href = url; a.download = fname;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
       };
 
+      // If user clicks "Stop sharing" in the browser bar
       videoTracks[0].onended = () => {
         if (recorder.state !== 'inactive') recorder.stop();
       };
 
       startTimeRef.current = Date.now();
-      recorder.start(1000);
+      recorder.start(1000); // fire ondataavailable every 1 s
       setStatus('recording');
       timerRef.current = setInterval(() => setDuration(d => d + 1), 1000);
 
@@ -471,60 +474,11 @@ export default function ScreenRecorderTool({ tool }) {
   }, [blobUrl, filename]);
 
   const discardRecording = useCallback(() => {
-    if (blobUrlRef.current)    { URL.revokeObjectURL(blobUrlRef.current);    blobUrlRef.current    = null; }
-    if (mp4BlobUrlRef.current) { URL.revokeObjectURL(mp4BlobUrlRef.current); mp4BlobUrlRef.current = null; }
+    if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
     setBlobUrl(null); setFilename(''); setDuration(0); setFileSize(0);
-    setHasAudio(null); setMp4BlobUrl(null); setMp4Filename(''); setConvState('idle'); setConvError('');
+    setHasAudio(null); setDebugInfo(null);
     setStatus('idle'); chunksRef.current = [];
   }, []);
-
-  // ── MP4 export via ffmpeg.wasm (client-side only) ─────────────
-  const exportToMp4 = useCallback(async () => {
-    if (!blobUrl || convState === 'loading' || convState === 'converting') return;
-    setConvError(''); setConvProgress(0); setConvState('loading');
-    try {
-      const { fetchFile } = await import('@ffmpeg/ffmpeg');
-      const ffmpeg = await getFFmpeg(({ ratio }) => {
-        setConvProgress(Math.max(1, Math.round(ratio * 100)));
-        setConvState('converting');
-      });
-      setConvState('converting');
-      const response = await fetch(blobUrl);
-      const webmBlob = await response.blob();
-      ffmpeg.FS('writeFile', 'input.webm', await fetchFile(webmBlob));
-      await ffmpeg.run(
-        '-i', 'input.webm',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
-        '-c:a', 'aac', '-b:a', '128k',
-        '-movflags', '+faststart',
-        'output.mp4'
-      );
-      const data    = ffmpeg.FS('readFile', 'output.mp4');
-      const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
-      const mp4Name = filename.replace(/\.webm$/, '.mp4') || `screen-recording-${new Date().toISOString().slice(0, 10)}.mp4`;
-      const mp4Url  = URL.createObjectURL(mp4Blob);
-      if (mp4BlobUrlRef.current) URL.revokeObjectURL(mp4BlobUrlRef.current);
-      mp4BlobUrlRef.current = mp4Url;
-      setMp4BlobUrl(mp4Url); setMp4Filename(mp4Name); setConvState('done');
-      const a = document.createElement('a');
-      a.href = mp4Url; a.download = mp4Name;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      try { ffmpeg.FS('unlink', 'input.webm'); } catch {}
-      try { ffmpeg.FS('unlink', 'output.mp4'); } catch {}
-    } catch (err) {
-      setConvError(err.message?.includes('Out of memory')
-        ? 'File too large to convert in browser. Try a shorter recording.'
-        : 'MP4 conversion failed. ' + (err.message || 'Please try again.'));
-      setConvState('error');
-    }
-  }, [blobUrl, filename, convState]);
-
-  const downloadMp4Again = useCallback(() => {
-    if (!mp4BlobUrl || !mp4Filename) return;
-    const a = document.createElement('a');
-    a.href = mp4BlobUrl; a.download = mp4Filename;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  }, [mp4BlobUrl, mp4Filename]);
 
   // ════════════════════════════════════════════════════════════════
   // Share Live — WebRTC helpers
@@ -896,96 +850,35 @@ export default function ScreenRecorderTool({ tool }) {
 
             {/* ── Screen mode: idle ─────────────────────────────── */}
             {status === 'idle' && mode === 'screen' && (
-              <>
-                {!screenSupported ? (
-                  <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
-                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>Screen recording not supported. Use <button className="font-semibold underline" onClick={() => setMode('audio')}>Audio Only</button> or try Chrome / Edge.</span>
+              !screenSupported ? (
+                <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>Screen recording not supported. Use <button className="font-semibold underline" onClick={() => setMode('audio')}>Audio Only</button> or try Chrome / Edge.</span>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-blue-200 overflow-hidden" style={{ background: '#eff6ff' }}>
+                  <div className="flex items-center gap-2 px-4 py-2.5 border-b border-blue-200" style={{ background: '#dbeafe' }}>
+                    <Info className="w-4 h-4 text-blue-600 shrink-0" />
+                    <span className="text-sm font-semibold text-blue-700">How to record with audio</span>
                   </div>
-                ) : (
-                  <>
-                    {/* How-to-get-audio guide */}
-                    <div className="rounded-xl border border-blue-200 overflow-hidden" style={{ background: '#eff6ff' }}>
-                      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-blue-200" style={{ background: '#dbeafe' }}>
-                        <Info className="w-4 h-4 text-blue-600 shrink-0" />
-                        <span className="text-sm font-semibold text-blue-700">How to record with audio</span>
-                      </div>
-                      <div className="p-4 space-y-3 text-xs">
-                        <div className="flex gap-3">
-                          <span className="mt-0.5 w-5 h-5 rounded-md bg-green-100 border border-green-300 text-green-700 flex items-center justify-center font-bold shrink-0 text-[10px]">✓</span>
-                          <div>
-                            <p className="font-semibold text-blue-800">Chrome Tab → tick "Share tab audio"</p>
-                            <p className="text-blue-600 mt-0.5">Captures sound from that specific tab — websites, YouTube videos, online meetings.</p>
-                          </div>
-                        </div>
-                        <div className="flex gap-3">
-                          <span className="mt-0.5 w-5 h-5 rounded-md bg-gray-100 border border-gray-300 text-gray-500 flex items-center justify-center font-bold shrink-0 text-[10px]">✗</span>
-                          <div>
-                            <p className="font-semibold text-blue-800">Window or Entire Screen</p>
-                            <p className="text-blue-600 mt-0.5">Video only — browsers cannot access system-wide audio. For that, a desktop app is required (see below).</p>
-                          </div>
-                        </div>
+                  <div className="p-4 space-y-2.5 text-xs text-blue-700">
+                    <div className="flex gap-2.5">
+                      <span className="mt-0.5 shrink-0 w-5 h-5 rounded-md bg-green-100 border border-green-300 text-green-700 flex items-center justify-center font-bold text-[10px]">✓</span>
+                      <div>
+                        <p className="font-semibold text-blue-800">For audio: select Chrome Tab and enable "Share tab audio"</p>
+                        <p className="text-blue-600 mt-0.5">Captures sound playing in that tab — YouTube, websites, video calls.</p>
                       </div>
                     </div>
-
-                    {/* Web vs Desktop comparison */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="p-3.5 rounded-xl bg-surface-2 border border-border space-y-2">
-                        <div className="flex items-center gap-1.5">
-                          <Monitor className="w-3.5 h-3.5 text-accent" />
-                          <span className="text-xs font-semibold text-text-primary">Web Version (Now)</span>
-                        </div>
-                        <ul className="text-[11px] text-text-muted space-y-1 leading-relaxed">
-                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-green-500 shrink-0 mt-0.5" /><span>Tab audio when user enables it</span></li>
-                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-green-500 shrink-0 mt-0.5" /><span>No install — works in browser</span></li>
-                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-green-500 shrink-0 mt-0.5" /><span>WebM + optional MP4 export</span></li>
-                          <li className="flex gap-1.5"><AlertCircle className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" /><span>No system-wide audio</span></li>
-                        </ul>
-                      </div>
-                      <div className="p-3.5 rounded-xl border space-y-2" style={{ background: '#f5f3ff', borderColor: '#c4b5fd' }}>
-                        <div className="flex items-center gap-1.5">
-                          <Cpu className="w-3.5 h-3.5 text-purple-600" />
-                          <span className="text-xs font-semibold text-purple-800">Desktop App (Planned)</span>
-                        </div>
-                        <ul className="text-[11px] text-purple-700 space-y-1 leading-relaxed">
-                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" /><span>Full system audio capture</span></li>
-                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" /><span>Mic + system audio mix</span></li>
-                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" /><span>Native MP4 export (bundled ffmpeg)</span></li>
-                          <li className="flex gap-1.5"><CheckCircle2 className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" /><span>Record any app — iTop style</span></li>
-                        </ul>
+                    <div className="flex gap-2.5">
+                      <span className="mt-0.5 shrink-0 w-5 h-5 rounded-md bg-gray-100 border border-gray-300 text-gray-500 flex items-center justify-center font-bold text-[10px]">✗</span>
+                      <div>
+                        <p className="font-semibold text-blue-800">Window or Entire Screen → video only</p>
+                        <p className="text-blue-600 mt-0.5">Browsers cannot access system-wide audio. The audio track will not be provided.</p>
                       </div>
                     </div>
-
-                    {/* Future desktop app plan */}
-                    <details className="rounded-xl border border-border overflow-hidden text-sm">
-                      <summary className="flex items-center gap-2 px-4 py-3 bg-surface-2 cursor-pointer select-none font-medium text-text-muted hover:text-text-primary transition-colors">
-                        <Cpu className="w-4 h-4 shrink-0" />
-                        <span>Desktop App Roadmap (Electron)</span>
-                      </summary>
-                      <div className="p-4 space-y-3 text-xs text-text-muted border-t border-border">
-                        <p>A future desktop app will use Electron to unlock full iTop-style recording capabilities:</p>
-                        <ul className="space-y-2">
-                          {[
-                            ['DesktopCapturer API', 'Capture any window, app, or entire screen — not just browser tabs'],
-                            ['System audio loopback', 'Record all system sounds: Spotify, Discord, YouTube, games, everything'],
-                            ['Mic + system audio mix', 'Voiceover over system audio via AudioContext — full mixing control'],
-                            ['Bundled ffmpeg', 'Native MP4 export without browser memory limits or CDN loading'],
-                            ['No tab restriction', 'Works on Windows, Mac, and Linux — record any installed application'],
-                          ].map(([title, desc]) => (
-                            <li key={title} className="flex gap-2">
-                              <CheckCircle2 className="w-3.5 h-3.5 text-purple-500 shrink-0 mt-0.5" />
-                              <span><strong className="text-text-primary">{title}</strong> — {desc}</span>
-                            </li>
-                          ))}
-                        </ul>
-                        <p className="italic text-text-muted pt-1 border-t border-border">
-                          Web version covers most browser-based recording needs. Desktop app will unlock everything a tool like iTop offers.
-                        </p>
-                      </div>
-                    </details>
-                  </>
-                )}
-              </>
+                  </div>
+                </div>
+              )
             )}
 
             {/* ── Audio mode: idle ──────────────────────────────── */}
@@ -1079,7 +972,7 @@ export default function ScreenRecorderTool({ tool }) {
                 </div>
                 <div className="text-center space-y-1">
                   <p className="font-semibold text-text-primary">Finalising recording…</p>
-                  <p className="text-sm text-text-muted">Patching duration metadata so the video can be seeked and shows the correct length</p>
+                  <p className="text-sm text-text-muted">Patching WebM duration metadata so seeking and playback work correctly</p>
                 </div>
               </div>
             )}
@@ -1107,7 +1000,7 @@ export default function ScreenRecorderTool({ tool }) {
                     <div>
                       <p className="text-text-muted mb-0.5">Audio</p>
                       <p className={`font-semibold ${hasAudio === true ? 'text-green-600' : hasAudio === false ? 'text-amber-500' : 'text-text-primary'}`}>
-                        {hasAudio === true ? 'Tab audio' : hasAudio === false ? 'None' : '—'}
+                        {hasAudio === true ? 'Yes' : hasAudio === false ? 'None' : '—'}
                       </p>
                     </div>
                   </div>
@@ -1118,54 +1011,50 @@ export default function ScreenRecorderTool({ tool }) {
                   </div>
                 )}
 
-                {/* Audio missing tip */}
+                {/* Audio not captured warning */}
                 {mode === 'screen' && hasAudio === false && (
                   <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs">
                     <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                     <span>
-                      Audio was not provided by the browser. For website or video sound, choose <strong>Chrome Tab</strong> in the sharing dialog and enable <strong>"Share tab audio"</strong>.
+                      Audio was not captured because the browser did not provide an audio track.
+                      To get audio, choose <strong>Chrome Tab</strong> in the sharing dialog and tick <strong>"Share tab audio"</strong>.
                     </span>
                   </div>
                 )}
 
-                {/* MP4 export (screen recordings only) */}
-                {mode === 'screen' && (
-                  <div className="space-y-3">
-                    {convState === 'idle' && (
-                      <p className="text-[11px] text-text-muted text-center">
-                        WebM plays in Chrome, Firefox, and Edge. For Windows Media Player or WhatsApp, export as MP4.
-                      </p>
-                    )}
-                    {(convState === 'loading' || convState === 'converting') && (
-                      <div className="space-y-2 p-3 rounded-xl bg-blue-50 border border-blue-200">
-                        <div className="flex items-center gap-2 text-blue-700 text-xs font-medium">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          {convState === 'loading' ? 'Loading conversion engine… (first time ~15 MB)' : `Converting to MP4… ${convProgress}%`}
+                {/* Debug panel — screen recordings only */}
+                {mode === 'screen' && debugInfo && (
+                  <details className="rounded-xl border border-border overflow-hidden text-xs">
+                    <summary className="flex items-center gap-2 px-4 py-2.5 bg-surface-2 cursor-pointer select-none font-medium text-text-muted hover:text-text-primary transition-colors">
+                      <Info className="w-3.5 h-3.5 shrink-0" />
+                      Debug info
+                    </summary>
+                    <div className="px-4 py-3 border-t border-border font-mono space-y-1.5">
+                      {[
+                        ['Video tracks',   debugInfo.videoTracks, null],
+                        ['Audio tracks',   debugInfo.audioTracks, debugInfo.audioTracks > 0 ? 'green' : 'amber'],
+                        ['MIME type',      debugInfo.mimeType,    null],
+                        ['Chunks',         debugInfo.chunkCount,  null],
+                        ['Blob size',      formatFileSize(debugInfo.blobSize), null],
+                        ['Duration fix',
+                          debugInfo.durationFixed === null  ? '—'
+                          : debugInfo.durationFixed         ? 'Applied ✓'
+                          : 'Failed — raw blob used',
+                          debugInfo.durationFixed === true  ? 'green'
+                          : debugInfo.durationFixed === false ? 'amber' : null,
+                        ],
+                      ].map(([label, value, color]) => (
+                        <div key={label} className="flex items-start gap-2">
+                          <span className="text-text-muted w-28 shrink-0">{label}</span>
+                          <span className={
+                            color === 'green' ? 'text-green-600 font-semibold' :
+                            color === 'amber' ? 'text-amber-600 font-semibold' :
+                            'text-text-primary'
+                          }>{String(value)}</span>
                         </div>
-                        <div className="w-full bg-blue-200 rounded-full h-1.5">
-                          <div className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
-                            style={{ width: `${convState === 'loading' ? 5 : convProgress}%` }} />
-                        </div>
-                        <p className="text-[11px] text-blue-500">Do not close this tab during conversion.</p>
-                      </div>
-                    )}
-                    {convState === 'error' && convError && (
-                      <div className="flex items-start gap-2.5 p-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" /><span>{convError}</span>
-                      </div>
-                    )}
-                    {convState === 'done' && (
-                      <>
-                        <div className="flex items-center gap-2 p-3 rounded-xl bg-green-50 border border-green-200 text-green-700 text-xs font-medium">
-                          <CheckCircle2 className="w-4 h-4" />
-                          MP4 exported — compatible with Windows Media Player and WhatsApp
-                        </div>
-                        {mp4BlobUrl && (
-                          <video src={mp4BlobUrl} controls className="w-full rounded-xl border border-border bg-black" style={{ maxHeight: 300 }} />
-                        )}
-                      </>
-                    )}
-                  </div>
+                      ))}
+                    </div>
+                  </details>
                 )}
               </div>
             )}
@@ -1197,33 +1086,14 @@ export default function ScreenRecorderTool({ tool }) {
                 </>
               )}
               {status === 'stopped' && (
-                <div className="flex flex-col gap-3 w-full">
-                  <div className="flex gap-3">
-                    <button onClick={downloadRecording}
-                      className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold border border-border bg-surface-2 hover:bg-surface-3 text-text-primary transition-colors">
-                      <Download className="w-4 h-4" />Download WebM
-                    </button>
-                    {mode === 'screen' && (
-                      convState === 'done' ? (
-                        <button onClick={downloadMp4Again}
-                          className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold bg-green-600 hover:bg-green-700 text-white transition-colors">
-                          <Download className="w-4 h-4" />Download MP4
-                        </button>
-                      ) : (
-                        <button onClick={exportToMp4}
-                          disabled={convState === 'loading' || convState === 'converting'}
-                          className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold btn-primary disabled:opacity-60 disabled:cursor-not-allowed">
-                          {(convState === 'loading' || convState === 'converting')
-                            ? <Loader2 className="w-4 h-4 animate-spin" />
-                            : <FileVideo className="w-4 h-4" />}
-                          {convState === 'loading' ? 'Loading…' : convState === 'converting' ? `${convProgress}%` : convState === 'error' ? 'Retry MP4' : 'Export MP4'}
-                        </button>
-                      )
-                    )}
-                    <button onClick={discardRecording} className="btn-ghost h-12 px-4">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+                <div className="flex gap-3 w-full">
+                  <button onClick={downloadRecording}
+                    className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold btn-primary transition-colors">
+                    <Download className="w-4 h-4" />Download
+                  </button>
+                  <button onClick={discardRecording} className="btn-ghost h-12 px-4">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
               )}
             </div>
