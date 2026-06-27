@@ -6,7 +6,7 @@ import {
   Clock, Pause, Play, Info, Volume2, Radio,
   Share2, Pen, Highlighter, ArrowUpRight, Type, X, Layers,
   Circle, Eraser, Undo2, Redo2, Users, Link, Copy, Check, EyeOff,
-  Loader2, CheckCircle2,
+  Loader2, CheckCircle2, RefreshCw, Globe, AppWindow,
 } from 'lucide-react';
 
 const SOCKET_URL  = import.meta.env.VITE_API_BASE_URL || 'https://globaltechtools.thefiveriverz.com';
@@ -18,7 +18,6 @@ const ICE_SERVERS = [
 const CANVAS_W = 1280;
 const CANVAS_H = 720;
 
-// MIME preference order: with audio (opus), without audio (vp8-only)
 const MIME_WITH_AUDIO  = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm'];
 const MIME_VIDEO_ONLY  = ['video/webm;codecs=vp8', 'video/webm'];
 
@@ -34,6 +33,15 @@ function formatFileSize(bytes) {
   if (!bytes) return '—';
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Detect what kind of source the display-media track came from
+function detectSourceLabel(track) {
+  const surf = track?.getSettings?.()?.displaySurface;
+  if (surf === 'browser') return 'Sharing Tab';
+  if (surf === 'window')  return 'Sharing Window';
+  if (surf === 'monitor') return 'Sharing Screen';
+  return 'Sharing';
 }
 
 const ANNOT_TOOLS = [
@@ -112,21 +120,25 @@ function AnnotationToolbar({
   );
 }
 
+function SourceIcon({ label, className = 'w-3 h-3' }) {
+  if (label === 'Sharing Tab')    return <Globe     className={className} />;
+  if (label === 'Sharing Window') return <AppWindow className={className} />;
+  return <Monitor className={className} />;
+}
+
 export default function ScreenRecorderTool({ tool }) {
 
   // ── Record tab state ──────────────────────────────────────────
   const [mode,      setMode]      = useState('screen');
-  const [status,    setStatus]    = useState('idle'); // idle|recording|paused|processing|stopped
+  const [status,    setStatus]    = useState('idle');
   const [duration,  setDuration]  = useState(0);
   const [blobUrl,   setBlobUrl]   = useState(null);
   const [filename,  setFilename]  = useState('');
   const [fileSize,  setFileSize]  = useState(0);
   const [error,     setError]     = useState('');
-  const [hasAudio,  setHasAudio]  = useState(null); // null=unknown | true | false
+  const [hasAudio,  setHasAudio]  = useState(null);
 
-  // Debug panel state — populated during/after screen recording
   const [debugInfo, setDebugInfo] = useState(null);
-  // { videoTracks, audioTracks, mimeType, chunkCount, blobSize, durationFixed }
 
   // Audio-only mode
   const [gainValue, setGainValue] = useState(2.0);
@@ -136,13 +148,15 @@ export default function ScreenRecorderTool({ tool }) {
   const [activeTab, setActiveTab] = useState('record');
 
   // ── Share Live state ──────────────────────────────────────────
-  const [sharePhase,  setSharePhase]  = useState('idle');
-  const [sessionId,   setSessionId]   = useState('');
-  const [viewerCount, setViewerCount] = useState(0);
-  const [shareMic,    setShareMic]    = useState(false);
-  const [shareError,  setShareError]  = useState('');
-  const [linkCopied,  setLinkCopied]  = useState(false);
-  const [showAnnot,   setShowAnnot]   = useState(true);
+  const [sharePhase,       setSharePhase]       = useState('idle');
+  const [sessionId,        setSessionId]        = useState('');
+  const [viewerCount,      setViewerCount]      = useState(0);
+  const [shareMic,         setShareMic]         = useState(false);
+  const [shareError,       setShareError]       = useState('');
+  const [linkCopied,       setLinkCopied]       = useState(false);
+  const [showAnnot,        setShowAnnot]        = useState(true);
+  const [sourceLabel,      setSourceLabel]      = useState('');       // 'Sharing Tab' | 'Sharing Window' | 'Sharing Screen'
+  const [isChangingSource, setIsChangingSource] = useState(false);   // true while replaceTrack is in-flight
 
   // ── Annotation state ──────────────────────────────────────────
   const [annotTool,  setAnnotTool]  = useState('pen');
@@ -154,12 +168,12 @@ export default function ScreenRecorderTool({ tool }) {
   const mediaRecorderRef = useRef(null);
   const chunksRef        = useRef([]);
   const streamRef        = useRef(null);
-  const sysStreamRef     = useRef(null); // audio-only mode system stream
+  const sysStreamRef     = useRef(null);
   const timerRef         = useRef(null);
   const startTimeRef     = useRef(0);
   const blobUrlRef       = useRef(null);
 
-  // ── Audio waveform refs (audio-only mode) ─────────────────────
+  // ── Audio waveform refs ───────────────────────────────────────
   const canvasRef    = useRef(null);
   const analyserRef  = useRef(null);
   const audioCtxRef  = useRef(null);
@@ -221,15 +235,13 @@ export default function ScreenRecorderTool({ tool }) {
 
   // ══════════════════════════════════════════════════════════════
   // SCREEN RECORDING
-  // audio:true causes Chrome to show the "Share tab audio" checkbox.
-  // We detect after the fact whether any audio tracks were granted.
   // ══════════════════════════════════════════════════════════════
   const startScreenRecording = useCallback(async () => {
     prepareNew();
     try {
       const displayStream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 30, max: 60 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-        audio: true, // shows "Share tab audio" checkbox in Chrome — user must opt in
+        audio: true,
       });
 
       const videoTracks = displayStream.getVideoTracks();
@@ -245,19 +257,10 @@ export default function ScreenRecorderTool({ tool }) {
       setHasAudio(audioDetected);
       streamRef.current = displayStream;
 
-      // Pick the best supported MIME type for the detected tracks
       const candidates = audioDetected ? MIME_WITH_AUDIO : MIME_VIDEO_ONLY;
       const mimeType   = candidates.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
 
-      // Seed debug info with what we know before recording starts
-      setDebugInfo({
-        videoTracks:   videoTracks.length,
-        audioTracks:   audioTracks.length,
-        mimeType,
-        chunkCount:    0,
-        blobSize:      0,
-        durationFixed: null,
-      });
+      setDebugInfo({ videoTracks: videoTracks.length, audioTracks: audioTracks.length, mimeType, chunkCount: 0, blobSize: 0, durationFixed: null });
 
       const tracks   = [videoTracks[0], ...(audioDetected ? audioTracks : [])];
       const recorder = new MediaRecorder(new MediaStream(tracks), {
@@ -267,7 +270,6 @@ export default function ScreenRecorderTool({ tool }) {
       });
       mediaRecorderRef.current = recorder;
 
-      // Collect chunks; update live chunk count in debug panel
       recorder.ondataavailable = (e) => {
         if (e.data?.size > 0) {
           chunksRef.current.push(e.data);
@@ -282,31 +284,22 @@ export default function ScreenRecorderTool({ tool }) {
 
         const actualDurationMs = Date.now() - startTimeRef.current;
         const finalMime        = recorder.mimeType || mimeType;
-
-        // Build blob only here, after all chunks are collected
         const rawBlob = new Blob(chunksRef.current, { type: finalMime });
         chunksRef.current = [];
 
         setDebugInfo(prev => prev ? { ...prev, blobSize: rawBlob.size } : prev);
 
-        if (rawBlob.size === 0) {
-          setError('Recording produced no data. Please try again.');
-          setStatus('idle');
-          return;
-        }
+        if (rawBlob.size === 0) { setError('Recording produced no data. Please try again.'); setStatus('idle'); return; }
 
         setStatus('processing');
 
-        // Chrome does not write a Duration element in live WebM segments —
-        // players show 0:00 and cannot seek. fixWebmDuration patches the header.
         let finalBlob    = rawBlob;
         let durationFixed = false;
         try {
           finalBlob    = await fixWebmDuration(rawBlob, actualDurationMs);
           durationFixed = true;
         } catch (fixErr) {
-          console.warn('[Rec] fixWebmDuration failed, using raw blob:', fixErr);
-          durationFixed = false;
+          console.warn('[Rec] fixWebmDuration failed:', fixErr);
         }
 
         setDebugInfo(prev => prev ? { ...prev, blobSize: finalBlob.size, durationFixed } : prev);
@@ -314,29 +307,24 @@ export default function ScreenRecorderTool({ tool }) {
         const fname = `screen-recording-${new Date().toISOString().slice(0, 10)}.webm`;
         const url   = URL.createObjectURL(finalBlob);
         blobUrlRef.current = url;
-
         setBlobUrl(url); setFilename(fname); setFileSize(finalBlob.size);
         setStatus('stopped');
 
-        // Auto-download
         const a = document.createElement('a');
         a.href = url; a.download = fname;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
       };
 
-      // If user clicks "Stop sharing" in the browser bar
-      videoTracks[0].onended = () => {
-        if (recorder.state !== 'inactive') recorder.stop();
-      };
+      videoTracks[0].onended = () => { if (recorder.state !== 'inactive') recorder.stop(); };
 
       startTimeRef.current = Date.now();
-      recorder.start(1000); // fire ondataavailable every 1 s
+      recorder.start(1000);
       setStatus('recording');
       timerRef.current = setInterval(() => setDuration(d => d + 1), 1000);
 
     } catch (err) {
-      if (err.name === 'NotAllowedError')        setError('Screen share permission denied. Please allow screen sharing when prompted.');
-      else if (err.name === 'NotSupportedError') setError('Screen recording not supported in this browser. Try Chrome or Edge.');
+      if (err.name === 'NotAllowedError')        setError('Screen share permission denied.');
+      else if (err.name === 'NotSupportedError') setError('Screen recording not supported. Try Chrome or Edge.');
       else                                       setError(err.message || 'Could not start recording. Please try again.');
     }
   }, []);
@@ -444,8 +432,8 @@ export default function ScreenRecorderTool({ tool }) {
         } catch { /* AudioContext unavailable */ }
       }, 120);
     } catch (err) {
-      if (err.name === 'NotAllowedError') setError('Microphone permission denied. Please allow microphone access when prompted.');
-      else                                setError(err.message || 'Could not access microphone. Please try again.');
+      if (err.name === 'NotAllowedError') setError('Microphone permission denied.');
+      else                                setError(err.message || 'Could not access microphone.');
     }
   }, [gainValue, mixMode]);
 
@@ -514,6 +502,7 @@ export default function ScreenRecorderTool({ tool }) {
     if (shareVideoRef.current) shareVideoRef.current.srcObject = null;
     peersRef.current.forEach(pc => pc.close()); peersRef.current.clear();
     setSharePhase('idle'); setSessionId(''); setViewerCount(0);
+    setSourceLabel(''); setIsChangingSource(false);
     const ov = overlayRef.current;
     if (ov) ov.getContext('2d').clearRect(0, 0, ov.width, ov.height);
     undoStackRef.current = []; redoStackRef.current = [];
@@ -527,6 +516,7 @@ export default function ScreenRecorderTool({ tool }) {
       .map(b => b.toString(36)).join('').slice(0, 8);
     const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
     socketRef.current = socket;
+
     socket.on('share:viewer-joined', async ({ viewerId }) => {
       const stream = shareStreamRef.current;
       if (!stream) return;
@@ -538,18 +528,13 @@ export default function ScreenRecorderTool({ tool }) {
       const ov = overlayRef.current;
       if (ov) socket.emit('share:sync-to-viewer', { targetId: viewerId, event: { type: 'sync', dataUrl: ov.toDataURL('image/png', 0.8) } });
     });
-    socket.on('share:answer', async ({ fromId, answer }) => {
-      await peersRef.current.get(fromId)?.setRemoteDescription(answer);
-    });
-    socket.on('share:ice-candidate', ({ fromId, candidate }) => {
-      peersRef.current.get(fromId)?.addIceCandidate(candidate).catch(() => {});
-    });
-    socket.on('share:viewer-left', ({ viewerId }) => {
-      peersRef.current.get(viewerId)?.close(); peersRef.current.delete(viewerId);
-    });
-    socket.on('share:viewer-count', ({ count }) => setViewerCount(count));
-    socket.on('connect', () => socket.emit('share:create', { sessionId: newSid }));
-    socket.on('connect_error', () => setShareError('Could not connect to signaling server. Check your connection.'));
+    socket.on('share:answer',        async ({ fromId, answer }) => { await peersRef.current.get(fromId)?.setRemoteDescription(answer); });
+    socket.on('share:ice-candidate', ({ fromId, candidate })    => { peersRef.current.get(fromId)?.addIceCandidate(candidate).catch(() => {}); });
+    socket.on('share:viewer-left',   ({ viewerId })             => { peersRef.current.get(viewerId)?.close(); peersRef.current.delete(viewerId); });
+    socket.on('share:viewer-count',  ({ count })                => setViewerCount(count));
+    socket.on('connect',             ()                         => socket.emit('share:create', { sessionId: newSid }));
+    socket.on('connect_error',       ()                         => setShareError('Could not connect to signaling server.'));
+
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 30, max: 60 } },
@@ -558,13 +543,59 @@ export default function ScreenRecorderTool({ tool }) {
       });
       shareStreamRef.current = stream;
       if (shareVideoRef.current) shareVideoRef.current.srcObject = stream;
-      stream.getVideoTracks()[0].onended = () => stopLiveShare();
+      const vidTrack = stream.getVideoTracks()[0];
+      if (vidTrack) {
+        vidTrack.onended = () => stopLiveShare();
+        setSourceLabel(detectSourceLabel(vidTrack));
+      }
       setSessionId(newSid); setSharePhase('active');
     } catch (err) {
       if (err.name !== 'NotAllowedError') setShareError(err.message || 'Could not start screen share.');
       socket.disconnect(); socketRef.current = null;
     }
   }, [screenSupported, shareMic, createPeer, stopLiveShare]);
+
+  // ── Change Source (persistent classroom link) ─────────────────
+  // Opens a new getDisplayMedia picker. Uses RTCRtpSender.replaceTrack()
+  // on every active peer connection so viewers stay connected — no new
+  // session ID, no reconnection required.
+  const changeSource = useCallback(async () => {
+    setIsChangingSource(true);
+    setShareError('');
+    try {
+      const newStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 30, max: 60 } },
+        audio: false,
+      });
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      if (!newVideoTrack) { newStream.getTracks().forEach(t => t.stop()); return; }
+
+      // Replace the video track in every active RTCPeerConnection.
+      // replaceTrack() swaps media content with no re-negotiation,
+      // keeping each viewer's MediaStream seamlessly updated.
+      await Promise.all([...peersRef.current.values()].map(pc => {
+        const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+        return sender ? sender.replaceTrack(newVideoTrack) : Promise.resolve();
+      }));
+
+      // Stop old video tracks before updating our local stream reference
+      shareStreamRef.current?.getVideoTracks().forEach(t => t.stop());
+
+      // Rebuild our local stream keeping any existing audio tracks
+      const audioTracks = shareStreamRef.current?.getAudioTracks() ?? [];
+      const combined    = new MediaStream([newVideoTrack, ...audioTracks]);
+      shareStreamRef.current = combined;
+      if (shareVideoRef.current) shareVideoRef.current.srcObject = combined;
+
+      newVideoTrack.onended = () => stopLiveShare();
+      setSourceLabel(detectSourceLabel(newVideoTrack));
+
+    } catch (err) {
+      if (err.name !== 'NotAllowedError') setShareError('Could not switch source. Please try again.');
+    } finally {
+      setIsChangingSource(false);
+    }
+  }, [stopLiveShare]);
 
   const toggleSharePause = useCallback(() => {
     const stream = shareStreamRef.current;
@@ -833,7 +864,6 @@ export default function ScreenRecorderTool({ tool }) {
               </div>
             )}
 
-            {/* Mode selector */}
             {status === 'idle' && (
               <div className="grid grid-cols-2 gap-3">
                 {[{ id: 'screen', label: 'Record Screen', Icon: Monitor }, { id: 'audio', label: 'Audio Only', Icon: Mic }].map(({ id, label, Icon }) => (
@@ -848,7 +878,6 @@ export default function ScreenRecorderTool({ tool }) {
               </div>
             )}
 
-            {/* ── Screen mode: idle ─────────────────────────────── */}
             {status === 'idle' && mode === 'screen' && (
               !screenSupported ? (
                 <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
@@ -881,7 +910,6 @@ export default function ScreenRecorderTool({ tool }) {
               )
             )}
 
-            {/* ── Audio mode: idle ──────────────────────────────── */}
             {status === 'idle' && mode === 'audio' && (
               <>
                 <div className="grid grid-cols-2 gap-2">
@@ -927,7 +955,6 @@ export default function ScreenRecorderTool({ tool }) {
               </>
             )}
 
-            {/* ── Recording active: screen ──────────────────────── */}
             {isActive && mode === 'screen' && (
               <div className="flex flex-col items-center justify-center py-8 gap-4">
                 <div className="relative w-20 h-20 rounded-full border-4 border-red-200 flex items-center justify-center">
@@ -938,19 +965,12 @@ export default function ScreenRecorderTool({ tool }) {
                   <p className="font-semibold text-text-primary">{isPaused ? 'Recording paused' : 'Recording in progress'}</p>
                   <p className="text-4xl font-mono font-bold text-primary">{formatDuration(duration)}</p>
                   {!isPaused && <p className="text-sm text-text-muted">Click Stop or use the browser's "Stop sharing" button</p>}
-                  {hasAudio === true && (
-                    <p className="flex items-center justify-center gap-1 text-xs text-green-600 mt-1">
-                      <CheckCircle2 className="w-3.5 h-3.5" /> Tab audio is being captured
-                    </p>
-                  )}
-                  {hasAudio === false && (
-                    <p className="text-xs text-amber-600 mt-1">No audio track — recording video only</p>
-                  )}
+                  {hasAudio === true  && <p className="flex items-center justify-center gap-1 text-xs text-green-600 mt-1"><CheckCircle2 className="w-3.5 h-3.5" /> Tab audio is being captured</p>}
+                  {hasAudio === false && <p className="text-xs text-amber-600 mt-1">No audio track — recording video only</p>}
                 </div>
               </div>
             )}
 
-            {/* ── Recording active: audio ───────────────────────── */}
             {isActive && mode === 'audio' && (
               <div className="flex flex-col items-center gap-4 py-2">
                 <canvas ref={canvasRef} height={72} className="w-full rounded-xl border border-border" />
@@ -964,7 +984,6 @@ export default function ScreenRecorderTool({ tool }) {
               </div>
             )}
 
-            {/* ── Processing ────────────────────────────────────── */}
             {isProcessing && (
               <div className="flex flex-col items-center justify-center py-8 gap-4">
                 <div className="w-16 h-16 rounded-full border-4 border-accent/30 flex items-center justify-center">
@@ -977,7 +996,6 @@ export default function ScreenRecorderTool({ tool }) {
               </div>
             )}
 
-            {/* ── Stopped: preview + info ───────────────────────── */}
             {status === 'stopped' && blobUrl && (
               <div className="space-y-4">
                 {mode === 'screen'
@@ -990,8 +1008,6 @@ export default function ScreenRecorderTool({ tool }) {
                       <audio src={blobUrl} controls className="w-full" />
                     </div>
                   )}
-
-                {/* File info card */}
                 {mode === 'screen' ? (
                   <div className="grid grid-cols-4 gap-2 p-3 rounded-xl bg-surface-2 border border-border text-center text-xs">
                     <div><p className="text-text-muted mb-0.5">Format</p><p className="font-semibold text-text-primary">WebM</p></div>
@@ -1010,8 +1026,6 @@ export default function ScreenRecorderTool({ tool }) {
                     <div><p className="text-text-muted mb-0.5">Size</p><p className="font-semibold text-text-primary">{formatFileSize(fileSize || 0)}</p></div>
                   </div>
                 )}
-
-                {/* Audio not captured warning */}
                 {mode === 'screen' && hasAudio === false && (
                   <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs">
                     <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
@@ -1021,36 +1035,26 @@ export default function ScreenRecorderTool({ tool }) {
                     </span>
                   </div>
                 )}
-
-                {/* Debug panel — screen recordings only */}
                 {mode === 'screen' && debugInfo && (
                   <details className="rounded-xl border border-border overflow-hidden text-xs">
                     <summary className="flex items-center gap-2 px-4 py-2.5 bg-surface-2 cursor-pointer select-none font-medium text-text-muted hover:text-text-primary transition-colors">
-                      <Info className="w-3.5 h-3.5 shrink-0" />
-                      Debug info
+                      <Info className="w-3.5 h-3.5 shrink-0" />Debug info
                     </summary>
                     <div className="px-4 py-3 border-t border-border font-mono space-y-1.5">
                       {[
-                        ['Video tracks',   debugInfo.videoTracks, null],
-                        ['Audio tracks',   debugInfo.audioTracks, debugInfo.audioTracks > 0 ? 'green' : 'amber'],
-                        ['MIME type',      debugInfo.mimeType,    null],
-                        ['Chunks',         debugInfo.chunkCount,  null],
-                        ['Blob size',      formatFileSize(debugInfo.blobSize), null],
+                        ['Video tracks', debugInfo.videoTracks, null],
+                        ['Audio tracks', debugInfo.audioTracks, debugInfo.audioTracks > 0 ? 'green' : 'amber'],
+                        ['MIME type',    debugInfo.mimeType,    null],
+                        ['Chunks',       debugInfo.chunkCount,  null],
+                        ['Blob size',    formatFileSize(debugInfo.blobSize), null],
                         ['Duration fix',
-                          debugInfo.durationFixed === null  ? '—'
-                          : debugInfo.durationFixed         ? 'Applied ✓'
-                          : 'Failed — raw blob used',
-                          debugInfo.durationFixed === true  ? 'green'
-                          : debugInfo.durationFixed === false ? 'amber' : null,
+                          debugInfo.durationFixed === null ? '—' : debugInfo.durationFixed ? 'Applied ✓' : 'Failed — raw blob used',
+                          debugInfo.durationFixed === true ? 'green' : debugInfo.durationFixed === false ? 'amber' : null,
                         ],
                       ].map(([label, value, color]) => (
                         <div key={label} className="flex items-start gap-2">
                           <span className="text-text-muted w-28 shrink-0">{label}</span>
-                          <span className={
-                            color === 'green' ? 'text-green-600 font-semibold' :
-                            color === 'amber' ? 'text-amber-600 font-semibold' :
-                            'text-text-primary'
-                          }>{String(value)}</span>
+                          <span className={color === 'green' ? 'text-green-600 font-semibold' : color === 'amber' ? 'text-amber-600 font-semibold' : 'text-text-primary'}>{String(value)}</span>
                         </div>
                       ))}
                     </div>
@@ -1059,7 +1063,6 @@ export default function ScreenRecorderTool({ tool }) {
               </div>
             )}
 
-            {/* Action buttons */}
             <div className="flex flex-col sm:flex-row gap-3">
               {status === 'idle' && (
                 <button
@@ -1122,6 +1125,7 @@ export default function ScreenRecorderTool({ tool }) {
             )}
             {screenSupported && (
               <>
+                {/* ── Video preview ─────────────────────────────── */}
                 <div className="relative rounded-xl overflow-hidden border border-gray-700" style={{ background: '#050508', minHeight: 220 }}>
                   {!isShareActive && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-gray-500 pointer-events-none">
@@ -1150,8 +1154,29 @@ export default function ScreenRecorderTool({ tool }) {
                       <p className="text-white text-base font-semibold">Sharing Paused</p>
                     </div>
                   )}
+
+                  {/* Source label badge — top-left overlay when sharing */}
+                  {isShareActive && sourceLabel && (
+                    <div className="absolute top-2 left-2 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold pointer-events-none select-none"
+                      style={{ background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(4px)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff' }}>
+                      <SourceIcon label={sourceLabel}
+                        className={`w-3 h-3 ${sourceLabel === 'Sharing Tab' ? 'text-blue-400' : sourceLabel === 'Sharing Window' ? 'text-purple-400' : 'text-green-400'}`}
+                      />
+                      {sourceLabel}
+                    </div>
+                  )}
+
+                  {/* Changing-source shimmer overlay */}
+                  {isChangingSource && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3" style={{ background: 'rgba(0,0,0,0.72)' }}>
+                      <Loader2 className="w-8 h-8 text-accent animate-spin" />
+                      <p className="text-sm font-semibold text-white">Switching source…</p>
+                      <p className="text-xs text-gray-400">Viewers stay connected</p>
+                    </div>
+                  )}
                 </div>
 
+                {/* Annotation toolbar */}
                 {isShareActive && (
                   <AnnotationToolbar
                     annotTool={annotTool}   setAnnotTool={setAnnotTool}
@@ -1165,6 +1190,7 @@ export default function ScreenRecorderTool({ tool }) {
                   />
                 )}
 
+                {/* Session link */}
                 {isShareActive && sessionId && (
                   <div className="flex items-center gap-2 p-3 rounded-xl border border-gray-700 text-sm" style={{ background: '#0d0d14' }}>
                     <Link className="w-4 h-4 text-gray-400 shrink-0" />
@@ -1175,11 +1201,12 @@ export default function ScreenRecorderTool({ tool }) {
                       }`}
                     >
                       {linkCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                      {linkCopied ? 'Copied!' : 'Copy'}
+                      {linkCopied ? 'Copied!' : 'Copy Link'}
                     </button>
                   </div>
                 )}
 
+                {/* Viewer count + mic toggle */}
                 {isShareActive && (
                   <div className="flex items-center justify-between px-1">
                     <div className="flex items-center gap-2 text-sm text-gray-400">
@@ -1197,37 +1224,71 @@ export default function ScreenRecorderTool({ tool }) {
                   </div>
                 )}
 
-                <div className="flex gap-3">
+                {/* ── Action buttons ─────────────────────────────── */}
+                <div className="flex flex-col gap-2">
                   {!isShareActive ? (
-                    <button onClick={startLiveShare} className="btn-primary flex-1 h-12 text-[15px]">
+                    <button onClick={startLiveShare} className="btn-primary w-full h-12 text-[15px]">
                       <Share2 className="w-4 h-4" />Start Sharing
                     </button>
                   ) : (
                     <>
-                      <button onClick={toggleSharePause}
-                        className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold border border-gray-700 text-gray-200 hover:bg-gray-800 transition-colors"
-                        style={{ background: '#0d0d14' }}
+                      {/* Change Source — prominent standalone button */}
+                      <button
+                        onClick={changeSource}
+                        disabled={isChangingSource}
+                        className="w-full h-11 flex items-center justify-center gap-2 rounded-xl text-sm font-semibold border border-accent/40 text-accent hover:bg-accent/10 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                        style={{ background: 'rgba(99,102,241,0.06)' }}
                       >
-                        {isSharePaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
-                        {isSharePaused ? 'Resume' : 'Pause'}
+                        {isChangingSource
+                          ? <Loader2 className="w-4 h-4 animate-spin" />
+                          : <RefreshCw className="w-4 h-4" />}
+                        {isChangingSource ? 'Switching…' : 'Change Source'}
                       </button>
-                      <button onClick={stopLiveShare}
-                        className="flex-1 h-12 text-[15px] flex items-center justify-center gap-2 rounded-xl font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors">
-                        <X className="w-4 h-4" />Stop Sharing
-                      </button>
+
+                      {/* Pause + Stop */}
+                      <div className="flex gap-2">
+                        <button onClick={toggleSharePause}
+                          className="flex-1 h-11 flex items-center justify-center gap-2 rounded-xl text-sm font-semibold border border-gray-700 text-gray-200 hover:bg-gray-800 transition-colors"
+                          style={{ background: '#0d0d14' }}
+                        >
+                          {isSharePaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                          {isSharePaused ? 'Resume' : 'Pause'}
+                        </button>
+                        <button onClick={stopLiveShare}
+                          className="flex-1 h-11 flex items-center justify-center gap-2 rounded-xl text-sm font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors">
+                          <X className="w-4 h-4" />End Session
+                        </button>
+                      </div>
                     </>
                   )}
                 </div>
 
+                {/* Info card (idle only) */}
                 {!isShareActive && (
-                  <div className="flex items-start gap-3 p-4 bg-surface-2 border border-border rounded-xl text-sm">
-                    <Info className="w-4 h-4 shrink-0 mt-0.5 text-text-muted" />
-                    <div className="space-y-1">
-                      <p className="font-medium text-text-primary">Quran / Class use case</p>
-                      <p className="text-xs text-text-muted">
-                        Open your Quran PDF or class material, then click "Start Sharing" and select only that tab or window.
-                        Students see only your selected content — your other windows stay private. Draw annotations live on top.
-                      </p>
+                  <div className="space-y-3">
+                    <div className="flex items-start gap-3 p-4 bg-surface-2 border border-border rounded-xl text-sm">
+                      <Info className="w-4 h-4 shrink-0 mt-0.5 text-text-muted" />
+                      <div className="space-y-1">
+                        <p className="font-medium text-text-primary">Permanent classroom link</p>
+                        <p className="text-xs text-text-muted">
+                          Share the link once — students click it and stay connected.
+                          Use <strong>Change Source</strong> during a live session to switch between your PDF, slides,
+                          or any window without disconnecting anyone.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center text-xs text-text-muted">
+                      {[
+                        { Icon: Globe,     label: 'Chrome Tab',   desc: 'Quran PDF, YouTube' },
+                        { Icon: AppWindow, label: 'App Window',   desc: 'Any application' },
+                        { Icon: Monitor,   label: 'Full Screen',  desc: 'Entire desktop' },
+                      ].map(({ Icon, label, desc }) => (
+                        <div key={label} className="flex flex-col items-center gap-1.5 p-2.5 rounded-xl border border-border bg-surface-2">
+                          <Icon className="w-5 h-5 text-accent" />
+                          <p className="font-medium text-text-primary leading-tight">{label}</p>
+                          <p className="leading-tight opacity-70">{desc}</p>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
