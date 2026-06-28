@@ -216,8 +216,23 @@ async function textToPdfFormat(req, res) {
       blocks,
     });
   } catch (err) {
-    console.error('[textToPdfFormat]', err.message);
-    return res.status(500).json({ error: 'Formatting failed. Please try again.' });
+    console.error('[textToPdfFormat] error:', err.message, err.status, err.code);
+
+    // Specific Groq / network error messages the user can act on
+    if (!process.env.GROQ_API_KEY) {
+      return res.status(500).json({ error: 'AI service not configured. Please contact support.' });
+    }
+    if (err.status === 401 || err.message?.includes('401') || err.message?.includes('Unauthorized')) {
+      return res.status(500).json({ error: 'AI service authentication failed. Please contact support.' });
+    }
+    if (err.status === 429 || err.message?.includes('429') || err.message?.includes('rate limit')) {
+      return res.status(429).json({ error: 'AI service rate limit reached. Please wait a moment and try again.' });
+    }
+    if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.message?.includes('network')) {
+      return res.status(503).json({ error: 'Could not reach AI service. Please check your connection and try again.' });
+    }
+
+    return res.status(500).json({ error: `Formatting failed: ${err.message || 'Unknown error'}. Please try again.` });
   }
 }
 
