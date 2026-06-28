@@ -169,8 +169,6 @@ async function textToPdfFormat(req, res) {
     const { text } = req.body;
     if (!text?.trim())
       return res.status(400).json({ error: 'Text is required.' });
-    if (text.length > 10000)
-      return res.status(400).json({ error: 'Text too long (max 10,000 characters).' });
 
     // Lazy-loaded so a missing groq-sdk doesn't break the entire module at startup.
     const Groq = require('groq-sdk');
@@ -179,7 +177,7 @@ async function textToPdfFormat(req, res) {
     const response = await groq.chat.completions.create({
       model:       'llama-3.3-70b-versatile',
       temperature: 0.2,
-      max_tokens:  4096,
+      max_tokens:  8192,
       messages: [
         { role: 'system', content: FORMAT_SYSTEM },
         { role: 'user',   content: buildFormatPrompt(text.trim()) },
