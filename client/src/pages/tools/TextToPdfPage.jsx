@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, useCallback } from 'react';
+﻿import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   FileDown, Plus, Trash2, Edit3, Download, Upload, ArrowLeft,
   ChevronUp, ChevronDown, Eye, FileText, X, BookOpen,
@@ -7,6 +7,7 @@ import {
   List, ListOrdered, Highlighter, Eraser,
   Save, Sparkles, Loader2, AlertCircle,
   Settings, Type, Palette, GripVertical, Copy,
+  Search, BarChart2, FileCode, FileType,
 } from 'lucide-react';
 import ToolPageLayout from '@/components/tools/ToolPageLayout';
 import api from '@/services/api';
@@ -2464,6 +2465,91 @@ function PreviewModal({ doc, editorCtx, onClose, onDownload, generating, pdfErr 
   );
 }
 
+// ── Document Stats Panel ─────────────────────────────────────────
+function DocStats({ stats }) {
+  const items = [
+    { label: 'Words',      value: stats.words.toLocaleString() },
+    { label: 'Characters', value: stats.chars.toLocaleString() },
+    { label: 'Paragraphs', value: stats.paragraphs },
+    { label: 'Est. pages', value: stats.pages },
+    { label: 'Read time',  value: stats.readTime },
+  ];
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 bg-slate-50 border border-border rounded-xl mb-3 text-[11px] text-text-muted">
+      {items.map(({ label, value }) => (
+        <span key={label}><span className="font-semibold text-text-secondary">{value}</span> {label}</span>
+      ))}
+    </div>
+  );
+}
+
+// ── Find & Replace Panel ─────────────────────────────────────────
+function FindReplace({ blocks, onReplaceAll, onClose }) {
+  const [find,    setFind]    = useState('');
+  const [replace, setReplace] = useState('');
+  const [count,   setCount]   = useState(null);
+
+  function getPlainText(block) {
+    const div = document.createElement('div');
+    div.innerHTML = block.content || block.arabicMatn || block.arabicTitle ||
+                    block.arabicText || block.urduText || block.urduSubtitle || '';
+    return div.textContent || '';
+  }
+
+  function countMatches() {
+    if (!find.trim()) { setCount(null); return; }
+    const re = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    let total = 0;
+    blocks.forEach(b => { const m = getPlainText(b).match(re); if (m) total += m.length; });
+    setCount(total);
+  }
+
+  function handleReplaceAll() {
+    if (!find.trim()) return;
+    const re = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    const updated = blocks.map(b => {
+      if (b.type === 'free_text' || b.type === 'reference') {
+        return { ...b, content: (b.content || '').replace(re, replace) };
+      }
+      return b;
+    });
+    onReplaceAll(updated);
+    setCount(0);
+  }
+
+  return (
+    <div className="mb-3 p-3 border border-blue-200 bg-blue-50 rounded-xl">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold text-blue-800 flex items-center gap-1.5">
+          <Search className="w-3 h-3" /> Find &amp; Replace
+        </span>
+        <button onClick={onClose} className="text-text-muted hover:text-primary"><X className="w-3.5 h-3.5" /></button>
+      </div>
+      <div className="flex flex-col sm:flex-row gap-2">
+        <input className="flex-1 h-7 px-2 text-xs border border-blue-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+          placeholder="Find…" value={find} onChange={e => { setFind(e.target.value); setCount(null); }} />
+        <input className="flex-1 h-7 px-2 text-xs border border-blue-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+          placeholder="Replace with…" value={replace} onChange={e => setReplace(e.target.value)} />
+      </div>
+      <div className="flex items-center gap-2 mt-2">
+        <button onClick={countMatches}
+          className="px-2.5 py-1 text-xs font-medium border border-blue-300 bg-white rounded hover:bg-blue-50">
+          Count
+        </button>
+        <button onClick={handleReplaceAll} disabled={!find.trim()}
+          className="px-2.5 py-1 text-xs font-semibold text-white rounded disabled:opacity-40"
+          style={{ background: 'var(--brand)' }}>
+          Replace All
+        </button>
+        {count !== null && (
+          <span className="text-[11px] text-blue-700">{count} match{count !== 1 ? 'es' : ''}</span>
+        )}
+        <span className="text-[10px] text-text-muted ml-auto">Applies to Free Text and Reference blocks</span>
+      </div>
+    </div>
+  );
+}
+
 // ── Document Manager ────────────────────────────────────────────
 function DocumentManager({ documents, onOpen, onDelete, onNew, onImport }) {
   return (
@@ -2471,7 +2557,7 @@ function DocumentManager({ documents, onOpen, onDelete, onNew, onImport }) {
       <div className="panel-header">
         <div className="flex items-center gap-2">
           <BookOpen className="w-4 h-4 text-text-muted" />
-          <span className="text-sm font-semibold text-text-primary">Hadith Book Composer</span>
+          <span className="text-sm font-semibold text-text-primary">Document Composer</span>
         </div>
       </div>
       <div className="p-5 space-y-4">
@@ -2536,6 +2622,9 @@ export default function TextToPdfPage() {
   const [aiText,  setAIText]  = useState('');
   const [aiLoad,  setAILoad]  = useState(false);
   const [aiErr,   setAIErr]   = useState('');
+
+  // Find & Replace
+  const [showFindReplace, setShowFindReplace] = useState(false);
 
   // Doc name editing
   const [editingName, setEditingName] = useState(false);
@@ -2838,6 +2927,61 @@ export default function TextToPdfPage() {
 
   const blocks = currentDoc?.blocks || [];
 
+  // ── Document stats (debounced via useMemo) ─────────────────
+  const docStats = useMemo(() => {
+    const allText = blocks.map(b => {
+      const div = document.createElement('div');
+      div.innerHTML = b.content || b.arabicMatn || b.arabicTitle || b.arabicText || b.urduText || b.urduSubtitle || '';
+      return div.textContent || '';
+    }).join(' ');
+    const chars = allText.length;
+    const words = allText.trim() ? allText.trim().split(/\s+/).length : 0;
+    const paragraphs = blocks.filter(b => b.type === 'free_text' || b.type === 'hadith').length;
+    const pages = Math.max(1, Math.ceil(words / 250));
+    const mins = Math.max(1, Math.ceil(words / 200));
+    const readTime = mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
+    return { chars, words, paragraphs, pages, readTime };
+  }, [blocks]);
+
+  // ── Export HTML ────────────────────────────────────────────
+  function handleExportHTML() {
+    if (!currentDoc) return;
+    const body = buildDocumentBodyHTML(blocks);
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${currentDoc.name || 'Document'}</title>
+<link rel="stylesheet" href="${FONTS_URL}">
+<style>body{max-width:794px;margin:40px auto;padding:0 60px;font-family:serif;}*{box-sizing:border-box;}</style>
+</head>
+<body>${body}</body>
+</html>`;
+    const blob = new Blob([html], { type: 'text/html' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `${(currentDoc.name || 'document').replace(/\s+/g, '_')}.html`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // ── Export TXT ─────────────────────────────────────────────
+  function handleExportTxt() {
+    if (!currentDoc) return;
+    const text = blocks.map(b => {
+      const div = document.createElement('div');
+      div.innerHTML = b.content || b.arabicMatn || b.arabicTitle || b.arabicText || b.urduText || b.urduSubtitle || '';
+      return (div.textContent || '').trim();
+    }).filter(Boolean).join('\n\n');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `${(currentDoc.name || 'document').replace(/\s+/g, '_')}.txt`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   // ── Render ─────────────────────────────────────────────────
   return (
     <ToolPageLayout slug="text-to-pdf">
@@ -2889,6 +3033,11 @@ export default function TextToPdfPage() {
             </div>
             <div className="flex items-center gap-2 shrink-0">
               {blocks.length > 0 && (
+                <button onClick={() => setShowFindReplace(v => !v)} className="btn-ghost text-xs" title="Find & Replace">
+                  <Search className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {blocks.length > 0 && (
                 <button onClick={() => setShowPreview(true)} className="btn-ghost text-xs">
                   <Eye className="w-3.5 h-3.5" /> Preview
                 </button>
@@ -2906,6 +3055,18 @@ export default function TextToPdfPage() {
             {/* Composite Toolbar */}
             <CompositeToolbar tab={toolbarTab} onTabChange={setToolbarTab}
               doc={currentDoc} onDocChange={patchDoc} editorCtx={editorCtx} />
+
+            {/* Document stats */}
+            {blocks.length > 0 && <DocStats stats={docStats} />}
+
+            {/* Find & Replace */}
+            {showFindReplace && (
+              <FindReplace
+                blocks={blocks}
+                onReplaceAll={(updated) => patchDoc({ blocks: updated })}
+                onClose={() => setShowFindReplace(false)}
+              />
+            )}
 
             {/* AI Quick Import toggle */}
             <button onClick={() => setShowAI(v => !v)}
@@ -2988,6 +3149,14 @@ export default function TextToPdfPage() {
             <div className="mt-4 pt-3 border-t border-border flex flex-wrap gap-2">
               <button onClick={handleExport} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-surface-2 text-text-secondary">
                 <Download className="w-3 h-3" /> Export JSON
+              </button>
+              <button onClick={handleExportHTML} disabled={!blocks.length}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-surface-2 text-text-secondary disabled:opacity-40">
+                <FileCode className="w-3 h-3" /> Export HTML
+              </button>
+              <button onClick={handleExportTxt} disabled={!blocks.length}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-surface-2 text-text-secondary disabled:opacity-40">
+                <FileType className="w-3 h-3" /> Export TXT
               </button>
               <label className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-surface-2 text-text-secondary cursor-pointer">
                 <Upload className="w-3 h-3" /> Import JSON
