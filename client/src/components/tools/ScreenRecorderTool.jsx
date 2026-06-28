@@ -1269,18 +1269,18 @@ export default function ScreenRecorderTool({ tool }) {
                     <div className="flex items-start gap-3 p-4 bg-surface-2 border border-border rounded-xl text-sm">
                       <Info className="w-4 h-4 shrink-0 mt-0.5 text-text-muted" />
                       <div className="space-y-1">
-                        <p className="font-medium text-text-primary">Permanent classroom link</p>
+                        <p className="font-medium text-text-primary">Live Screen Sharing</p>
                         <p className="text-xs text-text-muted">
-                          Share the link once — students click it and stay connected.
-                          Use <strong>Change Source</strong> during a live session to switch between your PDF, slides,
-                          or any window without disconnecting anyone.
+                          Share a browser tab, application window, document, presentation, design, dashboard, or your entire
+                          screen in real time. Viewers join through a secure link and see your annotations instantly as you present.
                         </p>
+                        <p className="text-xs text-text-muted/70">Share only the content you choose — everything else stays private.</p>
                       </div>
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-center text-xs text-text-muted">
                       {[
-                        { Icon: Globe,     label: 'Chrome Tab',   desc: 'Quran PDF, YouTube' },
-                        { Icon: AppWindow, label: 'App Window',   desc: 'Any application' },
+                        { Icon: Globe,     label: 'Browser Tab',  desc: 'Docs, slides, dashboards' },
+                        { Icon: AppWindow, label: 'App Window',   desc: 'Any desktop application' },
                         { Icon: Monitor,   label: 'Full Screen',  desc: 'Entire desktop' },
                       ].map(({ Icon, label, desc }) => (
                         <div key={label} className="flex flex-col items-center gap-1.5 p-2.5 rounded-xl border border-border bg-surface-2">
