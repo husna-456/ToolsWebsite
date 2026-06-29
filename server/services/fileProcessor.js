@@ -7,72 +7,87 @@ const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 const { TMP_DIR }    = require('../middleware/upload');
 
-// Detect a working ffmpeg at startup.
-// Tries ffmpeg-static first (local dev), then falls back to system ffmpeg (production).
-// On shared hosts like Hostinger the execute bit is stripped on upload — chmod restores it.
+// ── Binary detection helpers ──────────────────────────────────
+// Tests whether a binary path is executable. Tries chmod first (shared
+// hosts like Hostinger strip the execute bit on file upload).
+function tryBinary(label, binPath) {
+  if (!binPath) return false;
+  try { fs.chmodSync(binPath, 0o755); } catch {}
+  const r = spawnSync(binPath, ['-version'], { timeout: 5000 });
+  const ok = !r.error && r.status === 0;
+  console.log(`[bin-detect] ${label}: ${binPath} → ${ok ? 'OK' : (r.error?.code || 'exit ' + r.status)}`);
+  return ok;
+}
+
+// Finds a working ffmpeg binary. Tries (in order):
+//   1. ffmpeg-static npm package
+//   2. System ffmpeg on PATH
+//   3. /usr/bin/ffmpeg, /usr/local/bin/ffmpeg (common Linux paths)
 function findWorkingFfmpeg() {
   // 1. ffmpeg-static bundled binary
   try {
-    const staticPath = require('ffmpeg-static');
-    if (staticPath) {
-      // Restore execute permission stripped by some shared hosts during file upload
-      try {
-        fs.chmodSync(staticPath, 0o755);
-        console.log(`[ffmpeg] chmod 755 applied to: ${staticPath}`);
-      } catch (chmodErr) {
-        console.warn(`[ffmpeg] chmod failed for ffmpeg-static: ${chmodErr.message}`);
-      }
-
-      const test = spawnSync(staticPath, ['-version'], { timeout: 5000 });
-      if (!test.error && test.status === 0) {
-        console.log(`[ffmpeg] Using ffmpeg-static: ${staticPath}`);
-        return staticPath;
-      }
-      console.warn(`[ffmpeg] ffmpeg-static not executable after chmod (${test.error?.code || 'exit ' + test.status}): ${staticPath}`);
-    }
+    const p = require('ffmpeg-static');
+    if (p && tryBinary('ffmpeg-static', p)) return p;
   } catch (e) {
-    console.warn('[ffmpeg] ffmpeg-static unavailable:', e.message);
+    console.warn('[ffmpeg] ffmpeg-static require failed:', e.message);
   }
 
-  // 2. System ffmpeg on PATH
-  const sysTest = spawnSync('ffmpeg', ['-version'], { timeout: 5000 });
-  if (!sysTest.error && sysTest.status === 0) {
-    console.log('[ffmpeg] Using system ffmpeg');
-    return 'ffmpeg';
+  // 2. System PATH
+  if (tryBinary('ffmpeg (PATH)', 'ffmpeg')) return 'ffmpeg';
+
+  // 3. Absolute Linux paths
+  for (const p of ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg']) {
+    if (tryBinary(`ffmpeg (${p})`, p)) return p;
   }
 
   console.error('[ffmpeg] No executable ffmpeg found — audio/video tools will be unavailable.');
   return null;
 }
 
-const FFMPEG_PATH = findWorkingFfmpeg();
-if (FFMPEG_PATH) ffmpeg.setFfmpegPath(FFMPEG_PATH);
-
-// Set ffprobe path so getMediaDuration works correctly.
-// ffprobe-static ships alongside ffmpeg-static in the same directory.
-// Without an explicit path, fluent-ffmpeg falls back to system 'ffprobe'
-// which may differ in version or be absent on shared hosting.
-(function setFfprobePath() {
+// Finds a working ffprobe binary. Tries (in order):
+//   1. ffprobe-static npm package  (dedicated package, cross-platform)
+//   2. System ffprobe on PATH
+//   3. /usr/bin/ffprobe, /usr/local/bin/ffprobe (common Linux paths)
+//   4. Sibling to ffmpeg-static (legacy layout)
+function findWorkingFfprobe() {
+  // 1. ffprobe-static npm package — exports { path: '/abs/path/to/ffprobe' }
   try {
-    const staticPath = require('ffmpeg-static');
-    if (!staticPath) return;
-    const ffprobeStatic = path.join(path.dirname(staticPath), 'ffprobe');
-    try { fs.chmodSync(ffprobeStatic, 0o755); } catch {}
-    const test = spawnSync(ffprobeStatic, ['-version'], { timeout: 5000 });
-    if (!test.error && test.status === 0) {
-      ffmpeg.setFfprobePath(ffprobeStatic);
-      console.log(`[ffmpeg] Using ffprobe alongside ffmpeg-static: ${ffprobeStatic}`);
-      return;
+    const pkg = require('ffprobe-static');
+    const p   = pkg?.path || pkg; // older versions exported the path string directly
+    if (p && typeof p === 'string' && tryBinary('ffprobe-static', p)) return p;
+  } catch (e) {
+    console.warn('[ffprobe] ffprobe-static require failed:', e.message);
+  }
+
+  // 2. System PATH
+  if (tryBinary('ffprobe (PATH)', 'ffprobe')) return 'ffprobe';
+
+  // 3. Absolute Linux paths
+  for (const p of ['/usr/bin/ffprobe', '/usr/local/bin/ffprobe']) {
+    if (tryBinary(`ffprobe (${p})`, p)) return p;
+  }
+
+  // 4. Sibling to ffmpeg-static (only present in some older builds)
+  try {
+    const ffmpegP = require('ffmpeg-static');
+    if (ffmpegP) {
+      const sibling = path.join(path.dirname(ffmpegP), 'ffprobe');
+      if (tryBinary('ffprobe-sibling-ffmpeg', sibling)) return sibling;
     }
   } catch {}
-  // Fall back to system ffprobe — likely available on Hostinger
-  const sysPr = spawnSync('ffprobe', ['-version'], { timeout: 5000 });
-  if (!sysPr.error && sysPr.status === 0) {
-    console.log('[ffmpeg] Using system ffprobe');
-  } else {
-    console.warn('[ffmpeg] ffprobe not found — duration probing will be unavailable');
-  }
-})();
+
+  console.error('[ffprobe] No executable ffprobe found — audio format probing will be unavailable.');
+  return null;
+}
+
+const FFMPEG_PATH  = findWorkingFfmpeg();
+const FFPROBE_PATH = findWorkingFfprobe();
+
+if (FFMPEG_PATH)  ffmpeg.setFfmpegPath(FFMPEG_PATH);
+if (FFPROBE_PATH) ffmpeg.setFfprobePath(FFPROBE_PATH);
+
+console.log(`[startup] ffmpeg  : ${FFMPEG_PATH  || 'NOT FOUND'}`);
+console.log(`[startup] ffprobe : ${FFPROBE_PATH || 'NOT FOUND'}`);
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -908,27 +923,47 @@ async function processMedia(inputPath, slug, options = {}) {
       const inputFmt = extToInputFmt[savedExt] || null;
       console.log(`[audio-converter] saved ext    : ".${savedExt}" → inputFmt: "${inputFmt || 'auto-detect'}"`);
 
-      // ── Step 4: ffprobe the input — fail fast for unreadable files ──
-      // This catches corrupt uploads and mobile files that FFmpeg cannot demux.
+      // ── Step 4: ffprobe the input ─────────────────────────────
       // probeMedia() rejects on error; getMediaDuration() silently returns 0.
-      let inProbe;
-      try {
-        inProbe = await probeMedia(inputPath);
-      } catch (probeErr) {
-        console.error(`[audio-converter] ffprobe FAILED on input: ${probeErr.message}`);
-        const isMobileUnknown = ['bin', 'upload', ''].includes(savedExt);
-        throw Object.assign(
-          new Error(
-            isMobileUnknown
-              ? 'Could not detect audio format from uploaded mobile file. Please rename the file with the correct extension (e.g. audio.ogg) before uploading, or use a desktop browser.'
-              : `Could not read the uploaded audio file: ${probeErr.message}`
-          ),
-          { statusCode: 400 }
-        );
+      // We only call probeMedia() when FFPROBE_PATH is confirmed available —
+      // if ffprobe is missing on this server, calling it throws "Cannot find
+      // ffprobe" which is confusing for the user.
+      const isMobileUnknown = ['bin', 'upload', ''].includes(savedExt);
+      let inDuration = 0;
+
+      if (!FFPROBE_PATH) {
+        // ffprobe not installed on this server
+        console.warn('[audio-converter] ffprobe unavailable — skipping format probe');
+        if (isMobileUnknown) {
+          throw Object.assign(
+            new Error(
+              'Audio format detection is unavailable on this server (ffprobe not found). ' +
+              'Please rename your file with the correct extension (e.g. audio.ogg) before uploading, ' +
+              'or use a desktop browser.'
+            ),
+            { statusCode: 503 }
+          );
+        }
+        // Known extension → proceed without probing, FFmpeg will use the extension hint
+      } else {
+        // ffprobe is available — probe and fail fast for unreadable files
+        try {
+          const inProbe = await probeMedia(inputPath);
+          inDuration = parseFloat(inProbe?.format?.duration || 0) || 0;
+          const detectedFmtName = inProbe?.format?.format_name || 'unknown';
+          console.log(`[audio-converter] ffprobe OK   : format="${detectedFmtName}" duration=${inDuration.toFixed(3)}s`);
+        } catch (probeErr) {
+          console.error(`[audio-converter] ffprobe FAILED: ${probeErr.message}`);
+          throw Object.assign(
+            new Error(
+              isMobileUnknown
+                ? 'Could not detect audio format from uploaded mobile file. Please rename the file with the correct extension (e.g. audio.ogg) before uploading, or use a desktop browser.'
+                : `Could not read the uploaded audio file: ${probeErr.message}`
+            ),
+            { statusCode: 400 }
+          );
+        }
       }
-      const inDuration = parseFloat(inProbe?.format?.duration || 0) || 0;
-      const detectedFmtName = inProbe?.format?.format_name || 'unknown';
-      console.log(`[audio-converter] ffprobe OK   : format="${detectedFmtName}" duration=${inDuration.toFixed(3)}s`);
 
       // ── Step 5: Run FFmpeg — fully chained, wait for 'end' event ──
       // All options are chained from cmd.input() in one expression.
