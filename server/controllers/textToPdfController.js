@@ -69,79 +69,23 @@ async function textToPdfGenerate(req, res) {
 // ── POST /api/tools/text-to-pdf/format (AI quick-import) ──────
 // Returns blocks in the new block-based format.
 const FORMAT_SYSTEM =
-  'You are an expert Islamic hadith book typesetter. ' +
-  'You produce polished, professionally structured JSON for a book compositor. ' +
-  'Return ONLY valid JSON — no markdown, no backticks, no text before or after the JSON object. ' +
-  'All content fields must contain plain text only — never any markdown syntax.';
+  'You are an Islamic book typesetter. Return ONLY valid JSON — no markdown, no backticks, no extra text. Plain text only in all fields.';
 
 function buildFormatPrompt(text) {
-  return `You are an expert Islamic text formatter. Analyze the text below and return ONLY a valid JSON object — no markdown fences, no explanations, nothing before or after the JSON.
+  return `Analyze the text and return ONLY this JSON (no markdown, no explanation):
+{"name":"title","blocks":[...]}
 
-Your goal: produce output that looks like a polished, professionally typeset Islamic book — clear hierarchy, proper grouping, nothing truncated.
+Block types and required fields:
+- chapter_heading: {arabicTitle, urduSubtitle}  — for باب/chapter titles only
+- hadith: {number, arabicMatn, urduTranslation, arabicFont:"Noto Naskh Arabic"}  — one block per hadith, never truncate
+- fiqh: {heading, points:[...]}  — for فقہ الحدیث/rulings lists only
+- reference: {content}  — source citations, place after hadith/fiqh
+- verse: {arabicText, urduText}  — Quranic ayat
+- free_text: {content}  — all other paragraphs
 
-OUTPUT STRUCTURE:
-{
-  "name": "concise document/book title",
-  "blocks": [
-    { "id": "1", "type": "chapter_heading", "arabicTitle": "full chapter title preserving any number, e.g. ٤- باب الطہارۃ", "urduSubtitle": "Urdu chapter subtitle or empty string" },
-    { "id": "2", "type": "hadith", "number": "٤٢", "arabicMatn": "complete Arabic isnad + matn, nothing truncated", "urduTranslation": "complete Urdu translation, nothing truncated", "arabicFont": "Noto Naskh Arabic" },
-    { "id": "3", "type": "fiqh", "points": ["complete first ruling", "complete second ruling"] },
-    { "id": "4", "type": "reference", "content": "full source citation, e.g. صحیح البخاری: ١٥٠، صحیح مسلم: ٢٤١" },
-    { "id": "5", "type": "verse", "arabicText": "Quranic verse Arabic text", "urduText": "Urdu translation of verse or empty string" },
-    { "id": "6", "type": "free_text", "content": "introductory or explanatory paragraph" }
-  ]
-}
+Rules: never truncate text. One logical unit per block. Unique string id per block starting "1". Plain text only, no markdown.
 
-BLOCK ASSIGNMENT RULES — read every rule before assigning:
-
-chapter_heading:
-  - Use for chapter/section/باب titles ONLY.
-  - ALWAYS include the full number+title in arabicTitle. If the source has "٤- باب الماء وَالْقَدر" write exactly "٤- باب الماء وَالْقَدر".
-  - urduSubtitle: Urdu chapter title if present, otherwise "".
-  - Never put hadith text or fiqh notes inside a chapter_heading.
-
-hadith:
-  - Use for hadith narrations containing an isnad (chain of narrators) and matn (body of hadith).
-  - "number": the hadith sequence number extracted from the text (e.g. "٤٢", "١٢٣"). Do NOT put this number inside arabicMatn.
-  - arabicMatn: the COMPLETE Arabic text (isnad + matn). Never truncate.
-  - urduTranslation: the COMPLETE Urdu translation. Never truncate.
-  - One block per hadith. Never split one hadith across multiple blocks.
-  - arabicFont: always "Noto Naskh Arabic".
-
-fiqh:
-  - Use ONLY for فقہ الحدیث / فقہی نکات / فوائد sections that list lessons or rulings.
-  - Each individual lesson/ruling is one entry in "points" array. Do not combine multiple points into one string.
-  - Do NOT use for general explanatory paragraphs that happen to list items.
-
-reference:
-  - Use for takhrij and source citations that appear after a hadith (صحیح البخاری، صحیح مسلم، etc.).
-  - Always place immediately after the hadith/fiqh block it references.
-
-verse:
-  - Use for Quranic ayat or introductory prophetic verse lines.
-  - If no Urdu translation is present, set urduText to "".
-
-free_text:
-  - Use for introductory paragraphs, explanations, prefaces, and body text not covered above.
-  - KEEP related sentences together in ONE block. Never split a continuous paragraph into tiny sentence-by-sentence blocks.
-  - If content spans multiple clearly separate paragraphs, each paragraph gets its own free_text block.
-
-ABSOLUTE RULES:
-1. Never truncate any Arabic or Urdu text — always complete.
-2. Never merge two different block types into one block.
-3. Never split one logical unit (one hadith, one paragraph) across multiple blocks.
-4. Preserve every number exactly as written — chapter numbers in arabicTitle, hadith numbers in "number" field.
-5. Plain text ONLY in every field — no **bold**, no *italic*, no markdown whatsoever.
-6. Every block must have a unique string "id" starting from "1".
-
-TYPOGRAPHY QUALITY RULES (produce output comparable to a professionally typeset academic book):
-- Group related content together — never scatter a single logical section across many tiny blocks.
-- Maintain proper heading hierarchy: chapter_heading → hadith → fiqh → reference, in that order.
-- Do not create more blocks than necessary; merge short related paragraphs into one free_text block.
-- Avoid orphaned single-line blocks — a reference should always follow its hadith/fiqh, never stand alone.
-- Preserve all content; never summarise or omit anything from the input text.
-
-Text to analyze:
+Text:
 ${text}`;
 }
 
@@ -177,7 +121,7 @@ async function textToPdfFormat(req, res) {
     const response = await groq.chat.completions.create({
       model:       'llama-3.3-70b-versatile',
       temperature: 0.2,
-      max_tokens:  8192,
+      max_tokens:  4096,
       messages: [
         { role: 'system', content: FORMAT_SYSTEM },
         { role: 'user',   content: buildFormatPrompt(text.trim()) },
@@ -225,14 +169,14 @@ async function textToPdfFormat(req, res) {
     if (err.status === 401 || err.message?.includes('401') || err.message?.includes('Unauthorized')) {
       return res.status(500).json({ error: 'AI service authentication failed. Please contact support.' });
     }
-    if (err.status === 429 || err.message?.includes('429') || err.message?.includes('rate limit')) {
-      return res.status(429).json({ error: 'AI service rate limit reached. Please wait a moment and try again.' });
+    if (err.status === 429 || err.message?.includes('429') || err.message?.includes('rate limit') || err.message?.includes('Request too large') || err.message?.includes('TPM')) {
+      return res.status(429).json({ error: 'Text is too long for AI formatting. Please paste a shorter section (under 2,000 characters) and try again.' });
     }
     if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.message?.includes('network')) {
       return res.status(503).json({ error: 'Could not reach AI service. Please check your connection and try again.' });
     }
 
-    return res.status(500).json({ error: `Formatting failed: ${err.message || 'Unknown error'}. Please try again.` });
+    return res.status(500).json({ error: 'Formatting failed. Please try again.' });
   }
 }
 
