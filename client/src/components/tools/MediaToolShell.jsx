@@ -447,6 +447,9 @@ export default function MediaToolShell({ tool }) {
   const [fileError,     setFileError]     = useState('');
   const [dragging,      setDragging]      = useState(false);
   const [mediaDuration, setMediaDuration] = useState(null);
+  // Key-based input remounting — lets the user reselect the same file without clearing value mid-click
+  const [fileInputKey, setFileInputKey] = useState(0);
+  const [subInputKey,  setSubInputKey]  = useState(0);
 
   const isTrimmerSlug = TRIMMER_SLUGS.includes(slug);
 
@@ -465,6 +468,13 @@ export default function MediaToolShell({ tool }) {
   const inputRef    = useRef(null);
   const multiRef    = useRef(null);
   const subtitleRef = useRef(null);
+
+  // Unique IDs for label→input association (htmlFor) — required for mobile file picker
+  const fileInputId  = `media-file-${slug}`;
+  const multiInputId = `media-multi-${slug}`;
+  const subInputId   = `media-sub-${slug}`;
+  // Visually hidden: keeps input in layout so htmlFor works on all mobile browsers
+  const hiddenInput  = { position: 'absolute', width: 0, height: 0, opacity: 0, overflow: 'hidden', pointerEvents: 'none' };
 
   const set = useCallback(key => val => setOpts(prev => ({ ...prev, [key]: val })), []);
 
@@ -574,7 +584,7 @@ export default function MediaToolShell({ tool }) {
 
   function removeFile() {
     setFile(null); setFileError(''); setDone(false); reset();
-    if (inputRef.current) inputRef.current.value = '';
+    setFileInputKey(k => k + 1);
   }
 
   function removeMultiFile(idx) {
@@ -586,7 +596,8 @@ export default function MediaToolShell({ tool }) {
     setFileError(''); setDone(false); setOpts({}); setMediaDuration(null); reset();
     if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
     setSsePercent(0); setEtaSeconds(null);
-    [inputRef, multiRef, subtitleRef].forEach(r => { if (r.current) r.current.value = ''; });
+    setFileInputKey(k => k + 1);
+    setSubInputKey(k => k + 1);
   }
 
   function handleDragOver(e) { e.preventDefault(); setDragging(true); }
@@ -658,23 +669,25 @@ export default function MediaToolShell({ tool }) {
   const showResult   = done && !error;
 
   // ── Upload zone (reused for single + multi primary) ────────
-  const uploadZone = (onSelect, labelText, acceptStr, refObj) => (
+  // Uses label htmlFor — the most reliable mobile pattern; no programmatic .click() needed.
+  const uploadZone = (onSelect, labelText, acceptStr, refObj, inputId) => (
     <>
       <input
+        key={fileInputKey}
+        id={inputId}
         ref={refObj}
         type="file"
         accept={acceptStr}
         multiple={isMultiUpload}
-        className="sr-only"
-        onClick={e => { e.target.value = ''; }}
-        onChange={e => isMultiUpload ? addFiles(e.target.files) : onSelect(e.target.files?.[0])}
+        style={hiddenInput}
+        onChange={e => {
+          setFileInputKey(k => k + 1);
+          if (isMultiUpload) addFiles(e.target.files);
+          else if (onSelect) onSelect(e.target.files?.[0]);
+        }}
       />
-      <div
-        role="button"
-        tabIndex={0}
-        aria-label={labelText}
-        onClick={() => refObj.current?.click()}
-        onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && refObj.current?.click()}
+      <label
+        htmlFor={inputId}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -689,7 +702,7 @@ export default function MediaToolShell({ tool }) {
           <p className="font-semibold text-text-primary text-sm">{labelText}</p>
           <p className="text-xs text-text-muted mt-1">Max {maxMb} MB</p>
         </div>
-      </div>
+      </label>
     </>
   );
 
@@ -716,7 +729,7 @@ export default function MediaToolShell({ tool }) {
             {/* ── MULTI-FILE UPLOAD (audio-merger, video-merger) ── */}
             {isMultiUpload && (
               <>
-                {uploadZone(null, `Drop ${slug === 'audio-merger' ? 'audio' : 'video'} files or click to browse`, accept, multiRef)}
+                {uploadZone(null, `Drop ${slug === 'audio-merger' ? 'audio' : 'video'} files or click to browse`, accept, multiRef, multiInputId)}
                 {files.length > 0 && (
                   <div className="space-y-1.5">
                     <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">
@@ -737,7 +750,7 @@ export default function MediaToolShell({ tool }) {
                 <div>
                   <Label>Video File</Label>
                   {!file
-                    ? uploadZone(selectFile, 'Drop video or click to browse', 'video/mp4,video/webm,video/quicktime', inputRef)
+                    ? uploadZone(selectFile, 'Drop video or click to browse', 'video/mp4,video/webm,video/quicktime', inputRef, fileInputId)
                     : (
                       <div className="flex items-center gap-3 p-3 rounded-xl border border-border bg-surface-2/60">
                         <Film className="w-4 h-4 text-accent shrink-0" />
@@ -758,24 +771,21 @@ export default function MediaToolShell({ tool }) {
                     ? (
                       <>
                         <input
+                          key={subInputKey}
+                          id={subInputId}
                           ref={subtitleRef}
                           type="file"
                           accept=".srt,.vtt,text/plain"
-                          className="sr-only"
-                          onClick={e => { e.target.value = ''; }}
-                          onChange={e => { setSubtitleFile(e.target.files?.[0] || null); }}
+                          style={hiddenInput}
+                          onChange={e => { setSubInputKey(k => k + 1); setSubtitleFile(e.target.files?.[0] || null); }}
                         />
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          aria-label="Upload subtitle file"
-                          onClick={() => subtitleRef.current?.click()}
-                          onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && subtitleRef.current?.click()}
+                        <label
+                          htmlFor={subInputId}
                           className="flex items-center gap-3 w-full rounded-xl border-2 border-dashed border-border hover:border-accent/50 cursor-pointer px-4 py-3 bg-surface-2/40 transition-all"
                         >
                           <Plus className="w-4 h-4 text-text-muted" />
                           <span className="text-sm text-text-secondary">Upload .srt or .vtt subtitle file</span>
-                        </div>
+                        </label>
                       </>
                     ) : (
                       <div className="flex items-center gap-3 p-3 rounded-xl border border-border bg-surface-2/60">
@@ -783,7 +793,7 @@ export default function MediaToolShell({ tool }) {
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-text-primary truncate">{subtitleFile.name}</p>
                         </div>
-                        <button onClick={() => { setSubtitleFile(null); if (subtitleRef.current) subtitleRef.current.value = ''; }}
+                        <button onClick={() => { setSubtitleFile(null); setSubInputKey(k => k + 1); }}
                           className="text-text-muted hover:text-red-500 transition-colors">
                           <X className="w-4 h-4" />
                         </button>
@@ -834,19 +844,16 @@ export default function MediaToolShell({ tool }) {
                 {!file ? (
                   <>
                     <input
+                      key={fileInputKey}
+                      id={fileInputId}
                       ref={inputRef}
                       type="file"
                       accept={accept}
-                      className="sr-only"
-                      onClick={e => { e.target.value = ''; }}
-                      onChange={e => selectFile(e.target.files?.[0])}
+                      style={hiddenInput}
+                      onChange={e => { setFileInputKey(k => k + 1); selectFile(e.target.files?.[0]); }}
                     />
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`Upload ${fileTypeLabel}`}
-                      onClick={() => inputRef.current?.click()}
-                      onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && inputRef.current?.click()}
+                    <label
+                      htmlFor={fileInputId}
                       onDragOver={handleDragOver}
                       onDragLeave={handleDragLeave}
                       onDrop={handleDrop}
@@ -865,7 +872,7 @@ export default function MediaToolShell({ tool }) {
                           {isVolumeBooster ? 'MP3, WAV, MP4, MOV' : acceptsAudio ? 'MP3, WAV, FLAC, OGG, M4A, WMA, OPUS + more' : 'MP4, WebM, MOV, AVI'} · Max {maxMb} MB
                         </p>
                       </div>
-                    </div>
+                    </label>
                   </>
                 ) : (
                   <div className="flex items-center gap-3 p-3.5 rounded-xl border border-border bg-surface-2/60">
