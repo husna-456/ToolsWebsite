@@ -923,45 +923,47 @@ async function processMedia(inputPath, slug, options = {}) {
       const inputFmt = extToInputFmt[savedExt] || null;
       console.log(`[audio-converter] saved ext    : ".${savedExt}" → inputFmt: "${inputFmt || 'auto-detect'}"`);
 
-      // ── Step 4: ffprobe the input ─────────────────────────────
-      // probeMedia() rejects on error; getMediaDuration() silently returns 0.
-      // We only call probeMedia() when FFPROBE_PATH is confirmed available —
-      // if ffprobe is missing on this server, calling it throws "Cannot find
-      // ffprobe" which is confusing for the user.
+      // ── Step 4: ffprobe the input (best-effort) ──────────────
+      // Rules:
+      //  - Known extension (.ogg, .mp3, …): ffprobe failure is non-fatal.
+      //    Log and continue — FFmpeg will use the extension-based format hint.
+      //  - Unknown extension (.bin, .upload, empty): ffprobe MUST succeed
+      //    because without it we have no idea what the file is.
       const isMobileUnknown = ['bin', 'upload', ''].includes(savedExt);
       let inDuration = 0;
 
       if (!FFPROBE_PATH) {
-        // ffprobe not installed on this server
-        console.warn('[audio-converter] ffprobe unavailable — skipping format probe');
+        console.warn('[audio-converter] ffprobe path not found at startup — skipping format probe');
         if (isMobileUnknown) {
           throw Object.assign(
             new Error(
-              'Audio format detection is unavailable on this server (ffprobe not found). ' +
-              'Please rename your file with the correct extension (e.g. audio.ogg) before uploading, ' +
-              'or use a desktop browser.'
+              'Audio format detection is unavailable on this server (ffprobe not installed). ' +
+              'Please rename your file with the correct extension (e.g. audio.ogg) before uploading.'
             ),
             { statusCode: 503 }
           );
         }
-        // Known extension → proceed without probing, FFmpeg will use the extension hint
+        // Known extension — FFmpeg will decode using the extension hint
       } else {
-        // ffprobe is available — probe and fail fast for unreadable files
         try {
           const inProbe = await probeMedia(inputPath);
           inDuration = parseFloat(inProbe?.format?.duration || 0) || 0;
-          const detectedFmtName = inProbe?.format?.format_name || 'unknown';
-          console.log(`[audio-converter] ffprobe OK   : format="${detectedFmtName}" duration=${inDuration.toFixed(3)}s`);
+          console.log(`[audio-converter] ffprobe OK   : format="${inProbe?.format?.format_name || '?'}" duration=${inDuration.toFixed(3)}s`);
         } catch (probeErr) {
           console.error(`[audio-converter] ffprobe FAILED: ${probeErr.message}`);
-          throw Object.assign(
-            new Error(
-              isMobileUnknown
-                ? 'Could not detect audio format from uploaded mobile file. Please rename the file with the correct extension (e.g. audio.ogg) before uploading, or use a desktop browser.'
-                : `Could not read the uploaded audio file: ${probeErr.message}`
-            ),
-            { statusCode: 400 }
-          );
+          if (isMobileUnknown) {
+            // No extension + no probe = we cannot safely identify the format
+            throw Object.assign(
+              new Error(
+                'Could not detect audio format from uploaded mobile file. ' +
+                'Please rename the file with the correct extension (e.g. audio.ogg) before uploading.'
+              ),
+              { statusCode: 400 }
+            );
+          }
+          // Known extension (.ogg, .mp3, etc.) — ffprobe failed but FFmpeg can
+          // still decode using the extension hint. Continue without duration info.
+          console.warn('[audio-converter] Continuing without ffprobe duration — FFmpeg will decode by format hint');
         }
       }
 
