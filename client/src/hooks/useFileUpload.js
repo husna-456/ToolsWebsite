@@ -120,7 +120,10 @@ export function useFileUpload(slug) {
           setError('Processing failed. Please try again.');
         }
       } else {
-        const msg = err.response?.data?.error || err.message || 'Upload failed. Please try again.';
+        const isNetworkErr = !err.response && (err.code === 'ERR_NETWORK' || err.message === 'Network Error');
+        const msg = isNetworkErr
+          ? 'Connection failed. Please check your internet and try again.'
+          : (err.response?.data?.error || err.message || 'Upload failed. Please try again.');
         console.error(`[upload] error message shown to user: "${msg}"`);
         setError(msg);
       }

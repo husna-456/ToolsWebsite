@@ -105,7 +105,7 @@ function ToolOptions({ slug, opts, set, extra = {} }) {
         <div>
           <Label>Output Format</Label>
           <div className="flex gap-2 flex-wrap">
-            {[['mp3','MP3'],['wav','WAV'],['ogg','OGG'],['m4a','M4A']].map(([val, label]) => (
+            {[['mp3','MP3'],['wav','WAV'],['ogg','OGG'],['aac','AAC'],['m4a','M4A'],['opus','OPUS'],['flac','FLAC'],['wma','WMA']].map(([val, label]) => (
               <Pill key={val} active={(opts.format ?? 'mp3') === val} onClick={() => set('format')(val)}>
                 {label}
               </Pill>
@@ -680,12 +680,9 @@ export default function MediaToolShell({ tool }) {
       const uploadFile = normalizeUploadFile(file, outputFmt);
       dbg(`Upload: name="${uploadFile.name}" type="${uploadFile.type||'(none)'}" size=${((uploadFile.size||0)/1024).toFixed(1)}KB outputFmt=${outputFmt}`);
       dbg(`API: POST ${API_BASE_URL}/api/tools/audio-converter/process`);
-      // Open SSE progress stream first, then upload (the file upload itself takes
-      // time, so the SSE connection will be established before FFmpeg starts).
-      const jobId = self.crypto.randomUUID();
-      jobIdRef.current = jobId;
-      openAudioSSE(jobId);
-      await upload(uploadFile, { ...opts, jobId, mimeType: file.type || '' });
+      // SSE removed — opening a long-lived GET before the POST caused "Network Error"
+      // on some proxy configurations (Hostinger nginx). Progress is shown via upload %.
+      await upload(uploadFile, { ...opts, mimeType: file.type || '' });
       dbg(`Upload call returned — check right panel for result or error`);
     } else {
       await upload(file, opts);

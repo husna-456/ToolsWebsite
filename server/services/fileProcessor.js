@@ -1,6 +1,5 @@
 const path   = require('path');
 const fs     = require('fs');
-const { PassThrough } = require('stream');
 const { spawnSync }   = require('child_process');
 const sharp  = require('sharp');
 const ffmpeg = require('fluent-ffmpeg');
@@ -814,8 +813,17 @@ async function processMedia(inputPath, slug, options = {}) {
   switch (slug) {
 
     case 'audio-converter': {
-      const validFmts = ['mp3', 'wav', 'ogg', 'aac', 'm4a'];
-      const mimeMap   = { mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', aac: 'audio/aac', m4a: 'audio/mp4' };
+      const validFmts = ['mp3', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'flac', 'wma'];
+      const mimeMap   = {
+        mp3:  'audio/mpeg',
+        wav:  'audio/wav',
+        ogg:  'audio/ogg',
+        aac:  'audio/aac',
+        m4a:  'audio/mp4',
+        opus: 'audio/ogg',
+        flac: 'audio/flac',
+        wma:  'audio/x-ms-wma',
+      };
       const fmt = validFmts.includes(options.format) ? options.format : 'mp3';
       const { progressStream } = options;
       const sendProgress = (pct, eta = null) => {
@@ -823,94 +831,49 @@ async function processMedia(inputPath, slug, options = {}) {
         progressStream.write(`data: ${JSON.stringify({ percent: Math.min(99, Math.round(pct)), eta })}\n\n`);
       };
 
-      console.log(`[audio-converter] ffmpeg=${FFMPEG_PATH || 'NONE'} env=${process.env.NODE_ENV || 'development'}`);
-
-      // ── In-memory pipeline — no temp file, pipes buffer directly to FFmpeg ──
-      if (options.inputBuffer) {
-        const tStart = Date.now();
-        console.log(`[audio-converter] START (piped) fmt=${fmt}  size=${(options.inputBuffer.length / 1024 / 1024).toFixed(2)} MB`);
-
-        // Determine FFmpeg input format.
-        // When the filename has no extension (e.g. Android Documents Picker returns
-        // "5,6 آیت نمبر" with no extension) and the MIME type is empty, do NOT
-        // assume mp3 — let FFmpeg auto-detect from file content (magic bytes).
-        // FFmpeg reliably identifies AAC/ADTS, MP3, OGG, WAV, FLAC, OPUS from
-        // the first few bytes without needing a seek, so piped streams work fine.
-        const rawExt = path.extname(options.originalname || '').slice(1).toLowerCase();
-        const mimeExt = (() => {
-          const m = (options.mimeType || '').toLowerCase();
-          if (m.includes('mpeg') || m.includes('/mp3')) return 'mp3';
-          if (m.includes('aac'))  return 'aac';
-          if (m.includes('ogg'))  return 'ogg';
-          if (m.includes('wav'))  return 'wav';
-          if (m.includes('flac')) return 'flac';
-          if (m.includes('opus')) return 'opus';
-          if (m.includes('mp4') || m.includes('m4a')) return 'm4a';
-          if (m.includes('webm')) return 'webm';
-          return null;
-        })();
-        const ext = rawExt || mimeExt; // null/empty → auto-detect
-        const extFmtMap = { mp3: 'mp3', wav: 'wav', ogg: 'ogg', aac: 'aac', m4a: 'mov', m4b: 'mov', flac: 'flac', opus: 'opus', wma: 'asf', webm: 'webm', mpeg: 'mpeg', mpg: 'mpeg', aiff: 'aiff', aif: 'aiff', amr: 'amr' };
-        const inputFmt = ext ? (extFmtMap[ext] || ext) : null;
-        console.log(`[audio-converter] originalname="${options.originalname}" rawExt="${rawExt||''}" mimeType="${options.mimeType||''}" mimeExt="${mimeExt||''}" inputFmt="${inputFmt||'auto-detect'}"`);
-
-        const tFfmpeg = Date.now();
-        const outputBuffer = await runFfmpegToBuffer(cmd => {
-          const inStream = new PassThrough();
-          inStream.end(options.inputBuffer);
-
-          cmd.input(inStream).inputOptions(['-threads', '0']);
-          if (inputFmt) cmd.inputFormat(inputFmt); // omit when unknown → FFmpeg auto-detects
-
-          switch (fmt) {
-            case 'mp3': cmd.audioCodec('libmp3lame').outputOptions(['-q:a', '2']).toFormat('mp3'); break;
-            case 'ogg': cmd.audioCodec('libvorbis').toFormat('ogg'); break;
-            case 'aac': cmd.audioCodec('aac').audioBitrate('128k').toFormat('aac'); break;
-            case 'm4a':
-              // Piped output can't seek, so use frag_keyframe+empty_moov instead of +faststart
-              cmd.audioCodec('aac').audioBitrate('128k')
-                 .outputOptions(['-movflags', 'frag_keyframe+empty_moov'])
-                 .toFormat('ipod');
-              break;
-            default: cmd.toFormat('wav');
-          }
-
-          cmd.on('start', cmdline => console.log(`[audio-converter] FFmpeg command: ${cmdline}`));
-          cmd.on('progress', ({ timemark }) => {
-            const elapsed = (Date.now() - tFfmpeg) / 1000;
-            sendProgress(Math.min(95, elapsed * 3));
-          });
-        });
-
-        console.log(`[audio-converter] FFmpeg done in ${Date.now() - tFfmpeg} ms  (total: ${Date.now() - tStart} ms)`);
-        sendProgress(100);
-        return { outputBuffer, filename: `converted.${fmt}`, mimeType: mimeMap[fmt] };
-      }
-
-      // ── Disk-based fallback (should not be reached in normal operation) ──
       const output = outPath(fmt);
       const t0 = Date.now();
-      console.log(`[audio-converter] START (disk) fmt=${fmt}  file=${path.basename(inputPath)}  size=${(fs.statSync(inputPath).size/1024/1024).toFixed(2)} MB`);
+      console.log(`[audio-converter] START fmt=${fmt}  file="${path.basename(inputPath)}"  size=${(fs.statSync(inputPath).size/1024/1024).toFixed(2)} MB  ffmpeg=${FFMPEG_PATH || 'NONE'}`);
 
       const duration = await getMediaDuration(inputPath);
       console.log(`[audio-converter] ffprobe done in ${Date.now()-t0} ms  duration=${duration.toFixed(1)} s`);
 
       const t1 = Date.now();
       await runFfmpeg(cmd => {
-        cmd.addOption('-threads 0');
         cmd.input(inputPath);
 
         switch (fmt) {
-          case 'mp3': cmd.audioCodec('libmp3lame').outputOptions(['-q:a', '2']).toFormat('mp3'); break;
-          case 'ogg': cmd.audioCodec('libvorbis').toFormat('ogg'); break;
-          case 'aac': cmd.audioCodec('aac').audioBitrate('128k').toFormat('aac'); break;
-          case 'm4a':
-            cmd.audioCodec('aac').audioBitrate('128k').outputOptions(['-movflags', '+faststart']);
+          case 'mp3':
+            cmd.audioCodec('libmp3lame').outputOptions(['-q:a', '2']).toFormat('mp3');
             break;
-          default: cmd.toFormat('wav');
+          case 'ogg':
+            cmd.audioCodec('libvorbis').toFormat('ogg');
+            break;
+          case 'aac':
+            cmd.audioCodec('aac').audioBitrate('128k').toFormat('aac');
+            break;
+          case 'm4a':
+            cmd.audioCodec('aac').audioBitrate('128k')
+               .outputOptions(['-movflags', '+faststart'])
+               .toFormat('ipod');
+            break;
+          case 'opus':
+            cmd.audioCodec('libopus').audioBitrate('128k').toFormat('ogg');
+            break;
+          case 'flac':
+            cmd.audioCodec('flac').toFormat('flac');
+            break;
+          case 'wma':
+            cmd.audioCodec('wmav2').audioBitrate('128k').toFormat('asf');
+            break;
+          default:
+            cmd.toFormat('wav');
         }
 
         cmd.on('start', cmdline => console.log(`[audio-converter] FFmpeg command: ${cmdline}`));
+        cmd.on('error', (err, _stdout, stderr) =>
+          console.error(`[audio-converter] FFmpeg error: ${err.message}\n${stderr || ''}`)
+        );
 
         if (duration > 0) {
           cmd.on('progress', ({ timemark }) => {
@@ -925,7 +888,7 @@ async function processMedia(inputPath, slug, options = {}) {
         cmd.output(output);
       });
 
-      console.log(`[audio-converter] FFmpeg done in ${Date.now() - t1} ms  (total incl. ffprobe: ${Date.now() - t0} ms)`);
+      console.log(`[audio-converter] done in ${Date.now() - t1} ms  (total: ${Date.now() - t0} ms)`);
       sendProgress(100);
       return { outputPath: output, filename: `converted.${fmt}`, mimeType: mimeMap[fmt] };
     }

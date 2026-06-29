@@ -127,12 +127,6 @@ const audioUpload = multer({
   fileFilter: audioFileFilter,
 });
 
-// Audio converter uses memory storage — no temp file written, no disk I/O latency
-const audioConverterMemUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 500 * 1024 * 1024 },
-  fileFilter: audioFileFilter,
-});
 
 const videoUpload = multer({
   storage,
@@ -174,9 +168,11 @@ function adaptiveUpload(req, res, next) {
     res.status(400).json({ success: false, error: msg });
   };
 
-  // Audio converter: keep entire file in RAM, pipe directly to FFmpeg (no temp file)
+  // Audio converter uses disk storage like other audio tools.
+  // The in-memory piped mode (pipe:0→FFmpeg→pipe:1) stalled through nginx's proxy
+  // on shared hosting, causing the client to see "Network Error" on large files.
   if (slug === 'audio-converter') {
-    audioConverterMemUpload.single('file')(req, res, onErr);
+    audioUpload.single('file')(req, res, onErr);
     return;
   }
 

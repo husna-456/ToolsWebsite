@@ -382,16 +382,8 @@ const processFile = async (req, res, next) => {
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No file uploaded.' });
     }
-    if (req.file.buffer) {
-      // Memory storage (audio-converter piped mode) — no disk path exists
-      inputPath = null;
-      options.inputBuffer  = req.file.buffer;
-      options.originalname = req.file.originalname;
-      cleanupPaths = [];
-    } else {
-      inputPath    = req.file.path;
-      cleanupPaths = [inputPath];
-    }
+    inputPath    = req.file.path;
+    cleanupPaths = [inputPath];
   }
 
   const cleanup = () => {

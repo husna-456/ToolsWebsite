@@ -451,11 +451,11 @@ export const TOOLS = {
   // ── Media Tools ───────────────────────────────────────────
   'audio-converter': {
     slug: 'audio-converter', title: 'Audio Converter',
-    shortDesc: 'Convert audio files between MP3, WAV, OGG, and M4A formats.',
+    shortDesc: 'Convert audio files between MP3, WAV, OGG, AAC, M4A, OPUS, FLAC, and WMA formats.',
     category: 'media-tools', icon: 'AudioLines', maxChars: 0,
     toolType: 'media-file',
-    metaTitle: 'Free Audio Converter — Convert MP3 WAV OGG M4A Online',
-    metaDesc:  'Convert audio files between formats instantly. MP3, WAV, OGG, M4A. Free, no signup.',
+    metaTitle: 'Free Audio Converter — Convert MP3 WAV OGG AAC FLAC Online',
+    metaDesc:  'Convert audio files between formats instantly. MP3, WAV, OGG, AAC, M4A, OPUS, FLAC, WMA. Free, no signup.',
   },
   'audio-compressor': {
     slug: 'audio-compressor', title: 'Audio Compressor',
