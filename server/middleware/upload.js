@@ -95,26 +95,43 @@ const converterUpload = multer({
   },
 });
 
+// Shared audio fileFilter — accepts audio/* MIME, known extensions, and files
+// with no extension / application/octet-stream (Android Documents Picker strips
+// both the MIME type and the file extension when returning localized display names).
+// The frontend accept="audio/*" attribute already filtered the native picker;
+// only reject files whose type is positively non-audio (image/*, video/*, text/*).
+const AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.aac', '.m4a', '.m4b', '.flac', '.opus', '.wma', '.webm', '.mpeg', '.mpg', '.aiff', '.aif', '.amr']);
+
+function audioFileFilter(_req, file, cb) {
+  const mime = file.mimetype || '';
+  const ext  = path.extname(file.originalname || '').toLowerCase();
+
+  if (/^audio\//.test(mime))          return cb(null, true); // audio/* MIME — definitely audio
+  if (AUDIO_EXTS.has(ext))            return cb(null, true); // known audio extension
+  if (mime === 'application/octet-stream') return cb(null, true); // Android / Drive: empty type
+  if (!ext && !mime)                  return cb(null, true); // Android Documents Picker: no ext, no MIME
+  if (!ext)                           return cb(null, true); // no extension — trust accept="audio/*" picker
+
+  // Only reject when we have positive evidence it's not audio
+  if (/^image\/|^video\/|^text\//.test(mime))
+    return cb(new Error('Only audio files are accepted.'));
+
+  // Unknown MIME with unrecognized extension — let it through
+  console.warn(`[audioFileFilter] Unknown file: mimetype="${mime}" ext="${ext}" name="${file.originalname}" — accepting`);
+  cb(null, true);
+}
+
 const audioUpload = multer({
   storage,
   limits: { fileSize: 500 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (/^audio\//.test(file.mimetype)) return cb(null, true);
-    cb(new Error('Only audio files are accepted.'));
-  },
+  fileFilter: audioFileFilter,
 });
 
 // Audio converter uses memory storage — no temp file written, no disk I/O latency
 const audioConverterMemUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 500 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (/^audio\//.test(file.mimetype)) return cb(null, true);
-    const ext = path.extname(file.originalname).toLowerCase();
-    const AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.aac', '.m4a', '.m4b', '.flac', '.opus', '.wma', '.webm', '.mpeg', '.mpg', '.aiff', '.aif', '.amr']);
-    if (AUDIO_EXTS.has(ext)) return cb(null, true);
-    cb(new Error('Only audio files are accepted.'));
-  },
+  fileFilter: audioFileFilter,
 });
 
 const videoUpload = multer({

@@ -830,17 +830,37 @@ async function processMedia(inputPath, slug, options = {}) {
         const tStart = Date.now();
         console.log(`[audio-converter] START (piped) fmt=${fmt}  size=${(options.inputBuffer.length / 1024 / 1024).toFixed(2)} MB`);
 
-        // Map original file extension to an ffmpeg input format name
-        const ext = path.extname(options.originalname || '').slice(1).toLowerCase() || 'mp3';
+        // Determine FFmpeg input format.
+        // When the filename has no extension (e.g. Android Documents Picker returns
+        // "5,6 آیت نمبر" with no extension) and the MIME type is empty, do NOT
+        // assume mp3 — let FFmpeg auto-detect from file content (magic bytes).
+        // FFmpeg reliably identifies AAC/ADTS, MP3, OGG, WAV, FLAC, OPUS from
+        // the first few bytes without needing a seek, so piped streams work fine.
+        const rawExt = path.extname(options.originalname || '').slice(1).toLowerCase();
+        const mimeExt = (() => {
+          const m = (options.mimeType || '').toLowerCase();
+          if (m.includes('mpeg') || m.includes('/mp3')) return 'mp3';
+          if (m.includes('aac'))  return 'aac';
+          if (m.includes('ogg'))  return 'ogg';
+          if (m.includes('wav'))  return 'wav';
+          if (m.includes('flac')) return 'flac';
+          if (m.includes('opus')) return 'opus';
+          if (m.includes('mp4') || m.includes('m4a')) return 'm4a';
+          if (m.includes('webm')) return 'webm';
+          return null;
+        })();
+        const ext = rawExt || mimeExt; // null/empty → auto-detect
         const extFmtMap = { mp3: 'mp3', wav: 'wav', ogg: 'ogg', aac: 'aac', m4a: 'mov', m4b: 'mov', flac: 'flac', opus: 'opus', wma: 'asf', webm: 'webm', mpeg: 'mpeg', mpg: 'mpeg', aiff: 'aiff', aif: 'aiff', amr: 'amr' };
-        const inputFmt = extFmtMap[ext] || ext;
+        const inputFmt = ext ? (extFmtMap[ext] || ext) : null;
+        console.log(`[audio-converter] originalname="${options.originalname}" rawExt="${rawExt||''}" mimeType="${options.mimeType||''}" mimeExt="${mimeExt||''}" inputFmt="${inputFmt||'auto-detect'}"`);
 
         const tFfmpeg = Date.now();
         const outputBuffer = await runFfmpegToBuffer(cmd => {
           const inStream = new PassThrough();
           inStream.end(options.inputBuffer);
 
-          cmd.input(inStream).inputOptions(['-threads', '0']).inputFormat(inputFmt);
+          cmd.input(inStream).inputOptions(['-threads', '0']);
+          if (inputFmt) cmd.inputFormat(inputFmt); // omit when unknown → FFmpeg auto-detects
 
           switch (fmt) {
             case 'mp3': cmd.audioCodec('libmp3lame').outputOptions(['-q:a', '2']).toFormat('mp3'); break;

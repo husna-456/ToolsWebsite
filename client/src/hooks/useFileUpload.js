@@ -48,8 +48,10 @@ export function useFileUpload(slug) {
       // Support array of files (e.g. image-merger) under 'files' key
       if (Array.isArray(file)) {
         file.forEach(f => formData.append('files', f));
+        console.log(`[upload] slug=${slug} files=${file.length} (array)`);
       } else {
         formData.append('file', file);
+        console.log(`[upload] slug=${slug} filename="${file?.name}" type="${file?.type||'(none)'}" size=${((file?.size||0)/1024/1024).toFixed(2)}MB`);
       }
       Object.entries(options).forEach(([k, v]) => {
         if (v !== undefined && v !== null) {
@@ -60,8 +62,10 @@ export function useFileUpload(slug) {
       });
 
       const token = localStorage.getItem('it_token');
+      const apiUrl = `${API_BASE_URL}/api/tools/${slug}/process`;
+      console.log(`[upload] POST ${apiUrl} outputFormat=${options.format||'(default)'} mimeType=${options.mimeType||'(not sent)'}`);
       const response = await axios.post(
-        `${API_BASE_URL}/api/tools/${slug}/process`,
+        apiUrl,
         formData,
         {
           responseType: 'blob',
@@ -78,6 +82,7 @@ export function useFileUpload(slug) {
       );
 
       setProgress(85); // processing phase
+      console.log(`[upload] response received — content-type: ${response.headers?.['content-type']}`);
 
       const contentType = response.headers?.['content-type'] || '';
 
@@ -103,17 +108,21 @@ export function useFileUpload(slug) {
       setFilename(fname);
       setProgress(100);
     } catch (err) {
+      console.error(`[upload] error: status=${err.response?.status} message="${err.message}" code="${err.code}"`);
       // Error body may be a Blob when responseType is 'blob'
       if (err.response?.data instanceof Blob) {
         try {
           const text = await err.response.data.text();
+          console.error(`[upload] error response body: ${text}`);
           const json = JSON.parse(text);
           setError(json.error || json.message || 'Processing failed.');
         } catch {
           setError('Processing failed. Please try again.');
         }
       } else {
-        setError(err.response?.data?.error || err.message || 'Upload failed. Please try again.');
+        const msg = err.response?.data?.error || err.message || 'Upload failed. Please try again.';
+        console.error(`[upload] error message shown to user: "${msg}"`);
+        setError(msg);
       }
       setProgress(0);
     } finally {

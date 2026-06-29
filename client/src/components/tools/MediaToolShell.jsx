@@ -651,6 +651,23 @@ export default function MediaToolShell({ tool }) {
     // File processing is handled by the input overlay's onChange (fires on drop too)
   }
 
+  // ── File normalization before upload ───────────────────────
+  // If the file has no extension AND no meaningful MIME type (Android Documents
+  // Picker returns display names like "5,6 آیت نمبر" with empty type and no ext),
+  // rename it so Multer and FFmpeg can identify the format.
+  // new File([blob], name) wraps the original data lazily — no copy until sent.
+  function normalizeUploadFile(f, hintExt) {
+    if (!f) return f;
+    const hasExt  = f.name.includes('.');
+    const hasMime = f.type && f.type !== '' && f.type !== 'application/octet-stream';
+    if (hasExt || hasMime) return f; // already identifiable — leave as-is
+    // Infer extension: use output format hint (e.g. mp3), else aac (most Android recordings)
+    const ext = hintExt || 'aac';
+    const safeName = `input-audio.${ext}`;
+    dbg(`Normalizing filename: "${f.name}" → "${safeName}" (no ext/MIME)`);
+    return new File([f], safeName, { type: 'audio/aac' });
+  }
+
   // ── Process ────────────────────────────────────────────────
   async function handleProcess() {
     setDone(false);
@@ -659,12 +676,17 @@ export default function MediaToolShell({ tool }) {
     } else if (isDualUpload) {
       await upload(file, { ...opts, subtitle: subtitleFile });
     } else if (isAudioConverter) {
+      const outputFmt = opts.format || 'mp3';
+      const uploadFile = normalizeUploadFile(file, outputFmt);
+      dbg(`Upload: name="${uploadFile.name}" type="${uploadFile.type||'(none)'}" size=${((uploadFile.size||0)/1024).toFixed(1)}KB outputFmt=${outputFmt}`);
+      dbg(`API: POST ${API_BASE_URL}/api/tools/audio-converter/process`);
       // Open SSE progress stream first, then upload (the file upload itself takes
       // time, so the SSE connection will be established before FFmpeg starts).
       const jobId = self.crypto.randomUUID();
       jobIdRef.current = jobId;
       openAudioSSE(jobId);
-      await upload(file, { ...opts, jobId });
+      await upload(uploadFile, { ...opts, jobId, mimeType: file.type || '' });
+      dbg(`Upload call returned — check right panel for result or error`);
     } else {
       await upload(file, opts);
     }
@@ -969,8 +991,13 @@ export default function MediaToolShell({ tool }) {
                   >clear</button>
                 </div>
                 <div style={{ color: '#aaa', marginBottom: 4, fontSize: 10 }}>
-                  file state: {file ? `"${file.name}" (${(file.size/1024).toFixed(1)}KB)` : 'null'} · fileInputKey: {fileInputKey}
+                  file: {file ? `"${file.name}" (${(file.size/1024).toFixed(1)}KB)` : 'null'} · key:{fileInputKey}
                 </div>
+                {error && (
+                  <div style={{ color: '#ff4444', background: '#2a0000', border: '1px solid #ff4444', borderRadius: 4, padding: '3px 6px', marginBottom: 4, fontSize: 11 }}>
+                    ⚠ Upload error: {error}
+                  </div>
+                )}
                 {debugLog.length === 0
                   ? <div style={{ color: '#555' }}>Tap upload zone to start logging...</div>
                   : debugLog.map((line, i) => (
