@@ -119,7 +119,7 @@ async function textToPdfFormat(req, res) {
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
     const response = await groq.chat.completions.create({
-      model:       'llama-3.3-70b-versatile',
+      model:       'llama-3.1-8b-instant',
       temperature: 0.2,
       max_tokens:  4096,
       messages: [
@@ -170,7 +170,7 @@ async function textToPdfFormat(req, res) {
       return res.status(500).json({ error: 'AI service authentication failed. Please contact support.' });
     }
     if (err.status === 429 || err.message?.includes('429') || err.message?.includes('rate limit') || err.message?.includes('Request too large') || err.message?.includes('TPM')) {
-      return res.status(429).json({ error: 'Text is too long for AI formatting. Please paste a shorter section (under 2,000 characters) and try again.' });
+      return res.status(429).json({ error: 'AI service is busy. Please wait a few seconds and try again, or paste a smaller section of text.' });
     }
     if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.message?.includes('network')) {
       return res.status(503).json({ error: 'Could not reach AI service. Please check your connection and try again.' });
