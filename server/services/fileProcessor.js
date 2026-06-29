@@ -1,17 +1,44 @@
 const path   = require('path');
 const fs     = require('fs');
 const { PassThrough } = require('stream');
+const { spawnSync }   = require('child_process');
 const sharp  = require('sharp');
 const ffmpeg = require('fluent-ffmpeg');
 const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 const { TMP_DIR }    = require('../middleware/upload');
 
-// Bind bundled ffmpeg binary
-try {
-  const ffmpegPath = require('ffmpeg-static');
-  if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath);
-} catch { /* ffmpeg-static not available — rely on system PATH */ }
+// Detect a working ffmpeg at startup.
+// Tries ffmpeg-static first (local dev), then falls back to system ffmpeg (production).
+function findWorkingFfmpeg() {
+  // 1. ffmpeg-static bundled binary
+  try {
+    const staticPath = require('ffmpeg-static');
+    if (staticPath) {
+      const test = spawnSync(staticPath, ['-version'], { timeout: 5000 });
+      if (!test.error && test.status === 0) {
+        console.log(`[ffmpeg] Using ffmpeg-static: ${staticPath}`);
+        return staticPath;
+      }
+      console.warn(`[ffmpeg] ffmpeg-static not executable (${test.error?.code || 'exit ' + test.status}): ${staticPath}`);
+    }
+  } catch (e) {
+    console.warn('[ffmpeg] ffmpeg-static unavailable:', e.message);
+  }
+
+  // 2. System ffmpeg on PATH
+  const sysTest = spawnSync('ffmpeg', ['-version'], { timeout: 5000 });
+  if (!sysTest.error && sysTest.status === 0) {
+    console.log('[ffmpeg] Using system ffmpeg');
+    return 'ffmpeg';
+  }
+
+  console.error('[ffmpeg] No executable ffmpeg found — audio/video tools will be unavailable.');
+  return null;
+}
+
+const FFMPEG_PATH = findWorkingFfmpeg();
+if (FFMPEG_PATH) ffmpeg.setFfmpegPath(FFMPEG_PATH);
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -183,6 +210,9 @@ function clamp(val, min, max) {
 }
 
 function runFfmpeg(buildFn) {
+  if (!FFMPEG_PATH) {
+    return Promise.reject(new Error('Audio/video conversion is not available on this server. Please contact support.'));
+  }
   return new Promise((resolve, reject) => {
     const cmd = ffmpeg();
     buildFn(cmd);
@@ -196,6 +226,9 @@ function runFfmpeg(buildFn) {
 // Like runFfmpeg but collects stdout into a Buffer instead of writing a file.
 // setupCmd must NOT call cmd.output() — cmd.pipe() is called internally.
 function runFfmpegToBuffer(setupCmd) {
+  if (!FFMPEG_PATH) {
+    return Promise.reject(new Error('Audio/video conversion is not available on this server. Please contact support.'));
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (fn, val) => { if (!settled) { settled = true; fn(val); } };
@@ -780,6 +813,8 @@ async function processMedia(inputPath, slug, options = {}) {
         if (!progressStream || progressStream.writableEnded) return;
         progressStream.write(`data: ${JSON.stringify({ percent: Math.min(99, Math.round(pct)), eta })}\n\n`);
       };
+
+      console.log(`[audio-converter] ffmpeg=${FFMPEG_PATH || 'NONE'} env=${process.env.NODE_ENV || 'development'}`);
 
       // ── In-memory pipeline — no temp file, pipes buffer directly to FFmpeg ──
       if (options.inputBuffer) {
