@@ -451,6 +451,13 @@ export default function MediaToolShell({ tool }) {
   const [fileInputKey, setFileInputKey] = useState(0);
   const [subInputKey,  setSubInputKey]  = useState(0);
 
+  // ── DEBUG (remove after Android issue confirmed fixed) ────────
+  const [debugLog, setDebugLog] = useState([]);
+  function dbg(msg) {
+    const ts = new Date().toLocaleTimeString('en-GB', { hour12: false });
+    setDebugLog(prev => [`${ts} ${msg}`, ...prev].slice(0, 30));
+  }
+
   const isTrimmerSlug = TRIMMER_SLUGS.includes(slug);
 
   // Detect media duration from browser after file is selected (for trimmer tools)
@@ -557,13 +564,16 @@ export default function MediaToolShell({ tool }) {
   }
 
   function selectFile(f) {
-    if (!f) return;
+    if (!f) { dbg('selectFile: f is null/undefined — no file received'); return; }
+    dbg(`selectFile: name="${f.name}" type="${f.type || '(none)'}" size=${(f.size/1024).toFixed(1)}KB`);
     const err = validateFile(f);
-    if (err) { setFileError(err); return; }
+    if (err) { dbg(`selectFile: VALIDATION FAILED — ${err}`); setFileError(err); return; }
+    dbg('selectFile: VALIDATION PASSED — updating state');
     setFileError('');
     setFile(f);
     setDone(false);
     reset();
+    dbg('selectFile: setFile() called — file should now appear');
   }
 
   function addFiles(newFiles) {
@@ -853,6 +863,7 @@ export default function MediaToolShell({ tool }) {
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
                     onDrop={handleDrop}
+                    onClick={() => dbg('Zone div tapped — input should open picker')}
                   >
                     <div className="pointer-events-none flex flex-col items-center gap-3">
                       <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-colors ${dragging ? 'bg-accent/10' : 'bg-surface-2 border border-border'}`}>
@@ -865,6 +876,7 @@ export default function MediaToolShell({ tool }) {
                         <p className="text-xs text-text-muted mt-1">
                           {isVolumeBooster ? 'MP3, WAV, MP4, MOV' : acceptsAudio ? 'MP3, WAV, FLAC, OGG, M4A, WMA, OPUS + more' : 'MP4, WebM, MOV, AVI'} · Max {maxMb} MB
                         </p>
+                        <p className="text-[10px] font-bold text-orange-400 mt-1">Upload Fix Build v2</p>
                       </div>
                     </div>
                     <input
@@ -873,10 +885,17 @@ export default function MediaToolShell({ tool }) {
                       type="file"
                       accept={accept}
                       onChange={e => {
-                        // Capture file FIRST before any state changes — Android detaches
-                        // e.target mid-handler when key changes or renders flush early.
-                        const f = e.target.files?.[0];
+                        const rawFiles = e.target.files;
+                        const count = rawFiles ? rawFiles.length : 0;
+                        dbg(`onChange fired — files.length=${count}`);
+                        if (count === 0) {
+                          dbg('onChange: files empty — picker dismissed or Android dropped selection');
+                          return;
+                        }
+                        const f = rawFiles[0];
+                        dbg(`onChange: name="${f.name}" type="${f.type || '(empty)'}" size=${(f.size/1024).toFixed(1)}KB`);
                         e.target.value = '';
+                        dbg('onChange: value reset — calling selectFile');
                         selectFile(f);
                       }}
                       style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
@@ -904,6 +923,30 @@ export default function MediaToolShell({ tool }) {
               <div className="flex items-start gap-2 text-xs text-red-600">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                 <span>{fileError}</span>
+              </div>
+            )}
+
+            {/* ── DEBUG PANEL — remove after Android issue confirmed fixed ── */}
+            {acceptsAudio && (
+              <div style={{ background: '#0d0d1a', border: '1px solid #333', borderRadius: 8, padding: 8, fontFamily: 'monospace', fontSize: 11 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ color: '#ff9500', fontWeight: 'bold', fontSize: 12 }}>Upload Fix Build v2 — Debug</span>
+                  <button
+                    onClick={() => setDebugLog([])}
+                    style={{ color: '#ff4444', background: 'none', border: '1px solid #ff4444', borderRadius: 4, padding: '1px 6px', cursor: 'pointer', fontSize: 10 }}
+                  >clear</button>
+                </div>
+                <div style={{ color: '#aaa', marginBottom: 4, fontSize: 10 }}>
+                  file state: {file ? `"${file.name}" (${(file.size/1024).toFixed(1)}KB)` : 'null'} · fileInputKey: {fileInputKey}
+                </div>
+                {debugLog.length === 0
+                  ? <div style={{ color: '#555' }}>Tap upload zone to start logging...</div>
+                  : debugLog.map((line, i) => (
+                    <div key={i} style={{ color: line.includes('FAILED') || line.includes('empty') || line.includes('null') ? '#ff6666' : line.includes('PASSED') || line.includes('called') ? '#00cc66' : '#00aaff', borderBottom: '1px solid #1a1a2e', paddingBottom: 2, marginBottom: 2 }}>
+                      {line}
+                    </div>
+                  ))
+                }
               </div>
             )}
           </div>
