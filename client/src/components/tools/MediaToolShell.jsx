@@ -503,18 +503,45 @@ export default function MediaToolShell({ tool }) {
     : progress;
 
   // ── File validation ────────────────────────────────────────
-  const AUDIO_EXTS = new Set(['.mp3','.wav','.ogg','.m4a','.aac','.flac','.aiff','.aif','.wma','.amr','.opus','.webm','.mpeg','.mpg']);
+  // Extension is checked first — Android and Google Drive often return wrong or empty MIME types.
+  const AUDIO_ALLOWED_EXTS = new Set([
+    'mp3','wav','ogg','m4a','aac','flac','aiff','aif','wma','amr','opus','webm','mpeg','mpg',
+  ]);
+  const AUDIO_ALLOWED_MIMES = new Set([
+    'audio/mpeg','audio/mp3','audio/wav','audio/x-wav','audio/wave',
+    'audio/ogg','audio/x-ogg','audio/aac','audio/x-aac','audio/mp4','audio/x-m4a',
+    'audio/flac','audio/x-flac','audio/opus','audio/webm',
+    'application/ogg',
+    'application/octet-stream', // Google Drive sometimes returns this for valid audio files
+  ]);
+  const VIDEO_ALLOWED_EXTS = new Set(['mp4','webm','mov','avi','mkv']);
+
+  function isValidAudio(f) {
+    if (!f) return false;
+    const name = f.name || '';
+    const ext  = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+    if (AUDIO_ALLOWED_EXTS.has(ext)) return true;           // extension match → accept regardless of MIME
+    const type = (f.type || '').toLowerCase();
+    if (!type) return false;                                 // no ext, no MIME → reject
+    if (type.startsWith('audio/')) return true;             // any audio/* MIME → accept
+    if (AUDIO_ALLOWED_MIMES.has(type)) return true;         // known audio MIME or octet-stream → accept
+    return false;
+  }
 
   function validateFile(f, forAudio = acceptsAudio) {
     if (!f) return null;
-    const ext = '.' + (f.name.split('.').pop() || '').toLowerCase();
-    const validByExt   = forAudio && AUDIO_EXTS.has(ext);
-    const validByMime  = forAudio
-      ? f.type.startsWith('audio/')
-      : isVolumeBooster
-      ? f.type.startsWith('audio/') || f.type.startsWith('video/')
-      : f.type.startsWith('video/');
-    if (!validByMime && !validByExt) return `Please select a valid ${forAudio ? 'audio' : isVolumeBooster ? 'audio or video' : 'video'} file.`;
+    const name = f.name || '';
+    const ext  = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+    const type = (f.type || '').toLowerCase();
+    let valid;
+    if (forAudio) {
+      valid = isValidAudio(f);
+    } else if (isVolumeBooster) {
+      valid = isValidAudio(f) || type.startsWith('video/') || VIDEO_ALLOWED_EXTS.has(ext);
+    } else {
+      valid = type.startsWith('video/') || VIDEO_ALLOWED_EXTS.has(ext);
+    }
+    if (!valid) return `Please select a valid ${forAudio ? 'audio' : isVolumeBooster ? 'audio or video' : 'video'} file.`;
     if (f.size > maxMb * 1024 * 1024) return `File too large. Maximum size is ${maxMb} MB.`;
     return null;
   }
