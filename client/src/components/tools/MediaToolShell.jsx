@@ -557,6 +557,7 @@ export default function MediaToolShell({ tool }) {
   }
 
   function selectFile(f) {
+    if (!f) return;
     const err = validateFile(f);
     if (err) { setFileError(err); return; }
     setFileError('');
@@ -566,7 +567,8 @@ export default function MediaToolShell({ tool }) {
   }
 
   function addFiles(newFiles) {
-    const arr = Array.from(newFiles);
+    const arr = Array.from(newFiles || []);
+    if (!arr.length) return;
     const valid = arr.filter(f => {
       const err = validateFile(f, slug === 'audio-merger');
       return !err;
@@ -695,11 +697,15 @@ export default function MediaToolShell({ tool }) {
         accept={acceptStr}
         multiple={isMultiUpload}
         onChange={e => {
-          setFileInputKey(k => k + 1);
-          if (isMultiUpload) addFiles(e.target.files);
-          else if (onSelect) onSelect(e.target.files?.[0]);
+          // Read files into a plain Array FIRST — before any state updates or value reset.
+          // On Android Chrome, detaching the input mid-handler (via key change or value reset)
+          // can null out e.target.files before it's read.
+          const captured = Array.from(e.target.files || []);
+          e.target.value = ''; // Reset value so the same file(s) can be re-selected later
+          if (isMultiUpload) addFiles(captured);
+          else if (captured[0]) onSelect(captured[0]);
         }}
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
+        style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
       />
     </div>
   );
@@ -866,8 +872,14 @@ export default function MediaToolShell({ tool }) {
                       ref={inputRef}
                       type="file"
                       accept={accept}
-                      onChange={e => { setFileInputKey(k => k + 1); selectFile(e.target.files?.[0]); }}
-                      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
+                      onChange={e => {
+                        // Capture file FIRST before any state changes — Android detaches
+                        // e.target mid-handler when key changes or renders flush early.
+                        const f = e.target.files?.[0];
+                        e.target.value = '';
+                        selectFile(f);
+                      }}
+                      style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
                     />
                   </div>
                 ) : (
