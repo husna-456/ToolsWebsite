@@ -10,17 +10,26 @@ const { TMP_DIR }    = require('../middleware/upload');
 
 // Detect a working ffmpeg at startup.
 // Tries ffmpeg-static first (local dev), then falls back to system ffmpeg (production).
+// On shared hosts like Hostinger the execute bit is stripped on upload — chmod restores it.
 function findWorkingFfmpeg() {
   // 1. ffmpeg-static bundled binary
   try {
     const staticPath = require('ffmpeg-static');
     if (staticPath) {
+      // Restore execute permission stripped by some shared hosts during file upload
+      try {
+        fs.chmodSync(staticPath, 0o755);
+        console.log(`[ffmpeg] chmod 755 applied to: ${staticPath}`);
+      } catch (chmodErr) {
+        console.warn(`[ffmpeg] chmod failed for ffmpeg-static: ${chmodErr.message}`);
+      }
+
       const test = spawnSync(staticPath, ['-version'], { timeout: 5000 });
       if (!test.error && test.status === 0) {
         console.log(`[ffmpeg] Using ffmpeg-static: ${staticPath}`);
         return staticPath;
       }
-      console.warn(`[ffmpeg] ffmpeg-static not executable (${test.error?.code || 'exit ' + test.status}): ${staticPath}`);
+      console.warn(`[ffmpeg] ffmpeg-static not executable after chmod (${test.error?.code || 'exit ' + test.status}): ${staticPath}`);
     }
   } catch (e) {
     console.warn('[ffmpeg] ffmpeg-static unavailable:', e.message);
