@@ -437,6 +437,12 @@ const processFile = async (req, res, next) => {
     // Stream output file then delete
     res.setHeader('Content-Type', result.mimeType);
     res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    // Content-Length lets nginx/proxies know full response size upfront,
+    // preventing premature connection close on large files.
+    try {
+      const stat = fs.statSync(result.outputPath);
+      if (stat.size > 0) res.setHeader('Content-Length', stat.size);
+    } catch {}
     const stream = fs.createReadStream(result.outputPath);
     stream.on('end',   () => fs.unlink(result.outputPath, () => {}));
     stream.on('error', (e) => { fs.unlink(result.outputPath, () => {}); next(e); });

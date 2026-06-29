@@ -48,6 +48,32 @@ function findWorkingFfmpeg() {
 const FFMPEG_PATH = findWorkingFfmpeg();
 if (FFMPEG_PATH) ffmpeg.setFfmpegPath(FFMPEG_PATH);
 
+// Set ffprobe path so getMediaDuration works correctly.
+// ffprobe-static ships alongside ffmpeg-static in the same directory.
+// Without an explicit path, fluent-ffmpeg falls back to system 'ffprobe'
+// which may differ in version or be absent on shared hosting.
+(function setFfprobePath() {
+  try {
+    const staticPath = require('ffmpeg-static');
+    if (!staticPath) return;
+    const ffprobeStatic = path.join(path.dirname(staticPath), 'ffprobe');
+    try { fs.chmodSync(ffprobeStatic, 0o755); } catch {}
+    const test = spawnSync(ffprobeStatic, ['-version'], { timeout: 5000 });
+    if (!test.error && test.status === 0) {
+      ffmpeg.setFfprobePath(ffprobeStatic);
+      console.log(`[ffmpeg] Using ffprobe alongside ffmpeg-static: ${ffprobeStatic}`);
+      return;
+    }
+  } catch {}
+  // Fall back to system ffprobe — likely available on Hostinger
+  const sysPr = spawnSync('ffprobe', ['-version'], { timeout: 5000 });
+  if (!sysPr.error && sysPr.status === 0) {
+    console.log('[ffmpeg] Using system ffprobe');
+  } else {
+    console.warn('[ffmpeg] ffprobe not found — duration probing will be unavailable');
+  }
+})();
+
 // ── Helpers ──────────────────────────────────────────────────
 
 function outPath(ext) {
@@ -826,34 +852,45 @@ async function processMedia(inputPath, slug, options = {}) {
       };
       const fmt = validFmts.includes(options.format) ? options.format : 'mp3';
       const { progressStream } = options;
-      const sendProgress = (pct, eta = null) => {
+      const sendProgress = (pct) => {
         if (!progressStream || progressStream.writableEnded) return;
-        progressStream.write(`data: ${JSON.stringify({ percent: Math.min(99, Math.round(pct)), eta })}\n\n`);
+        progressStream.write(`data: ${JSON.stringify({ percent: Math.min(99, Math.round(pct)) })}\n\n`);
       };
 
+      // ── Log input ──────────────────────────────────────────────
+      const inSize = fs.statSync(inputPath).size;
+      console.log(`[audio-converter] INPUT  path="${inputPath}" size=${(inSize/1024/1024).toFixed(3)}MB target_fmt=${fmt} ffmpeg=${FFMPEG_PATH||'NONE'}`);
+
+      const inDuration = await getMediaDuration(inputPath);
+      console.log(`[audio-converter] INPUT  duration=${inDuration.toFixed(3)}s`);
+
+      // ── Convert ────────────────────────────────────────────────
       const output = outPath(fmt);
       const t0 = Date.now();
-      console.log(`[audio-converter] START fmt=${fmt}  file="${path.basename(inputPath)}"  size=${(fs.statSync(inputPath).size/1024/1024).toFixed(2)} MB  ffmpeg=${FFMPEG_PATH || 'NONE'}`);
 
-      const duration = await getMediaDuration(inputPath);
-      console.log(`[audio-converter] ffprobe done in ${Date.now()-t0} ms  duration=${duration.toFixed(1)} s`);
-
-      const t1 = Date.now();
       await runFfmpeg(cmd => {
         cmd.input(inputPath);
 
+        // Always strip video streams — we only want audio in the output.
+        // Without -vn, FFmpeg may attempt stream mapping that silently truncates output.
+        cmd.noVideo();
+
         switch (fmt) {
           case 'mp3':
-            cmd.audioCodec('libmp3lame').outputOptions(['-q:a', '2']).toFormat('mp3');
+            // CBR 192k — avoids VBR Xing-header duration bugs in some players
+            cmd.audioCodec('libmp3lame').audioBitrate('192k').toFormat('mp3');
+            break;
+          case 'wav':
+            cmd.audioCodec('pcm_s16le').toFormat('wav');
             break;
           case 'ogg':
             cmd.audioCodec('libvorbis').toFormat('ogg');
             break;
           case 'aac':
-            cmd.audioCodec('aac').audioBitrate('128k').toFormat('aac');
+            cmd.audioCodec('aac').audioBitrate('192k').toFormat('adts');
             break;
           case 'm4a':
-            cmd.audioCodec('aac').audioBitrate('128k')
+            cmd.audioCodec('aac').audioBitrate('192k')
                .outputOptions(['-movflags', '+faststart'])
                .toFormat('ipod');
             break;
@@ -867,28 +904,48 @@ async function processMedia(inputPath, slug, options = {}) {
             cmd.audioCodec('wmav2').audioBitrate('128k').toFormat('asf');
             break;
           default:
-            cmd.toFormat('wav');
+            cmd.audioCodec('pcm_s16le').toFormat('wav');
         }
 
-        cmd.on('start', cmdline => console.log(`[audio-converter] FFmpeg command: ${cmdline}`));
-        cmd.on('error', (err, _stdout, stderr) =>
-          console.error(`[audio-converter] FFmpeg error: ${err.message}\n${stderr || ''}`)
+        cmd.on('start', cmdline => console.log(`[audio-converter] CMD: ${cmdline}`));
+        cmd.on('stderr', line => {
+          if (/error|invalid|failed/i.test(line))
+            console.error(`[audio-converter] stderr: ${line}`);
+        });
+        cmd.on('error', (err, _out, stderr) =>
+          console.error(`[audio-converter] FFmpeg ERROR: ${err.message}\n${stderr || ''}`)
         );
 
-        if (duration > 0) {
+        if (inDuration > 0) {
           cmd.on('progress', ({ timemark }) => {
-            const elapsed = (Date.now() - t1) / 1000;
             const current = parseTimemark(timemark);
-            const pct     = (current / duration) * 100;
-            const eta     = pct > 1 ? Math.max(0, Math.round(elapsed / (pct / 100) - elapsed)) : null;
-            sendProgress(pct, eta);
+            sendProgress((current / inDuration) * 100);
           });
         }
 
         cmd.output(output);
       });
 
-      console.log(`[audio-converter] done in ${Date.now() - t1} ms  (total: ${Date.now() - t0} ms)`);
+      console.log(`[audio-converter] FFmpeg done in ${Date.now()-t0}ms`);
+
+      // ── Verify output ──────────────────────────────────────────
+      const outSize = fs.statSync(output).size;
+      const outDuration = await getMediaDuration(output);
+      console.log(`[audio-converter] OUTPUT path="${output}" size=${(outSize/1024/1024).toFixed(3)}MB duration=${outDuration.toFixed(3)}s`);
+
+      if (outSize === 0) {
+        fs.unlink(output, () => {});
+        throw Object.assign(new Error('Conversion produced an empty file. FFmpeg may not support this input format on this server.'), { statusCode: 500 });
+      }
+      // If input is >10 s and output is less than half — something went wrong
+      if (inDuration > 10 && outDuration > 0 && outDuration < inDuration * 0.5) {
+        fs.unlink(output, () => {});
+        throw Object.assign(
+          new Error(`Conversion truncated audio (input ${inDuration.toFixed(1)}s → output ${outDuration.toFixed(1)}s). Please try again or choose a different format.`),
+          { statusCode: 500 }
+        );
+      }
+
       sendProgress(100);
       return { outputPath: output, filename: `converted.${fmt}`, mimeType: mimeMap[fmt] };
     }
