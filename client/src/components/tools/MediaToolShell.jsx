@@ -656,16 +656,19 @@ export default function MediaToolShell({ tool }) {
   // Picker returns display names like "5,6 آیت نمبر" with empty type and no ext),
   // rename it so Multer and FFmpeg can identify the format.
   // new File([blob], name) wraps the original data lazily — no copy until sent.
-  function normalizeUploadFile(f, hintExt) {
+  function normalizeUploadFile(f) {
     if (!f) return f;
     const hasExt  = f.name.includes('.');
     const hasMime = f.type && f.type !== '' && f.type !== 'application/octet-stream';
     if (hasExt || hasMime) return f; // already identifiable — leave as-is
-    // Infer extension: use output format hint (e.g. mp3), else aac (most Android recordings)
-    const ext = hintExt || 'aac';
-    const safeName = `input-audio.${ext}`;
-    dbg(`Normalizing filename: "${f.name}" → "${safeName}" (no ext/MIME)`);
-    return new File([f], safeName, { type: 'audio/aac' });
+    // Android Documents Picker strips both extension and MIME type from localized
+    // display names (e.g. "5,6 آیت نمبر"). Use a format-neutral sentinel extension
+    // so the backend can detect the real format via ffprobe magic-byte detection.
+    // NEVER use the selected output format as the input extension — they are
+    // different things and doing so tells FFmpeg the wrong decoder to use.
+    const safeName = 'input-audio.upload';
+    dbg(`Normalizing filename: "${f.name}" → "${safeName}" (no ext/MIME — format-neutral)`);
+    return new File([f], safeName, { type: 'application/octet-stream' });
   }
 
   // ── Process ────────────────────────────────────────────────
@@ -677,7 +680,7 @@ export default function MediaToolShell({ tool }) {
       await upload(file, { ...opts, subtitle: subtitleFile });
     } else if (isAudioConverter) {
       const outputFmt = opts.format || 'mp3';
-      const uploadFile = normalizeUploadFile(file, outputFmt);
+      const uploadFile = normalizeUploadFile(file);
       dbg(`Upload: name="${uploadFile.name}" type="${uploadFile.type||'(none)'}" size=${((uploadFile.size||0)/1024).toFixed(1)}KB outputFmt=${outputFmt}`);
       dbg(`API: POST ${API_BASE_URL}/api/tools/audio-converter/process`);
       // SSE removed — opening a long-lived GET before the POST caused "Network Error"

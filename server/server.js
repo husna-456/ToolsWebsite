@@ -50,6 +50,11 @@ const corsOptions = {
     return callback(new Error('Not allowed by CORS: ' + origin));
   },
   credentials: true,
+  // Without exposedHeaders, browser JS cannot read Content-Disposition from a
+  // cross-origin response (CORS only exposes a small set of "simple" headers by
+  // default). Missing this causes filename extraction to fail and the OS assigns
+  // an extension from the MIME type (audio/mpeg → .mpeg instead of .mp3).
+  exposedHeaders: ['Content-Disposition'],
 };
 
 // ── Security & Parsing ────────────────────────────────────────

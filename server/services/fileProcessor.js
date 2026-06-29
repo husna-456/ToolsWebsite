@@ -290,6 +290,20 @@ function getMediaDuration(filePath) {
   ]);
 }
 
+// Like getMediaDuration but REJECTS on failure — used when we need to know the
+// format is valid before starting FFmpeg (e.g. mobile files with no extension).
+function probeMedia(filePath) {
+  return Promise.race([
+    new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(filePath, (err, meta) => {
+        if (err) return reject(err);
+        resolve(meta);
+      });
+    }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('ffprobe timeout')), 15000)),
+  ]);
+}
+
 // Converts an ffmpeg timemark string ("HH:MM:SS.ms") to seconds.
 function parseTimemark(mark) {
   if (!mark) return 0;
@@ -857,7 +871,7 @@ async function processMedia(inputPath, slug, options = {}) {
         progressStream.write(`data: ${JSON.stringify({ percent: Math.min(99, Math.round(pct)) })}\n\n`);
       };
 
-      // ── Route hit + Input info ─────────────────────────────────
+      // ── Step 1: Log all available info about the upload ───────
       console.log('');
       console.log('[audio-converter] ══ ROUTE HIT ══════════════════════════════');
       console.log(`[audio-converter] originalname : "${options.originalname || '?'}"`);
@@ -867,7 +881,7 @@ async function processMedia(inputPath, slug, options = {}) {
       console.log(`[audio-converter] ffmpeg path  : ${FFMPEG_PATH || 'NONE'}`);
       console.log(`[audio-converter] input path   : "${inputPath}"`);
 
-      // Verify uploaded file is on disk and has content
+      // ── Step 2: Verify file is on disk and non-empty ──────────
       if (!fs.existsSync(inputPath)) {
         throw Object.assign(new Error('Uploaded file not found on disk. Multer may have failed.'), { statusCode: 500 });
       }
@@ -877,39 +891,61 @@ async function processMedia(inputPath, slug, options = {}) {
         throw Object.assign(new Error('Uploaded file is empty (0 bytes). Please upload a valid audio file.'), { statusCode: 400 });
       }
 
-      // Detect input format from saved file extension
-      // Multer copies the original extension, so {uuid}.ogg means the upload was .ogg
+      // ── Step 3: Determine input format hint from saved extension ──
+      // Multer copies the original extension onto the temp file, so {uuid}.ogg
+      // means the upload was .ogg.  For .bin/.upload (Android no-extension
+      // files) we pass null so FFmpeg auto-detects from the magic bytes instead
+      // of being told to use the wrong decoder.
+      // NEVER use the selected OUTPUT format as the input format — they are
+      // entirely separate things and doing so causes "Invalid data" errors.
       const savedExt = path.extname(inputPath).slice(1).toLowerCase();
       const extToInputFmt = {
         ogg: 'ogg', mp3: 'mp3', wav: 'wav', aac: 'aac', m4a: 'mov',
         m4b: 'mov', flac: 'flac', opus: 'ogg', wma: 'asf',
         webm: 'webm', mpeg: 'mpeg', mpg: 'mpeg', aiff: 'aiff', amr: 'amr',
       };
-      // 'bin' (Android no-extension files) → null so FFmpeg auto-detects from magic bytes
+      // bin/upload → null (FFmpeg magic-byte detection)
       const inputFmt = extToInputFmt[savedExt] || null;
       console.log(`[audio-converter] saved ext    : ".${savedExt}" → inputFmt: "${inputFmt || 'auto-detect'}"`);
 
-      // Probe input duration (best-effort — returns 0 on failure)
-      const inDuration = await getMediaDuration(inputPath);
-      console.log(`[audio-converter] input duration (ffprobe): ${inDuration.toFixed(3)}s`);
+      // ── Step 4: ffprobe the input — fail fast for unreadable files ──
+      // This catches corrupt uploads and mobile files that FFmpeg cannot demux.
+      // probeMedia() rejects on error; getMediaDuration() silently returns 0.
+      let inProbe;
+      try {
+        inProbe = await probeMedia(inputPath);
+      } catch (probeErr) {
+        console.error(`[audio-converter] ffprobe FAILED on input: ${probeErr.message}`);
+        const isMobileUnknown = ['bin', 'upload', ''].includes(savedExt);
+        throw Object.assign(
+          new Error(
+            isMobileUnknown
+              ? 'Could not detect audio format from uploaded mobile file. Please rename the file with the correct extension (e.g. audio.ogg) before uploading, or use a desktop browser.'
+              : `Could not read the uploaded audio file: ${probeErr.message}`
+          ),
+          { statusCode: 400 }
+        );
+      }
+      const inDuration = parseFloat(inProbe?.format?.duration || 0) || 0;
+      const detectedFmtName = inProbe?.format?.format_name || 'unknown';
+      console.log(`[audio-converter] ffprobe OK   : format="${detectedFmtName}" duration=${inDuration.toFixed(3)}s`);
 
-      // ── FFmpeg conversion ──────────────────────────────────────
+      // ── Step 5: Run FFmpeg — fully chained, wait for 'end' event ──
+      // All options are chained from cmd.input() in one expression.
+      // Separate non-chained calls (cmd.noVideo(); cmd.output()) can
+      // mis-sequence options in fluent-ffmpeg and silently truncate output.
       const output = outPath(fmt);
       console.log(`[audio-converter] output path  : "${output}"`);
       const t0 = Date.now();
 
       await runFfmpeg(cmd => {
-        // Build the command as ONE continuous chain from input to output.
-        // This is the same pattern used by all other working audio tools
-        // (audio-compressor, audio-extractor, audio-trimmer, etc.).
-        // Calling methods as separate non-chained statements on cmd after
-        // cmd.input() can cause fluent-ffmpeg to mis-sequence options.
         let c = cmd.input(inputPath);
         if (inputFmt) c = c.inputFormat(inputFmt);
 
         switch (fmt) {
           case 'mp3':
-            // CBR 192k — reliable duration metadata; no VBR Xing-header edge cases
+            // CBR 192k: -f mp3 -c:a libmp3lame -b:a 192k
+            // CBR avoids VBR Xing-header duration bugs in some FFmpeg builds
             c = c.noVideo().audioCodec('libmp3lame').audioBitrate('192k').toFormat('mp3');
             break;
           case 'wav':
@@ -938,38 +974,27 @@ async function processMedia(inputPath, slug, options = {}) {
             c = c.noVideo().audioCodec('pcm_s16le').toFormat('wav');
         }
 
-        // Set output file
         c.output(output);
 
-        // Log the exact FFmpeg command so we can diagnose issues on the server
-        cmd.on('start', cmdline => {
-          console.log(`[audio-converter] CMD: ${cmdline}`);
-        });
-
-        // Log FFmpeg stderr lines that look like errors
+        cmd.on('start',  cmdline => console.log(`[audio-converter] CMD: ${cmdline}`));
         cmd.on('stderr', line => {
           if (/error|invalid|failed|cannot|no such/i.test(line))
             console.error(`[audio-converter] stderr: ${line}`);
         });
-
-        // Propagated to the runFfmpeg reject() handler — logged here for detail
         cmd.on('error', (err, _out, stderr) =>
           console.error(`[audio-converter] FFmpeg ERROR: ${err.message}\n${stderr || ''}`)
         );
-
-        // Progress (only meaningful when we have input duration)
         if (inDuration > 0) {
-          cmd.on('progress', ({ timemark }) => {
-            const cur = parseTimemark(timemark);
-            sendProgress((cur / inDuration) * 100);
-          });
+          cmd.on('progress', ({ timemark }) =>
+            sendProgress((parseTimemark(timemark) / inDuration) * 100)
+          );
         }
       });
+      // runFfmpeg resolves only after the 'end' event — FFmpeg has fully finished here
 
-      const elapsed = Date.now() - t0;
-      console.log(`[audio-converter] FFmpeg finished in ${elapsed}ms`);
+      console.log(`[audio-converter] FFmpeg finished in ${Date.now() - t0}ms`);
 
-      // ── Output verification ────────────────────────────────────
+      // ── Step 6: Verify output exists and has content ──────────
       if (!fs.existsSync(output)) {
         throw Object.assign(new Error('FFmpeg did not create an output file. Conversion failed silently.'), { statusCode: 500 });
       }
@@ -983,9 +1008,6 @@ async function processMedia(inputPath, slug, options = {}) {
           { statusCode: 500 }
         );
       }
-
-      // Size sanity: any real audio should be at least 1 KB; if output is tiny
-      // but input was substantial, the conversion clearly failed silently
       if (outStat.size < 1024 && inStat.size > 10240) {
         fs.unlink(output, () => {});
         throw Object.assign(
@@ -994,30 +1016,41 @@ async function processMedia(inputPath, slug, options = {}) {
         );
       }
 
+      // ── Step 7: ffprobe output and check duration ─────────────
       const outDuration = await getMediaDuration(output);
       console.log(`[audio-converter] output duration (ffprobe): ${outDuration.toFixed(3)}s`);
 
-      // Duration sanity when we have reliable numbers from both probes
-      if (inDuration > 5) {
-        if (outDuration === 0) {
-          fs.unlink(output, () => {});
-          throw Object.assign(
-            new Error(`Output has no detectable duration (input was ${inDuration.toFixed(1)}s). Conversion failed.`),
-            { statusCode: 500 }
-          );
-        }
-        if (outDuration < inDuration * 0.5) {
-          fs.unlink(output, () => {});
-          throw Object.assign(
-            new Error(`Output is truncated: ${outDuration.toFixed(1)}s of ${inDuration.toFixed(1)}s input. Please try again or pick a different format.`),
-            { statusCode: 500 }
-          );
-        }
+      // Guard 1: output under 1 second from a non-trivial input is always wrong
+      if (outDuration > 0 && outDuration < 1.0 && inStat.size > 50 * 1024) {
+        fs.unlink(output, () => {});
+        throw Object.assign(
+          new Error(`Conversion produced only ${outDuration.toFixed(2)}s of audio from a ${(inStat.size/1024).toFixed(0)}KB file. Conversion failed — please try again.`),
+          { statusCode: 500 }
+        );
+      }
+      // Guard 2: output is less than half of known input duration
+      if (inDuration > 5 && outDuration > 0 && outDuration < inDuration * 0.5) {
+        fs.unlink(output, () => {});
+        throw Object.assign(
+          new Error(`Output is truncated: ${outDuration.toFixed(1)}s of ${inDuration.toFixed(1)}s input. Please try again or choose a different format.`),
+          { statusCode: 500 }
+        );
+      }
+      // Guard 3: zero-duration output when input duration was known
+      if (inDuration > 5 && outDuration === 0) {
+        fs.unlink(output, () => {});
+        throw Object.assign(
+          new Error(`Output has no detectable duration (input was ${inDuration.toFixed(1)}s). Conversion failed.`),
+          { statusCode: 500 }
+        );
       }
 
       console.log(`[audio-converter] ══ SUCCESS: ${fmt.toUpperCase()} ${(outStat.size/1024/1024).toFixed(2)}MB ${outDuration.toFixed(1)}s ══`);
       sendProgress(100);
-      return { outputPath: output, filename: `converted.${fmt}`, mimeType: mimeMap[fmt] };
+      // Output filename uses the target format extension — never reuse input ext.
+      // Content-Disposition sends this to the browser; CORS exposedHeaders ensures
+      // the browser JS can read it so the download gets the right .mp3/.wav/etc name.
+      return { outputPath: output, filename: `converted-audio.${fmt}`, mimeType: mimeMap[fmt] };
     }
 
     case 'video-converter': {
