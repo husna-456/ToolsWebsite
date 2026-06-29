@@ -426,10 +426,10 @@ export default function MediaToolShell({ tool }) {
   const acceptsAudio = isAudioIn && !isVolumeBooster;
   const maxMb        = acceptsAudio ? AUDIO_MAX_MB : VIDEO_MAX_MB;
   const accept       = isVolumeBooster
-    ? 'audio/mpeg,audio/wav,audio/ogg,audio/x-m4a,video/mp4,video/webm,video/quicktime'
+    ? 'audio/*,video/mp4,video/webm,video/quicktime,.mp3,.wav,.ogg,.m4a,.mp4,.mov,.webm'
     : acceptsAudio
-    ? '.mp3,.wav,.ogg,.m4a,.aac,.flac,.aiff,.aif,.wma,.amr,.opus,.webm,.mpeg,.mpg,audio/*'
-    : 'video/mp4,video/webm,video/quicktime,video/x-msvideo';
+    ? 'audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.aiff,.aif,.wma,.amr,.opus,.webm,.mpeg,.mpg'
+    : 'video/*,video/mp4,video/webm,video/quicktime,video/x-msvideo,.mp4,.webm,.mov,.avi';
   const fileTypeLabel = acceptsAudio ? 'audio' : 'video';
   const FileIcon      = acceptsAudio ? Music : Film;
 
@@ -632,24 +632,38 @@ export default function MediaToolShell({ tool }) {
 
   // ── Upload zone (reused for single + multi primary) ────────
   const uploadZone = (onSelect, labelText, acceptStr, refObj) => (
-    <label
-      className={`flex flex-col items-center justify-center gap-3 w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-200 py-8 px-6 ${
-        dragging ? 'border-accent bg-accent/5 scale-[1.01]' : 'border-border hover:border-accent/50 hover:bg-surface-2/60'
-      }`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
-      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-colors ${dragging ? 'bg-accent/10' : 'bg-surface-2 border border-border'}`}>
-        <Upload className={`w-5 h-5 ${dragging ? 'text-accent' : 'text-text-muted'}`} />
+    <>
+      <input
+        ref={refObj}
+        type="file"
+        accept={acceptStr}
+        multiple={isMultiUpload}
+        className="sr-only"
+        onClick={e => { e.target.value = ''; }}
+        onChange={e => isMultiUpload ? addFiles(e.target.files) : onSelect(e.target.files?.[0])}
+      />
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label={labelText}
+        onClick={() => refObj.current?.click()}
+        onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && refObj.current?.click()}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`flex flex-col items-center justify-center gap-3 w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-200 py-8 px-6 ${
+          dragging ? 'border-accent bg-accent/5 scale-[1.01]' : 'border-border hover:border-accent/50 hover:bg-surface-2/60'
+        }`}
+      >
+        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-colors ${dragging ? 'bg-accent/10' : 'bg-surface-2 border border-border'}`}>
+          <Upload className={`w-5 h-5 ${dragging ? 'text-accent' : 'text-text-muted'}`} />
+        </div>
+        <div className="text-center">
+          <p className="font-semibold text-text-primary text-sm">{labelText}</p>
+          <p className="text-xs text-text-muted mt-1">Max {maxMb} MB</p>
+        </div>
       </div>
-      <div className="text-center">
-        <p className="font-semibold text-text-primary text-sm">{labelText}</p>
-        <p className="text-xs text-text-muted mt-1">Max {maxMb} MB</p>
-      </div>
-      <input ref={refObj} type="file" accept={acceptStr} multiple={isMultiUpload}
-        className="sr-only" onChange={e => isMultiUpload ? addFiles(e.target.files) : onSelect(e.target.files?.[0])} />
-    </label>
+    </>
   );
 
   return (
@@ -715,12 +729,27 @@ export default function MediaToolShell({ tool }) {
                   <Label>Subtitle File (.srt or .vtt)</Label>
                   {!subtitleFile
                     ? (
-                      <label className="flex items-center gap-3 w-full rounded-xl border-2 border-dashed border-border hover:border-accent/50 cursor-pointer px-4 py-3 bg-surface-2/40 transition-all">
-                        <Plus className="w-4 h-4 text-text-muted" />
-                        <span className="text-sm text-text-secondary">Upload .srt or .vtt subtitle file</span>
-                        <input ref={subtitleRef} type="file" accept=".srt,.vtt,text/plain"
-                          className="sr-only" onChange={e => { setSubtitleFile(e.target.files?.[0] || null); }} />
-                      </label>
+                      <>
+                        <input
+                          ref={subtitleRef}
+                          type="file"
+                          accept=".srt,.vtt,text/plain"
+                          className="sr-only"
+                          onClick={e => { e.target.value = ''; }}
+                          onChange={e => { setSubtitleFile(e.target.files?.[0] || null); }}
+                        />
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          aria-label="Upload subtitle file"
+                          onClick={() => subtitleRef.current?.click()}
+                          onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && subtitleRef.current?.click()}
+                          className="flex items-center gap-3 w-full rounded-xl border-2 border-dashed border-border hover:border-accent/50 cursor-pointer px-4 py-3 bg-surface-2/40 transition-all"
+                        >
+                          <Plus className="w-4 h-4 text-text-muted" />
+                          <span className="text-sm text-text-secondary">Upload .srt or .vtt subtitle file</span>
+                        </div>
+                      </>
                     ) : (
                       <div className="flex items-center gap-3 p-3 rounded-xl border border-border bg-surface-2/60">
                         <Film className="w-4 h-4 text-accent shrink-0" />
@@ -776,28 +805,41 @@ export default function MediaToolShell({ tool }) {
             {!isMultiUpload && !isDualUpload && (
               <>
                 {!file ? (
-                  <label
-                    className={`flex flex-col items-center justify-center gap-3 w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-200 py-10 px-6 ${
-                      dragging ? 'border-accent bg-accent/5 scale-[1.01]' : 'border-border hover:border-accent/50 hover:bg-surface-2/60'
-                    }`}
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleDrop}
-                  >
-                    <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-colors ${dragging ? 'bg-accent/10' : 'bg-surface-2 border border-border'}`}>
-                      <Upload className={`w-6 h-6 ${dragging ? 'text-accent' : 'text-text-muted'}`} />
+                  <>
+                    <input
+                      ref={inputRef}
+                      type="file"
+                      accept={accept}
+                      className="sr-only"
+                      onClick={e => { e.target.value = ''; }}
+                      onChange={e => selectFile(e.target.files?.[0])}
+                    />
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Upload ${fileTypeLabel}`}
+                      onClick={() => inputRef.current?.click()}
+                      onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && inputRef.current?.click()}
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                      className={`flex flex-col items-center justify-center gap-3 w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-200 py-10 px-6 ${
+                        dragging ? 'border-accent bg-accent/5 scale-[1.01]' : 'border-border hover:border-accent/50 hover:bg-surface-2/60'
+                      }`}
+                    >
+                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-colors ${dragging ? 'bg-accent/10' : 'bg-surface-2 border border-border'}`}>
+                        <Upload className={`w-6 h-6 ${dragging ? 'text-accent' : 'text-text-muted'}`} />
+                      </div>
+                      <div className="text-center">
+                        <p className="font-semibold text-text-primary text-sm">
+                          {dragging ? `Drop ${fileTypeLabel} here` : `Drop ${fileTypeLabel} or click to browse`}
+                        </p>
+                        <p className="text-xs text-text-muted mt-1">
+                          {isVolumeBooster ? 'MP3, WAV, MP4, MOV' : acceptsAudio ? 'MP3, WAV, FLAC, OGG, M4A, WMA, OPUS + more' : 'MP4, WebM, MOV, AVI'} · Max {maxMb} MB
+                        </p>
+                      </div>
                     </div>
-                    <div className="text-center">
-                      <p className="font-semibold text-text-primary text-sm">
-                        {dragging ? `Drop ${fileTypeLabel} here` : `Drop ${fileTypeLabel} or click to browse`}
-                      </p>
-                      <p className="text-xs text-text-muted mt-1">
-                        {isVolumeBooster ? 'MP3, WAV, MP4, MOV' : acceptsAudio ? 'MP3, WAV, FLAC, OGG, M4A, WMA, OPUS + more' : 'MP4, WebM, MOV, AVI'} · Max {maxMb} MB
-                      </p>
-                    </div>
-                    <input ref={inputRef} type="file" accept={accept} className="sr-only"
-                      onChange={e => selectFile(e.target.files?.[0])} />
-                  </label>
+                  </>
                 ) : (
                   <div className="flex items-center gap-3 p-3.5 rounded-xl border border-border bg-surface-2/60">
                     <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
