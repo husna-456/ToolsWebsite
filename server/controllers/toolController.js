@@ -384,6 +384,9 @@ const processFile = async (req, res, next) => {
     }
     inputPath    = req.file.path;
     cleanupPaths = [inputPath];
+    // Pass through for logging in processMedia
+    options.originalname = req.file.originalname || '';
+    options.multerMime   = req.file.mimetype || '';
   }
 
   const cleanup = () => {

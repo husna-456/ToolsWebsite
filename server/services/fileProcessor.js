@@ -857,95 +857,165 @@ async function processMedia(inputPath, slug, options = {}) {
         progressStream.write(`data: ${JSON.stringify({ percent: Math.min(99, Math.round(pct)) })}\n\n`);
       };
 
-      // ── Log input ──────────────────────────────────────────────
-      const inSize = fs.statSync(inputPath).size;
-      console.log(`[audio-converter] INPUT  path="${inputPath}" size=${(inSize/1024/1024).toFixed(3)}MB target_fmt=${fmt} ffmpeg=${FFMPEG_PATH||'NONE'}`);
+      // ── Route hit + Input info ─────────────────────────────────
+      console.log('');
+      console.log('[audio-converter] ══ ROUTE HIT ══════════════════════════════');
+      console.log(`[audio-converter] originalname : "${options.originalname || '?'}"`);
+      console.log(`[audio-converter] multer mime  : "${options.multerMime  || '?'}"`);
+      console.log(`[audio-converter] client mime  : "${options.mimeType    || '?'}"`);
+      console.log(`[audio-converter] target format: ${fmt}`);
+      console.log(`[audio-converter] ffmpeg path  : ${FFMPEG_PATH || 'NONE'}`);
+      console.log(`[audio-converter] input path   : "${inputPath}"`);
 
+      // Verify uploaded file is on disk and has content
+      if (!fs.existsSync(inputPath)) {
+        throw Object.assign(new Error('Uploaded file not found on disk. Multer may have failed.'), { statusCode: 500 });
+      }
+      const inStat = fs.statSync(inputPath);
+      console.log(`[audio-converter] input size   : ${inStat.size} bytes (${(inStat.size/1024/1024).toFixed(3)} MB)`);
+      if (inStat.size === 0) {
+        throw Object.assign(new Error('Uploaded file is empty (0 bytes). Please upload a valid audio file.'), { statusCode: 400 });
+      }
+
+      // Detect input format from saved file extension
+      // Multer copies the original extension, so {uuid}.ogg means the upload was .ogg
+      const savedExt = path.extname(inputPath).slice(1).toLowerCase();
+      const extToInputFmt = {
+        ogg: 'ogg', mp3: 'mp3', wav: 'wav', aac: 'aac', m4a: 'mov',
+        m4b: 'mov', flac: 'flac', opus: 'ogg', wma: 'asf',
+        webm: 'webm', mpeg: 'mpeg', mpg: 'mpeg', aiff: 'aiff', amr: 'amr',
+      };
+      // 'bin' (Android no-extension files) → null so FFmpeg auto-detects from magic bytes
+      const inputFmt = extToInputFmt[savedExt] || null;
+      console.log(`[audio-converter] saved ext    : ".${savedExt}" → inputFmt: "${inputFmt || 'auto-detect'}"`);
+
+      // Probe input duration (best-effort — returns 0 on failure)
       const inDuration = await getMediaDuration(inputPath);
-      console.log(`[audio-converter] INPUT  duration=${inDuration.toFixed(3)}s`);
+      console.log(`[audio-converter] input duration (ffprobe): ${inDuration.toFixed(3)}s`);
 
-      // ── Convert ────────────────────────────────────────────────
+      // ── FFmpeg conversion ──────────────────────────────────────
       const output = outPath(fmt);
+      console.log(`[audio-converter] output path  : "${output}"`);
       const t0 = Date.now();
 
       await runFfmpeg(cmd => {
-        cmd.input(inputPath);
-
-        // Always strip video streams — we only want audio in the output.
-        // Without -vn, FFmpeg may attempt stream mapping that silently truncates output.
-        cmd.noVideo();
+        // Build the command as ONE continuous chain from input to output.
+        // This is the same pattern used by all other working audio tools
+        // (audio-compressor, audio-extractor, audio-trimmer, etc.).
+        // Calling methods as separate non-chained statements on cmd after
+        // cmd.input() can cause fluent-ffmpeg to mis-sequence options.
+        let c = cmd.input(inputPath);
+        if (inputFmt) c = c.inputFormat(inputFmt);
 
         switch (fmt) {
           case 'mp3':
-            // CBR 192k — avoids VBR Xing-header duration bugs in some players
-            cmd.audioCodec('libmp3lame').audioBitrate('192k').toFormat('mp3');
+            // CBR 192k — reliable duration metadata; no VBR Xing-header edge cases
+            c = c.noVideo().audioCodec('libmp3lame').audioBitrate('192k').toFormat('mp3');
             break;
           case 'wav':
-            cmd.audioCodec('pcm_s16le').toFormat('wav');
+            c = c.noVideo().audioCodec('pcm_s16le').toFormat('wav');
             break;
           case 'ogg':
-            cmd.audioCodec('libvorbis').toFormat('ogg');
+            c = c.noVideo().audioCodec('libvorbis').audioQuality(4).toFormat('ogg');
             break;
           case 'aac':
-            cmd.audioCodec('aac').audioBitrate('192k').toFormat('adts');
+            c = c.noVideo().audioCodec('aac').audioBitrate('192k').toFormat('adts');
             break;
           case 'm4a':
-            cmd.audioCodec('aac').audioBitrate('192k')
-               .outputOptions(['-movflags', '+faststart'])
-               .toFormat('ipod');
+            c = c.noVideo().audioCodec('aac').audioBitrate('192k')
+                 .outputOptions(['-movflags', '+faststart']).toFormat('ipod');
             break;
           case 'opus':
-            cmd.audioCodec('libopus').audioBitrate('128k').toFormat('ogg');
+            c = c.noVideo().audioCodec('libopus').audioBitrate('96k').toFormat('ogg');
             break;
           case 'flac':
-            cmd.audioCodec('flac').toFormat('flac');
+            c = c.noVideo().audioCodec('flac').toFormat('flac');
             break;
           case 'wma':
-            cmd.audioCodec('wmav2').audioBitrate('128k').toFormat('asf');
+            c = c.noVideo().audioCodec('wmav2').audioBitrate('128k').toFormat('asf');
             break;
           default:
-            cmd.audioCodec('pcm_s16le').toFormat('wav');
+            c = c.noVideo().audioCodec('pcm_s16le').toFormat('wav');
         }
 
-        cmd.on('start', cmdline => console.log(`[audio-converter] CMD: ${cmdline}`));
+        // Set output file
+        c.output(output);
+
+        // Log the exact FFmpeg command so we can diagnose issues on the server
+        cmd.on('start', cmdline => {
+          console.log(`[audio-converter] CMD: ${cmdline}`);
+        });
+
+        // Log FFmpeg stderr lines that look like errors
         cmd.on('stderr', line => {
-          if (/error|invalid|failed/i.test(line))
+          if (/error|invalid|failed|cannot|no such/i.test(line))
             console.error(`[audio-converter] stderr: ${line}`);
         });
+
+        // Propagated to the runFfmpeg reject() handler — logged here for detail
         cmd.on('error', (err, _out, stderr) =>
           console.error(`[audio-converter] FFmpeg ERROR: ${err.message}\n${stderr || ''}`)
         );
 
+        // Progress (only meaningful when we have input duration)
         if (inDuration > 0) {
           cmd.on('progress', ({ timemark }) => {
-            const current = parseTimemark(timemark);
-            sendProgress((current / inDuration) * 100);
+            const cur = parseTimemark(timemark);
+            sendProgress((cur / inDuration) * 100);
           });
         }
-
-        cmd.output(output);
       });
 
-      console.log(`[audio-converter] FFmpeg done in ${Date.now()-t0}ms`);
+      const elapsed = Date.now() - t0;
+      console.log(`[audio-converter] FFmpeg finished in ${elapsed}ms`);
 
-      // ── Verify output ──────────────────────────────────────────
-      const outSize = fs.statSync(output).size;
-      const outDuration = await getMediaDuration(output);
-      console.log(`[audio-converter] OUTPUT path="${output}" size=${(outSize/1024/1024).toFixed(3)}MB duration=${outDuration.toFixed(3)}s`);
-
-      if (outSize === 0) {
-        fs.unlink(output, () => {});
-        throw Object.assign(new Error('Conversion produced an empty file. FFmpeg may not support this input format on this server.'), { statusCode: 500 });
+      // ── Output verification ────────────────────────────────────
+      if (!fs.existsSync(output)) {
+        throw Object.assign(new Error('FFmpeg did not create an output file. Conversion failed silently.'), { statusCode: 500 });
       }
-      // If input is >10 s and output is less than half — something went wrong
-      if (inDuration > 10 && outDuration > 0 && outDuration < inDuration * 0.5) {
+      const outStat = fs.statSync(output);
+      console.log(`[audio-converter] output size  : ${outStat.size} bytes (${(outStat.size/1024/1024).toFixed(3)} MB)`);
+
+      if (outStat.size === 0) {
         fs.unlink(output, () => {});
         throw Object.assign(
-          new Error(`Conversion truncated audio (input ${inDuration.toFixed(1)}s → output ${outDuration.toFixed(1)}s). Please try again or choose a different format.`),
+          new Error('FFmpeg produced an empty output file. The codec may not be available on this server.'),
           { statusCode: 500 }
         );
       }
 
+      // Size sanity: any real audio should be at least 1 KB; if output is tiny
+      // but input was substantial, the conversion clearly failed silently
+      if (outStat.size < 1024 && inStat.size > 10240) {
+        fs.unlink(output, () => {});
+        throw Object.assign(
+          new Error(`Output is suspiciously small (${outStat.size} bytes) for a ${(inStat.size/1024/1024).toFixed(2)} MB input. Conversion failed.`),
+          { statusCode: 500 }
+        );
+      }
+
+      const outDuration = await getMediaDuration(output);
+      console.log(`[audio-converter] output duration (ffprobe): ${outDuration.toFixed(3)}s`);
+
+      // Duration sanity when we have reliable numbers from both probes
+      if (inDuration > 5) {
+        if (outDuration === 0) {
+          fs.unlink(output, () => {});
+          throw Object.assign(
+            new Error(`Output has no detectable duration (input was ${inDuration.toFixed(1)}s). Conversion failed.`),
+            { statusCode: 500 }
+          );
+        }
+        if (outDuration < inDuration * 0.5) {
+          fs.unlink(output, () => {});
+          throw Object.assign(
+            new Error(`Output is truncated: ${outDuration.toFixed(1)}s of ${inDuration.toFixed(1)}s input. Please try again or pick a different format.`),
+            { statusCode: 500 }
+          );
+        }
+      }
+
+      console.log(`[audio-converter] ══ SUCCESS: ${fmt.toUpperCase()} ${(outStat.size/1024/1024).toFixed(2)}MB ${outDuration.toFixed(1)}s ══`);
       sendProgress(100);
       return { outputPath: output, filename: `converted.${fmt}`, mimeType: mimeMap[fmt] };
     }
