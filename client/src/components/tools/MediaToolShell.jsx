@@ -604,8 +604,7 @@ export default function MediaToolShell({ tool }) {
   function handleDragLeave() { setDragging(false); }
   function handleDrop(e) {
     e.preventDefault(); setDragging(false);
-    if (isMultiUpload) addFiles(e.dataTransfer.files);
-    else selectFile(e.dataTransfer.files?.[0]);
+    // File processing is handled by the input overlay's onChange (fires on drop too)
   }
 
   // ── Process ────────────────────────────────────────────────
@@ -669,32 +668,18 @@ export default function MediaToolShell({ tool }) {
   const showResult   = done && !error;
 
   // ── Upload zone (reused for single + multi primary) ────────
-  // Uses label htmlFor — the most reliable mobile pattern; no programmatic .click() needed.
-  const uploadZone = (onSelect, labelText, acceptStr, refObj, inputId) => (
-    <>
-      <input
-        key={fileInputKey}
-        id={inputId}
-        ref={refObj}
-        type="file"
-        accept={acceptStr}
-        multiple={isMultiUpload}
-        style={hiddenInput}
-        onChange={e => {
-          setFileInputKey(k => k + 1);
-          if (isMultiUpload) addFiles(e.target.files);
-          else if (onSelect) onSelect(e.target.files?.[0]);
-        }}
-      />
-      <label
-        htmlFor={inputId}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        className={`flex flex-col items-center justify-center gap-3 w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-200 py-8 px-6 ${
-          dragging ? 'border-accent bg-accent/5 scale-[1.01]' : 'border-border hover:border-accent/50 hover:bg-surface-2/60'
-        }`}
-      >
+  // Transparent input overlay: user directly touches the <input> on mobile — no JS tricks.
+  // Visual content has pointer-events:none so taps fall through to the underlying input.
+  const uploadZone = (onSelect, labelText, acceptStr, refObj) => (
+    <div
+      className={`relative flex flex-col items-center justify-center gap-3 w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-200 py-8 px-6 ${
+        dragging ? 'border-accent bg-accent/5 scale-[1.01]' : 'border-border hover:border-accent/50 hover:bg-surface-2/60'
+      }`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      <div className="pointer-events-none flex flex-col items-center gap-3">
         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-colors ${dragging ? 'bg-accent/10' : 'bg-surface-2 border border-border'}`}>
           <Upload className={`w-5 h-5 ${dragging ? 'text-accent' : 'text-text-muted'}`} />
         </div>
@@ -702,8 +687,21 @@ export default function MediaToolShell({ tool }) {
           <p className="font-semibold text-text-primary text-sm">{labelText}</p>
           <p className="text-xs text-text-muted mt-1">Max {maxMb} MB</p>
         </div>
-      </label>
-    </>
+      </div>
+      <input
+        key={fileInputKey}
+        ref={refObj}
+        type="file"
+        accept={acceptStr}
+        multiple={isMultiUpload}
+        onChange={e => {
+          setFileInputKey(k => k + 1);
+          if (isMultiUpload) addFiles(e.target.files);
+          else if (onSelect) onSelect(e.target.files?.[0]);
+        }}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
+      />
+    </div>
   );
 
   return (
@@ -729,7 +727,7 @@ export default function MediaToolShell({ tool }) {
             {/* ── MULTI-FILE UPLOAD (audio-merger, video-merger) ── */}
             {isMultiUpload && (
               <>
-                {uploadZone(null, `Drop ${slug === 'audio-merger' ? 'audio' : 'video'} files or click to browse`, accept, multiRef, multiInputId)}
+                {uploadZone(null, `Drop ${slug === 'audio-merger' ? 'audio' : 'video'} files or click to browse`, accept, multiRef)}
                 {files.length > 0 && (
                   <div className="space-y-1.5">
                     <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">
@@ -750,7 +748,7 @@ export default function MediaToolShell({ tool }) {
                 <div>
                   <Label>Video File</Label>
                   {!file
-                    ? uploadZone(selectFile, 'Drop video or click to browse', 'video/mp4,video/webm,video/quicktime', inputRef, fileInputId)
+                    ? uploadZone(selectFile, 'Drop video or click to browse', 'video/mp4,video/webm,video/quicktime', inputRef)
                     : (
                       <div className="flex items-center gap-3 p-3 rounded-xl border border-border bg-surface-2/60">
                         <Film className="w-4 h-4 text-accent shrink-0" />
@@ -842,25 +840,15 @@ export default function MediaToolShell({ tool }) {
             {!isMultiUpload && !isDualUpload && (
               <>
                 {!file ? (
-                  <>
-                    <input
-                      key={fileInputKey}
-                      id={fileInputId}
-                      ref={inputRef}
-                      type="file"
-                      accept={accept}
-                      style={hiddenInput}
-                      onChange={e => { setFileInputKey(k => k + 1); selectFile(e.target.files?.[0]); }}
-                    />
-                    <label
-                      htmlFor={fileInputId}
-                      onDragOver={handleDragOver}
-                      onDragLeave={handleDragLeave}
-                      onDrop={handleDrop}
-                      className={`flex flex-col items-center justify-center gap-3 w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-200 py-10 px-6 ${
-                        dragging ? 'border-accent bg-accent/5 scale-[1.01]' : 'border-border hover:border-accent/50 hover:bg-surface-2/60'
-                      }`}
-                    >
+                  <div
+                    className={`relative flex flex-col items-center justify-center gap-3 w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-200 py-10 px-6 ${
+                      dragging ? 'border-accent bg-accent/5 scale-[1.01]' : 'border-border hover:border-accent/50 hover:bg-surface-2/60'
+                    }`}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                  >
+                    <div className="pointer-events-none flex flex-col items-center gap-3">
                       <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-colors ${dragging ? 'bg-accent/10' : 'bg-surface-2 border border-border'}`}>
                         <Upload className={`w-6 h-6 ${dragging ? 'text-accent' : 'text-text-muted'}`} />
                       </div>
@@ -872,8 +860,16 @@ export default function MediaToolShell({ tool }) {
                           {isVolumeBooster ? 'MP3, WAV, MP4, MOV' : acceptsAudio ? 'MP3, WAV, FLAC, OGG, M4A, WMA, OPUS + more' : 'MP4, WebM, MOV, AVI'} · Max {maxMb} MB
                         </p>
                       </div>
-                    </label>
-                  </>
+                    </div>
+                    <input
+                      key={fileInputKey}
+                      ref={inputRef}
+                      type="file"
+                      accept={accept}
+                      onChange={e => { setFileInputKey(k => k + 1); selectFile(e.target.files?.[0]); }}
+                      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
+                    />
+                  </div>
                 ) : (
                   <div className="flex items-center gap-3 p-3.5 rounded-xl border border-border bg-surface-2/60">
                     <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
