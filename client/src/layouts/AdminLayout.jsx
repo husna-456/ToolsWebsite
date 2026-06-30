@@ -1,4 +1,5 @@
 ﻿import { useState, useEffect } from 'react';
+import { Helmet } from 'react-helmet-async';
 import { Navigate, Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Settings, Mail, Wrench, Monitor, CreditCard,
@@ -305,6 +306,10 @@ export default function AdminLayout() {
 
   return (
     <div className="h-screen overflow-hidden flex bg-gray-50">
+      {/* Prevent search engines from indexing any admin panel page */}
+      <Helmet>
+        <meta name="robots" content="noindex, nofollow" />
+      </Helmet>
 
       {/* Mobile overlay */}
       {sidebarOpen && (

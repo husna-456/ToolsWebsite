@@ -5,8 +5,23 @@
       "source": "/(.*)",
       "headers": [
         { "key": "Cross-Origin-Opener-Policy",   "value": "same-origin" },
-        { "key": "Cross-Origin-Embedder-Policy",  "value": "credentialless" }
+        { "key": "Cross-Origin-Embedder-Policy",  "value": "credentialless" },
+        { "key": "X-Content-Type-Options",        "value": "nosniff" },
+        { "key": "X-Frame-Options",               "value": "DENY" },
+        { "key": "Referrer-Policy",               "value": "strict-origin-when-cross-origin" }
       ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/sitemap.xml",
+      "destination": "https://globaltechtools.thefiveriverz.com/sitemap.xml",
+      "permanent": false
+    },
+    {
+      "source": "/robots.txt",
+      "destination": "https://globaltechtools.thefiveriverz.com/robots.txt",
+      "permanent": false
     }
   ],
   "rewrites": [

@@ -1,13 +1,80 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      GOOGLE SEARCH CONSOLE VERIFICATION
+      ===================================
+      Method A — HTML meta tag (easiest):
+        Replace the line below with the real verification meta tag from
+        Google Search Console → Add Property → HTML tag verification.
+        Example:
+          <meta name="google-site-verification" content="PASTE_YOUR_CODE_HERE" />
+
+      Method B — DNS TXT record (recommended — covers www + non-www):
+        1. Go to search.google.com/search-console → Add Property → Domain
+        2. Enter: globaltechtool.com
+        3. Copy the TXT record value Google provides
+        4. Log in to your DNS registrar for globaltechtool.com
+        5. Add a new TXT record:
+             Name/Host: @  (or leave blank — depends on registrar)
+             Value: google-site-verification=XXXXXXXXXXXXXXXX
+             TTL: 3600 (or Auto)
+        6. Return to GSC and click Verify
+        7. DNS propagation: 5 minutes to 24 hours
+        NOTE: Do NOT use this file for DNS verification — DNS is set at your registrar.
+
+      Method C — HTML file upload:
+        1. Download google[hashcode].html from GSC
+        2. Place it in client/public/ folder
+        3. Vercel will serve it at https://globaltechtool.com/google[hashcode].html
+        4. Click Verify in GSC
+
+      SITEMAP URL TO SUBMIT IN GSC:
+        https://globaltechtool.com/sitemap.xml
+    -->
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@700;800&display=swap" rel="stylesheet" />
-    <title>Global Tech Tools — Free AI Tools for Writers & Students</title>
+    <title>Global Tech Tools — Free AI Tools for Writers &amp; Students</title>
+
+    <!--
+      VERCEL PREVIEW URL REDIRECT
+      ============================
+      If Google or any bot visits the Vercel preview URL instead of the
+      canonical domain, this script immediately redirects them to the real
+      domain — preventing duplicate content indexing.
+      This only fires on the specific known Vercel preview URL.
+      It does NOT affect localhost, staging, or the canonical domain.
+
+      ADDITIONALLY — Vercel Dashboard steps to permanently redirect:
+        1. Go to vercel.com → your project → Settings → Domains
+        2. Under "tools-website-rosy-seven.vercel.app" find "Redirect" option
+           (Vercel auto-generated preview URLs cannot be truly deleted, but
+            you can set the canonical domain as the primary domain)
+        3. Add "globaltechtool.com" as a custom domain → set as Primary
+        4. Vercel will automatically set the custom domain as canonical
+           and the .vercel.app URL will redirect to it
+        5. If a redirect option isn't available, the canonical meta tag
+           combined with the JS redirect below is sufficient for SEO
+    -->
+    <script>
+      (function () {
+        var h = window.location.hostname;
+        if (h === 'tools-website-rosy-seven.vercel.app') {
+          window.location.replace(
+            'https://globaltechtool.com' +
+            window.location.pathname +
+            window.location.search +
+            window.location.hash
+          );
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -1,11 +1,15 @@
 ﻿import { Helmet } from 'react-helmet-async';
 
-const BASE_URL = 'https://globaltechtool.com';
+const BASE_URL  = 'https://globaltechtool.com';
+const OG_IMAGE  = `${BASE_URL}/og-image.png`;
 
-export default function SEOHead({ tool, customTitle, customDesc }) {
-  const title    = customTitle || tool?.seoTitle || tool?.metaTitle || 'Global Tech Tools — Free AI Tools';
-  const desc     = customDesc  || tool?.seoDescription || tool?.metaDesc || 'Free AI tools for writers, students and creators.';
-  const canonical = tool ? `${BASE_URL}/tools/${tool.slug}/` : `${BASE_URL}/`;
+// robots prop: pass 'noindex, nofollow' to suppress a page from Google.
+// customCanonical: override the auto-derived canonical URL.
+export default function SEOHead({ tool, customTitle, customDesc, customCanonical, robots }) {
+  const title      = customTitle || tool?.seoTitle || tool?.metaTitle || 'Global Tech Tools — Free AI Tools';
+  const desc       = customDesc  || tool?.seoDescription || tool?.metaDesc || 'Free AI tools for writers, students and creators.';
+  const canonical  = customCanonical || (tool ? `${BASE_URL}/tools/${tool.slug}/` : `${BASE_URL}/`);
+  const robotsMeta = robots || 'index, follow';
 
   // WebApplication schema
   const webAppSchema = tool ? {
@@ -42,15 +46,29 @@ export default function SEOHead({ tool, customTitle, customDesc }) {
   return (
     <Helmet>
       <title>{title}</title>
-      <meta name="description"         content={desc} />
-      <link rel="canonical"            href={canonical} />
-      <meta property="og:title"        content={title} />
-      <meta property="og:description"  content={desc} />
-      <meta property="og:url"          content={canonical} />
-      <meta property="og:type"         content="website" />
-      <meta name="twitter:card"        content="summary_large_image" />
-      <meta name="twitter:title"       content={title} />
-      <meta name="twitter:description" content={desc} />
+      <meta name="description"            content={desc} />
+      <meta name="robots"                 content={robotsMeta} />
+      <link rel="canonical"               href={canonical} />
+
+      {/* Open Graph */}
+      <meta property="og:type"            content="website" />
+      <meta property="og:site_name"       content="Global Tech Tools" />
+      <meta property="og:locale"          content="en_US" />
+      <meta property="og:title"           content={title} />
+      <meta property="og:description"     content={desc} />
+      <meta property="og:url"             content={canonical} />
+      <meta property="og:image"           content={OG_IMAGE} />
+      <meta property="og:image:width"     content="1200" />
+      <meta property="og:image:height"    content="630" />
+      <meta property="og:image:alt"       content="Global Tech Tools — Free AI Tools" />
+
+      {/* Twitter Card */}
+      <meta name="twitter:card"           content="summary_large_image" />
+      <meta name="twitter:title"          content={title} />
+      <meta name="twitter:description"    content={desc} />
+      <meta name="twitter:image"          content={OG_IMAGE} />
+      <meta name="twitter:image:alt"      content="Global Tech Tools — Free AI Tools" />
+
       {webAppSchema && <script type="application/ld+json">{JSON.stringify(webAppSchema)}</script>}
       {faqSchema    && <script type="application/ld+json">{JSON.stringify(faqSchema)}</script>}
       {howToSchema  && <script type="application/ld+json">{JSON.stringify(howToSchema)}</script>}

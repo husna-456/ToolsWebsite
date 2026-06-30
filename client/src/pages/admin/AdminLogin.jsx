@@ -1,4 +1,5 @@
 ﻿import { useState } from 'react';
+import { Helmet } from 'react-helmet-async';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
@@ -34,6 +35,10 @@ export default function AdminLogin() {
   };
 
   return (
+    <>
+    <Helmet>
+      <meta name="robots" content="noindex, nofollow" />
+    </Helmet>
     <div
       className="min-h-screen flex items-center justify-center px-4"
       style={{ background: 'linear-gradient(135deg, #0f172a 0%, #111827 50%, #0a0f1e 100%)' }}
@@ -124,5 +129,6 @@ export default function AdminLogin() {
         </p>
       </div>
     </div>
+    </>
   );
 }
