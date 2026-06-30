@@ -62,6 +62,7 @@ export default function BlogPostPage() {
       <SEOHead
         customTitle={`${post.title} — Global Tech Tools Blog`}
         customDesc={post.excerpt || post.title}
+        ogType="article"
       />
 
       {/* Back link */}

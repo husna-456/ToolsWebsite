@@ -8,6 +8,7 @@ export default function NotFound() {
       <SEOHead
         customTitle="Page Not Found — Global Tech Tools"
         customDesc="The page you're looking for doesn't exist. Browse our free AI tools instead."
+        robots="noindex, nofollow"
       />
 
       <main className="min-h-[70vh] flex items-center justify-center px-5 py-20">

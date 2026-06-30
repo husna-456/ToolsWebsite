@@ -72,12 +72,40 @@ export default function MainLayout() {
     }
   }, [settings?.general?.customHeaderTags, settings?.general?.customBodyTags, settings?.general?.googleAnalyticsId]);
 
+  const BASE_URL = 'https://globaltechtool.com';
+
+  const organizationSchema = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type':    'Organization',
+    name:       'Global Tech Tools',
+    url:        BASE_URL,
+    logo:       `${BASE_URL}/og-image.png`,
+    sameAs:     [],
+  });
+
+  const websiteSchema = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type':    'WebSite',
+    name:       'Global Tech Tools',
+    url:        BASE_URL,
+    potentialAction: {
+      '@type':      'SearchAction',
+      target: {
+        '@type':       'EntryPoint',
+        urlTemplate:   `${BASE_URL}/?search={search_term_string}`,
+      },
+      'query-input': 'required name=search_term_string',
+    },
+  });
+
   return (
     <div className="min-h-screen flex flex-col">
       <Helmet>
         <title>{siteName}</title>
         {description && <meta name="description" content={description} />}
         {keywords    && <meta name="keywords"    content={keywords} />}
+        <script type="application/ld+json">{organizationSchema}</script>
+        <script type="application/ld+json">{websiteSchema}</script>
       </Helmet>
       <AdSlot slot="headerBanner" />
       <Navbar />
