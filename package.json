@@ -1,7 +1,7 @@
 {
   "name": "toolplatform",
   "version": "1.0.0",
-  "description": "AI Tools Platform - tools.innovate.com.pk",
+  "description": "Global Tech Tools - globaltechtool.com",
   "scripts": {
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "server": "cd server && npm run dev",
