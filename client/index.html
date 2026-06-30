@@ -5,14 +5,44 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
+    <!-- =====================================================================
+         DEFAULT SEO & SOCIAL META TAGS
+         These are static fallbacks read by WhatsApp, Facebook, Twitter/X,
+         LinkedIn and any other crawler that does NOT execute JavaScript.
+         React Helmet (SEOHead.jsx) overrides these at runtime for dynamic
+         per-page values — both layers are intentional and correct.
+         ===================================================================== -->
+    <meta name="description" content="Use free online AI, media, image, text and productivity tools at Global Tech Tools. Fast, secure and easy to use." />
+    <meta name="robots" content="index, follow" />
+
+    <!-- Open Graph (WhatsApp, Facebook, LinkedIn, Telegram, Discord) -->
+    <meta property="og:type"              content="website" />
+    <meta property="og:site_name"         content="Global Tech Tools" />
+    <meta property="og:locale"            content="en_US" />
+    <meta property="og:title"             content="Global Tech Tools — Free AI Tools for Writers &amp; Students" />
+    <meta property="og:description"       content="Use free online AI, media, image, text and productivity tools at Global Tech Tools. Fast, secure and easy to use." />
+    <meta property="og:url"               content="https://globaltechtool.com/" />
+    <meta property="og:image"             content="https://globaltechtool.com/og-image.png" />
+    <meta property="og:image:secure_url"  content="https://globaltechtool.com/og-image.png" />
+    <meta property="og:image:type"        content="image/png" />
+    <meta property="og:image:width"       content="1200" />
+    <meta property="og:image:height"      content="630" />
+    <meta property="og:image:alt"         content="Global Tech Tools preview image" />
+
+    <!-- Twitter / X Card -->
+    <meta name="twitter:card"             content="summary_large_image" />
+    <meta name="twitter:title"            content="Global Tech Tools — Free AI Tools for Writers &amp; Students" />
+    <meta name="twitter:description"      content="Use free online AI, media, image, text and productivity tools at Global Tech Tools. Fast, secure and easy to use." />
+    <meta name="twitter:image"            content="https://globaltechtool.com/og-image.png" />
+    <meta name="twitter:image:alt"        content="Global Tech Tools preview image" />
+
     <!--
       GOOGLE SEARCH CONSOLE VERIFICATION
       ===================================
       Method A — HTML meta tag (easiest):
-        Replace the line below with the real verification meta tag from
-        Google Search Console → Add Property → HTML tag verification.
-        Example:
+        Add the verification meta tag from GSC directly below this comment:
           <meta name="google-site-verification" content="PASTE_YOUR_CODE_HERE" />
+        Then push — Vercel deploys in ~60 seconds.
 
       Method B — DNS TXT record (recommended — covers www + non-www):
         1. Go to search.google.com/search-console → Add Property → Domain
@@ -20,17 +50,16 @@
         3. Copy the TXT record value Google provides
         4. Log in to your DNS registrar for globaltechtool.com
         5. Add a new TXT record:
-             Name/Host: @  (or leave blank — depends on registrar)
+             Name/Host: @  (or leave blank)
              Value: google-site-verification=XXXXXXXXXXXXXXXX
              TTL: 3600 (or Auto)
-        6. Return to GSC and click Verify
+        6. Return to GSC → click Verify
         7. DNS propagation: 5 minutes to 24 hours
-        NOTE: Do NOT use this file for DNS verification — DNS is set at your registrar.
 
       Method C — HTML file upload:
         1. Download google[hashcode].html from GSC
-        2. Place it in client/public/ folder
-        3. Vercel will serve it at https://globaltechtool.com/google[hashcode].html
+        2. Place it in client/public/
+        3. It will be served at https://globaltechtool.com/google[hashcode].html
         4. Click Verify in GSC
 
       SITEMAP URL TO SUBMIT IN GSC:
@@ -45,22 +74,13 @@
     <!--
       VERCEL PREVIEW URL REDIRECT
       ============================
-      If Google or any bot visits the Vercel preview URL instead of the
-      canonical domain, this script immediately redirects them to the real
-      domain — preventing duplicate content indexing.
-      This only fires on the specific known Vercel preview URL.
-      It does NOT affect localhost, staging, or the canonical domain.
+      Redirects the known Vercel preview URL to the canonical domain so bots
+      do not index duplicate content. Does not affect localhost or other previews.
 
-      ADDITIONALLY — Vercel Dashboard steps to permanently redirect:
-        1. Go to vercel.com → your project → Settings → Domains
-        2. Under "tools-website-rosy-seven.vercel.app" find "Redirect" option
-           (Vercel auto-generated preview URLs cannot be truly deleted, but
-            you can set the canonical domain as the primary domain)
-        3. Add "globaltechtool.com" as a custom domain → set as Primary
-        4. Vercel will automatically set the custom domain as canonical
-           and the .vercel.app URL will redirect to it
-        5. If a redirect option isn't available, the canonical meta tag
-           combined with the JS redirect below is sufficient for SEO
+      Vercel Dashboard steps to permanently fix:
+        1. vercel.com → project → Settings → Domains
+        2. Add "globaltechtool.com" as custom domain → set as Primary
+        3. The .vercel.app URL will then automatically redirect to the custom domain
     -->
     <script>
       (function () {
