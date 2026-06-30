@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { Users, Zap, TrendingUp, CheckSquare, Loader2, AlertCircle, Activity } from 'lucide-react';
 import api from '@/services/api';
 import { useAuth } from '@/context/AuthContext';
@@ -95,7 +95,7 @@ export default function AdminDashboard() {
           <h1 className="text-2xl font-medium text-gray-900">
             {greeting}, {user?.name || 'Admin'}
           </h1>
-          <p className="text-gray-500 text-sm mt-1">Here's an overview of ToolNova today.</p>
+          <p className="text-gray-500 text-sm mt-1">Here's an overview of Global Tech Tools today.</p>
         </div>
         <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-4 py-2 shrink-0">
           <Activity className="w-4 h-4 text-[var(--admin-brand)]" />

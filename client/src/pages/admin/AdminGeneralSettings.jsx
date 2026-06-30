@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { Loader2, AlertCircle, CheckCircle, Save, Plus, Trash2 } from 'lucide-react';
 import api from '@/services/api';
 
@@ -40,10 +40,10 @@ function injectRootBlock(existingCss, colors) {
 }
 
 const DEFAULTS = {
-  siteName:          'ToolNova',
+  siteName:          'Global Tech Tools',
   siteDescription:   '',
   keywords:          '',
-  footerAttribution: '© ToolNova. All Rights Reserved.',
+  footerAttribution: '© Global Tech Tools. All Rights Reserved.',
   logo:              '',
   contrastingLogo:   '',
   favicon:           '',
@@ -123,11 +123,11 @@ export default function AdminGeneralSettings() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Site Name</label>
-            <input className={INPUT} value={form.siteName} onChange={e => set('siteName', e.target.value)} placeholder="ToolNova" />
+            <input className={INPUT} value={form.siteName} onChange={e => set('siteName', e.target.value)} placeholder="Global Tech Tools" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Footer Attribution</label>
-            <input className={INPUT} value={form.footerAttribution} onChange={e => set('footerAttribution', e.target.value)} placeholder="© ToolNova. All Rights Reserved." />
+            <input className={INPUT} value={form.footerAttribution} onChange={e => set('footerAttribution', e.target.value)} placeholder="© Global Tech Tools. All Rights Reserved." />
           </div>
         </div>
         <div>

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+﻿import { useEffect, useState, useCallback } from 'react';
 import { Loader2, AlertCircle, Settings, X, CheckCircle, ChevronDown, ChevronRight } from 'lucide-react';
 import api from '@/services/api';
 
@@ -184,7 +184,7 @@ function ToolSettingsModal({ tool, onClose, onSaved }) {
             <SectionHeading>SEO</SectionHeading>
             <div className="space-y-4">
               <Field label="Meta Title">
-                <input className={INPUT} type="text" value={form.seoTitle} onChange={e => set('seoTitle', e.target.value)} placeholder="e.g. Free AI Summarizer — ToolNova" />
+                <input className={INPUT} type="text" value={form.seoTitle} onChange={e => set('seoTitle', e.target.value)} placeholder="e.g. Free AI Summarizer — Global Tech Tools" />
               </Field>
 
               <Field label="Meta Description">

@@ -1,4 +1,4 @@
-const mongoose          = require('mongoose');
+﻿const mongoose          = require('mongoose');
 const Tool              = require('../models/Tool');
 const User              = require('../models/User');
 const UsageLog          = require('../models/UsageLog');
@@ -500,7 +500,7 @@ const aiReplyContact = async (req, res, next) => {
     if (!contact) return res.status(404).json({ success: false, error: 'Submission not found.' });
 
     const setting  = await getSetting();
-    const siteName = setting?.general?.siteName || 'InnovateTools';
+    const siteName = setting?.general?.siteName || 'Global Tech Tools';
 
     const Groq      = require('groq-sdk');
     const groq      = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -554,7 +554,7 @@ const sendReplyContact = async (req, res, next) => {
 
     const setting  = await getSetting();
     const smtp     = setting?.smtp;
-    const siteName = setting?.general?.siteName || 'InnovateTools';
+    const siteName = setting?.general?.siteName || 'Global Tech Tools';
 
     if (!smtp?.host || !smtp?.username || !smtp?.password) {
       return res.status(400).json({ success: false, error: 'SMTP is not configured. Please set up SMTP in settings first.' });
@@ -692,8 +692,8 @@ const testSmtpSettings = async (req, res, next) => {
 
     await sendMail(smtp, {
       to,
-      subject: 'InnovateTools — SMTP Test Email',
-      text: 'This is a test email from InnovateTools.\n\nYour SMTP configuration is working correctly.',
+      subject: 'Global Tech Tools — SMTP Test Email',
+      text: 'This is a test email from Global Tech Tools.\n\nYour SMTP configuration is working correctly.',
       html: `
         <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;background:#f8fafc;border-radius:12px;">
           <div style="text-align:center;margin-bottom:24px;">
@@ -702,7 +702,7 @@ const testSmtpSettings = async (req, res, next) => {
             </div>
           </div>
           <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#0f172a;text-align:center;">SMTP Test Successful</h2>
-          <p style="margin:0 0 24px;color:#475569;font-size:14px;text-align:center;">Your InnovateTools email configuration is working correctly.</p>
+          <p style="margin:0 0 24px;color:#475569;font-size:14px;text-align:center;">Your Global Tech Tools email configuration is working correctly.</p>
           <table style="width:100%;background:#fff;border-radius:8px;border:1px solid #e2e8f0;border-collapse:collapse;font-size:13px;">
             <tr><td style="padding:10px 16px;color:#64748b;border-bottom:1px solid #f1f5f9;">Host</td><td style="padding:10px 16px;color:#0f172a;">${smtp.host}:${smtp.port}</td></tr>
             <tr><td style="padding:10px 16px;color:#64748b;border-bottom:1px solid #f1f5f9;">Encryption</td><td style="padding:10px 16px;color:#0f172a;">${smtp.encryption?.toUpperCase()}</td></tr>

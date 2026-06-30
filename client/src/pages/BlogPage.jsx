@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, Clock, BookOpen, Loader2, AlertCircle } from 'lucide-react';
 import SEOHead from '@/components/seo/SEOHead';
@@ -87,8 +87,8 @@ export default function BlogPage() {
   return (
     <>
       <SEOHead
-        customTitle="Blog — ToolNova"
-        customDesc="Tips, guides, and updates about AI writing, text tools, image tools, and more from the ToolNova team."
+        customTitle="Blog — Global Tech Tools"
+        customDesc="Tips, guides, and updates about AI writing, text tools, image tools, and more from the Global Tech Tools team."
       />
 
       {/* Gradient hero header */}

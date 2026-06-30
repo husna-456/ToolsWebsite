@@ -1,4 +1,4 @@
-# InnovateTools — Master Development Skill File
+﻿# Global Tech Tools — Master Development Skill File
 
 > **READ COMPLETELY BEFORE WRITING ANY CODE.**
 > This file is the single source of truth. If anything elsewhere contradicts this file, this file wins.
@@ -490,7 +490,7 @@ Per slug:
 
 ### File Storage Rules
 ```
-✅ Save to /tmp/innovatetools/ with uuid filename
+✅ Save to /tmp/Global Tech Tools/ with uuid filename
 ✅ Original filename NEVER used
 ✅ Delete after 1 hour via cron job (server/jobs/cleanup.js)
 ❌ Never save to public/ folder
@@ -514,7 +514,7 @@ mediaUpload:
   - Reject anything else with 400
 
 Filename: always uuid + correct extension
-Destination: /tmp/innovatetools/
+Destination: /tmp/Global Tech Tools/
 ```
 
 ### Rate Limiting (`server/middleware/rateLimiter.js` — already exists)
@@ -788,7 +788,7 @@ Single long form (saves on "Save Changes" button at bottom).
 - Website Title (used as `<title>` suffix)
 - Website Description (homepage meta-description)
 - Website Keywords (comma-separated meta keywords)
-- Footer Attribution (e.g., "© InnovateTools. All Rights Reserved.")
+- Footer Attribution (e.g., "© Global Tech Tools. All Rights Reserved.")
 
 **Branding:**
 - Logo (upload, shown in light header)
@@ -823,7 +823,7 @@ Email server configuration.
 - Encryption (none / TLS / SSL)
 - Username
 - Password (masked input)
-- From Name (e.g., "InnovateTools Team")
+- From Name (e.g., "Global Tech Tools Team")
 - From Email
 - Reply-To Email (optional)
 
@@ -1818,7 +1818,7 @@ Examples of Pro-only tools (Phase 2):
 > - Copy their exact admin panel layouts pixel-for-pixel
 > - Use their proprietary design system
 >
-> Everything in InnovateTools is original code written for this project.
+> Everything in Global Tech Tools is original code written for this project.
 
 ### 18.10 Phase 2 Build Order (when we get there)
 ```

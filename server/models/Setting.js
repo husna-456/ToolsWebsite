@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+﻿const mongoose = require('mongoose');
 
 const adSlotSchema = {
   enabled: { type: Boolean, default: false },
@@ -8,10 +8,10 @@ const adSlotSchema = {
 const settingSchema = new mongoose.Schema(
   {
     general: {
-      siteName:          { type: String, default: 'InnovateTools' },
+      siteName:          { type: String, default: 'Global Tech Tools' },
       siteDescription:   { type: String, default: '' },
       keywords:          { type: String, default: '' },
-      footerAttribution: { type: String, default: '© InnovateTools. All Rights Reserved.' },
+      footerAttribution: { type: String, default: '© Global Tech Tools. All Rights Reserved.' },
       logo:              { type: String, default: '' },
       contrastingLogo:   { type: String, default: '' },
       favicon:           { type: String, default: '' },
@@ -31,7 +31,7 @@ const settingSchema = new mongoose.Schema(
       encryption:  { type: String, enum: ['none','tls','ssl'], default: 'tls' },
       username:    { type: String, default: '' },
       password:    { type: String, default: '' },
-      fromName:    { type: String, default: 'InnovateTools' },
+      fromName:    { type: String, default: 'Global Tech Tools' },
       fromEmail:   { type: String, default: '' },
       replyToEmail:{ type: String, default: '' },
       lastTestAt:  { type: Date },

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
@@ -81,7 +81,7 @@ export default function AdminLogin() {
                 onChange={e => setEmail(e.target.value)}
                 required
                 autoComplete="email"
-                placeholder="admin@toolnova.com"
+                placeholder="admin@globaltechtool.com"
                 className="w-full px-4 py-3 rounded-xl border border-white/10 bg-white/10 text-white text-sm placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition"
               />
             </div>
@@ -120,7 +120,7 @@ export default function AdminLogin() {
         </div>
 
         <p className="text-center text-white/20 text-xs mt-6">
-          ToolNova Admin · Restricted Access
+          Global Tech Tools Admin · Restricted Access
         </p>
       </div>
     </div>

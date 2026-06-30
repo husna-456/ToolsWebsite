@@ -1,4 +1,4 @@
-import { useParams, Navigate, Link } from 'react-router-dom';
+﻿import { useParams, Navigate, Link } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
 import { CATEGORIES } from '@/data/tools';
@@ -22,7 +22,7 @@ export default function CategoryPage() {
   return (
     <>
       <SEOHead
-        customTitle={`${cat.label} — Free Online Tools | ToolNova`}
+        customTitle={`${cat.label} — Free Online Tools | Global Tech Tools`}
         customDesc={`Free ${cat.label.toLowerCase()} tools — fast, accurate, no signup needed.`}
       />
 

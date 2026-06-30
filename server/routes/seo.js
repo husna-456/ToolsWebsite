@@ -1,8 +1,8 @@
-const express = require('express');
+﻿const express = require('express');
 const router  = express.Router();
 const { TOOLS } = require('../constants/tools');
 
-const BASE = 'https://tools.innovate.com.pk';
+const BASE = 'https://globaltechtool.com';
 
 router.get('/sitemap.xml', (req, res) => {
   const staticUrls = [BASE + '/', BASE + '/category/ai-writing/', BASE + '/category/text-tools/'];

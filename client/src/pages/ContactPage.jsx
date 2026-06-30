@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import { Mail, MessageSquare, User, Send, CheckCircle, Zap, AlertCircle } from 'lucide-react';
 import SEOHead from '@/components/seo/SEOHead';
 import api from '@/services/api';
@@ -28,8 +28,8 @@ export default function ContactPage() {
   return (
     <>
       <SEOHead
-        customTitle="Contact Us — ToolNova"
-        customDesc="Have a question, feedback, or tool request? Get in touch with the ToolNova team."
+        customTitle="Contact Us — Global Tech Tools"
+        customDesc="Have a question, feedback, or tool request? Get in touch with the Global Tech Tools team."
       />
 
       {/* Gradient hero header */}

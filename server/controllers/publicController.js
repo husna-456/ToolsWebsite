@@ -1,4 +1,4 @@
-const Page              = require('../models/Page');
+﻿const Page              = require('../models/Page');
 const Post              = require('../models/Post');
 const ContactSubmission = require('../models/ContactSubmission');
 const Setting           = require('../models/Setting');
@@ -17,7 +17,7 @@ function esc(str) {
 async function sendContactEmails({ name, email, subject, message }) {
   const doc      = await Setting.findOne().lean();
   const smtp     = doc?.smtp;
-  const siteName = doc?.general?.siteName || 'InnovateTools';
+  const siteName = doc?.general?.siteName || 'Global Tech Tools';
 
   // Skip silently if SMTP is not set up
   if (!smtp?.host || !smtp?.username || !smtp?.password) return;

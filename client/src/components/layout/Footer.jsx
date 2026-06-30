@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+﻿import { Link } from 'react-router-dom';
 import { Mail, ArrowRight } from 'lucide-react';
 import usePublicSettings from '@/hooks/usePublicSettings';
 
@@ -94,7 +94,7 @@ export default function Footer() {
             <p className="text-white/35 text-xs mt-auto pt-8">
               {settings?.general?.footerAttribution
                 ? settings.general.footerAttribution
-                : `© ${new Date().getFullYear()} ${settings?.general?.siteName || 'ToolNova'}. All Rights Reserved.`}
+                : `© ${new Date().getFullYear()} ${settings?.general?.siteName || 'Global Tech Tools'}. All Rights Reserved.`}
             </p>
           </div>
         </div>

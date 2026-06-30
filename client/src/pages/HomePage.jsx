@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Search, ArrowRight, CheckCircle, Zap, Shield, Globe, Loader2,
@@ -79,7 +79,7 @@ export default function HomePage() {
   return (
     <>
       <SEOHead
-        customTitle="ToolNova — Free AI Tools for Writers, Students & Creators"
+        customTitle="Global Tech Tools — Free AI Tools for Writers, Students & Creators"
         customDesc="Free AI Humanizer, AI Detector, Plagiarism Checker, Tone Changer & Word Counter. No signup needed. Used by 50,000+ people."
       />
 
@@ -274,7 +274,7 @@ export default function HomePage() {
               className="inline-flex items-center gap-2 text-xs font-bold px-4 py-1.5 rounded-full mb-4"
               style={{ background: 'color-mix(in srgb, var(--brand), transparent 92%)', color: 'var(--brand)', border: '1px solid color-mix(in srgb, var(--brand), transparent 85%)' }}
             >
-              <Zap className="w-3.5 h-3.5" /> Why ToolNova
+              <Zap className="w-3.5 h-3.5" /> Why Global Tech Tools
             </div>
             <h2 className="font-display font-bold text-3xl sm:text-4xl text-[#0F172A] tracking-tight mt-2">
               Everything you need, nothing you don't
@@ -325,7 +325,7 @@ export default function HomePage() {
                 The tools you need, exactly when you need them
               </h2>
               <p className="text-[#64748B] leading-relaxed mb-8 text-sm">
-                No fluff, no upsells. Every tool on ToolNova is designed to solve a real problem — fast.
+                No fluff, no upsells. Every tool on Global Tech Tools is designed to solve a real problem — fast.
               </p>
               <ul className="space-y-3.5">
                 {[

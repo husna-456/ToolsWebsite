@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { useParams, Link, Navigate } from 'react-router-dom';
 import { ArrowLeft, Clock, Eye, Calendar, Loader2, AlertCircle } from 'lucide-react';
 import SEOHead from '@/components/seo/SEOHead';
@@ -60,7 +60,7 @@ export default function BlogPostPage() {
   return (
     <>
       <SEOHead
-        customTitle={`${post.title} — ToolNova Blog`}
+        customTitle={`${post.title} — Global Tech Tools Blog`}
         customDesc={post.excerpt || post.title}
       />
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { Loader2, AlertCircle, CheckCircle, Save, Mail, Eye, EyeOff, Send } from 'lucide-react';
 import api from '@/services/api';
 
@@ -21,7 +21,7 @@ const DEFAULTS = {
   encryption:   'tls',
   username:     '',
   password:     '',
-  fromName:     'ToolNova',
+  fromName:     'Global Tech Tools',
   fromEmail:    '',
   replyToEmail: '',
 };
@@ -162,7 +162,7 @@ export default function AdminSmtpSettings() {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">From Name</label>
-            <input className={INPUT} value={form.fromName} onChange={e => set('fromName', e.target.value)} placeholder="ToolNova" />
+            <input className={INPUT} value={form.fromName} onChange={e => set('fromName', e.target.value)} placeholder="Global Tech Tools" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">From Email</label>

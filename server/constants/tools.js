@@ -1,4 +1,4 @@
-// ─────────────────────────────────────────────────────────────
+﻿// ─────────────────────────────────────────────────────────────
 // TOOLS REGISTRY — Add new tools here ONLY, everything else is dynamic
 // ─────────────────────────────────────────────────────────────
 
@@ -14,7 +14,7 @@ const TOOLS = {
     isActive:    true,
     isFeatured:  true,
     tags:        ['ai writing', 'humanize', 'chatgpt', 'bypass ai detection'],
-    metaTitle:   'Free AI Humanizer — Convert AI Text to Human Writing | Innovate Tools',
+    metaTitle:   'Free AI Humanizer — Convert AI Text to Human Writing | Global Tech Tools',
     metaDesc:    'Make AI-generated text sound human instantly. Free AI humanizer — no signup needed. Works with ChatGPT, Claude, Gemini output.',
     faqs: [
       { q: 'What is an AI Humanizer?', a: 'An AI Humanizer is a tool that rewrites AI-generated text to sound natural and human-written, making it undetectable by AI content detectors.' },
@@ -43,7 +43,7 @@ const TOOLS = {
     isActive:    true,
     isFeatured:  true,
     tags:        ['ai detection', 'chatgpt detector', 'ai checker'],
-    metaTitle:   'Free AI Detector — Check If Text Is AI Generated | Innovate Tools',
+    metaTitle:   'Free AI Detector — Check If Text Is AI Generated | Global Tech Tools',
     metaDesc:    'Instantly detect AI-written content. Free AI detector — works with ChatGPT, Claude, Gemini & more. Get score + detailed reasons.',
     faqs: [
       { q: 'How accurate is this AI Detector?', a: 'Our AI Detector uses advanced analysis to achieve high accuracy, though no detector is 100% perfect. It provides a confidence score so you can judge accordingly.' },
@@ -72,7 +72,7 @@ const TOOLS = {
     isFeatured:  true,
     tones:       ['Professional', 'Casual', 'Formal', 'Friendly', 'Persuasive', 'Academic', 'Humorous', 'Empathetic'],
     tags:        ['tone changer', 'rewrite', 'paraphrase', 'writing style'],
-    metaTitle:   'Free Tone Changer — Rewrite Text in Any Tone | Innovate Tools',
+    metaTitle:   'Free Tone Changer — Rewrite Text in Any Tone | Global Tech Tools',
     metaDesc:    'Change the tone of any text instantly. Free online tone changer — professional, casual, formal, friendly & more. No signup needed.',
     faqs: [
       { q: 'What tones are available?', a: 'You can change text to Professional, Casual, Formal, Friendly, Persuasive, Academic, Humorous, or Empathetic tone.' },
@@ -98,7 +98,7 @@ const TOOLS = {
     isActive:    true,
     isFeatured:  true,
     tags:        ['plagiarism checker', 'originality', 'student tools', 'content checker'],
-    metaTitle:   'Free Plagiarism Checker — Check Text Originality | Innovate Tools',
+    metaTitle:   'Free Plagiarism Checker — Check Text Originality | Global Tech Tools',
     metaDesc:    'Check your text for plagiarism online. Free plagiarism checker for students and writers. Get originality score instantly.',
     faqs: [
       { q: 'Is this plagiarism checker free?', a: 'Yes, completely free with 5 daily checks. No signup required.' },
@@ -125,7 +125,7 @@ const TOOLS = {
     isFeatured:  true,
     clientSide:  true,
     tags:        ['word counter', 'character counter', 'text counter'],
-    metaTitle:   'Free Word Counter — Count Words & Characters Online | Innovate Tools',
+    metaTitle:   'Free Word Counter — Count Words & Characters Online | Global Tech Tools',
     metaDesc:    'Free online word counter. Instantly count words, characters, sentences, paragraphs and reading time. No signup needed.',
     faqs: [
       { q: 'Is the word counter free?', a: 'Yes, 100% free with no limits. No signup required.' },
@@ -151,7 +151,7 @@ const TOOLS = {
     isActive:    true,
     isFeatured:  true,
     tags:        ['summarizer', 'text summary', 'article summarizer', 'TL;DR'],
-    metaTitle:   'Free Text Summarizer — Summarize Any Article Online | Innovate Tools',
+    metaTitle:   'Free Text Summarizer — Summarize Any Article Online | Global Tech Tools',
     metaDesc:    'Summarize long articles and documents instantly. Free AI summarizer — no signup. Powered by LLaMA AI.',
     faqs: [
       { q: 'What types of text can I summarize?', a: 'Any text — articles, research papers, reports, blog posts, books, meeting notes, and more.' },
@@ -173,7 +173,7 @@ const TOOLS = {
     isFeatured:  false,
     toolType:    'citation',
     tags:        ['citation generator', 'APA', 'MLA', 'Chicago', 'Harvard', 'bibliography'],
-    metaTitle:   'Free Citation Generator — APA, MLA, Chicago, Harvard | Innovate Tools',
+    metaTitle:   'Free Citation Generator — APA, MLA, Chicago, Harvard | Global Tech Tools',
     metaDesc:    'Generate academic citations in any format instantly. Free citation generator — APA, MLA, Chicago, Harvard. No signup needed.',
     faqs: [
       { q: 'Which citation formats are supported?', a: 'APA, MLA, Chicago, and Harvard citation styles.' },
@@ -196,7 +196,7 @@ const TOOLS = {
     clientSide:  true,
     toolType:    'text-image',
     tags:        ['text to image', 'AI image generator', 'image generation', 'AI art'],
-    metaTitle:   'Free Text to Image Generator — AI Art from Text | Innovate Tools',
+    metaTitle:   'Free Text to Image Generator — AI Art from Text | Global Tech Tools',
     metaDesc:    'Generate AI images from text descriptions for free. No signup required. Create unique AI art instantly.',
     faqs: [
       { q: 'How does Text to Image work?', a: 'You enter a text description and our AI generates a unique image based on your prompt.' },
@@ -219,7 +219,7 @@ const TOOLS = {
     clientSide:  true,
     toolType:    'speech',
     tags:        ['speech to text', 'voice to text', 'transcription', 'dictation'],
-    metaTitle:   'Free Speech to Text — Voice Transcription Online | Innovate Tools',
+    metaTitle:   'Free Speech to Text — Voice Transcription Online | Global Tech Tools',
     metaDesc:    'Convert speech to text instantly for free. Browser-based voice transcription — no installation, no signup required.',
     faqs: [
       { q: 'Does it work in all browsers?', a: 'It works best in Chrome and Edge. Firefox and Safari have limited support.' },
@@ -242,7 +242,7 @@ const TOOLS = {
     clientSide:  true,
     toolType:    'ocr',
     tags:        ['JPG to Word', 'OCR', 'image to text', 'extract text from image'],
-    metaTitle:   'Free JPG to Word — Extract Text from Images (OCR) | Innovate Tools',
+    metaTitle:   'Free JPG to Word — Extract Text from Images (OCR) | Global Tech Tools',
     metaDesc:    'Convert JPG, PNG images to editable text for free. Free OCR tool — no signup, no installation required.',
     faqs: [
       { q: 'What image formats are supported?', a: 'JPG, JPEG, PNG, GIF, BMP, and TIFF formats are supported.' },
@@ -264,7 +264,7 @@ const TOOLS = {
     isFeatured:  false,
     toolType:    'image-translate',
     tags:        ['image translator', 'translate image', 'OCR translation', 'multilingual'],
-    metaTitle:   'Free Image Translator — Translate Text in Images Online | Innovate Tools',
+    metaTitle:   'Free Image Translator — Translate Text in Images Online | Global Tech Tools',
     metaDesc:    'Upload an image and translate the text instantly. Free OCR image translator — supports 50+ languages. No signup.',
     faqs: [
       { q: 'How many languages are supported?', a: 'Over 50 languages including Spanish, French, German, Arabic, Chinese, Japanese, Urdu, and more.' },
@@ -287,7 +287,7 @@ const TOOLS = {
     clientSide:  true,
     toolType:    'pomodoro',
     tags:        ['pomodoro timer', 'focus timer', 'productivity', 'time management'],
-    metaTitle:   'Free Pomodoro Timer — Focus & Productivity Tool | Innovate Tools',
+    metaTitle:   'Free Pomodoro Timer — Focus & Productivity Tool | Global Tech Tools',
     metaDesc:    'Advanced Pomodoro timer with adaptive focus modes, distraction detection, and gamified focus scoring. Free, no signup.',
     faqs: [
       { q: 'What is the Pomodoro Technique?', a: 'A time management method using 25-minute focused work sessions followed by short breaks, improving focus and productivity.' },

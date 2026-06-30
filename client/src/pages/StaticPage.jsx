@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { useParams, Navigate } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import SEOHead from '@/components/seo/SEOHead';
@@ -47,7 +47,7 @@ export default function StaticPage() {
   return (
     <>
       <SEOHead
-        customTitle={page.seoTitle || `${page.title} — ToolNova`}
+        customTitle={page.seoTitle || `${page.title} — Global Tech Tools`}
         customDesc={page.seoDescription || page.title}
       />
 

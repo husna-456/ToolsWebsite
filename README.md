@@ -1,4 +1,4 @@
-# ToolPlatform — tools.innovate.com.pk
+﻿# ToolPlatform — globaltechtool.com
 
 Free AI Tools Platform — AI Humanizer, AI Detector, Tone Changer, Plagiarism Checker, Word Counter.
 
@@ -80,7 +80,7 @@ cd client && npm run build
 Node.js version : 20.x
 App root        : public_html/tools/server
 Startup file    : server.js
-App URL         : tools.innovate.com.pk
+App URL         : globaltechtool.com
 ```
 
 ### Step 4 — Environment Variables

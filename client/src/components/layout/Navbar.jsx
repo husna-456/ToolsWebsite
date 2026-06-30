@@ -55,8 +55,8 @@ export default function Navbar() {
                 ? settings.general.siteName
                 : (
                   <>
-                    <span style={{ color: '#0F172A' }}>Tool</span>
-                    <span style={{ background: 'linear-gradient(90deg, #2563EB, #60A5FA)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>Nova</span>
+                    <span style={{ color: '#0F172A' }}>Global Tech </span>
+                    <span style={{ background: 'linear-gradient(90deg, #2563EB, #60A5FA)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>Tools</span>
                   </>
                 )}
             </span>

@@ -1,4 +1,4 @@
-const fs                            = require('fs');
+﻿const fs                            = require('fs');
 const { runGeminiTool }             = require('../services/gemini');
 const { incrementUsage }            = require('../middleware/usageCheck');
 const { TOOLS, FREE_LIMIT }         = require('../constants/tools');
@@ -234,7 +234,7 @@ async function fetchBook(isbn) {
 async function fetchJournal(doi) {
   const { data } = await axios.get(
     `https://api.crossref.org/works/${encodeURIComponent(doi)}`,
-    { timeout: 8000, headers: { 'User-Agent': 'InnovateTools/1.0 (thefiveriversllc@gmail.com)' } }
+    { timeout: 8000, headers: { 'User-Agent': 'Global Tech Tools/1.0 (thefiveriversllc@gmail.com)' } }
   );
   const w = data.message;
   if (!w) throw new Error('Journal not found for this DOI.');

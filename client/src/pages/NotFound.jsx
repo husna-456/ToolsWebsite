@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+﻿import { Link } from 'react-router-dom';
 import { ArrowLeft, Search } from 'lucide-react';
 import SEOHead from '@/components/seo/SEOHead';
 
@@ -6,7 +6,7 @@ export default function NotFound() {
   return (
     <>
       <SEOHead
-        customTitle="Page Not Found — ToolNova"
+        customTitle="Page Not Found — Global Tech Tools"
         customDesc="The page you're looking for doesn't exist. Browse our free AI tools instead."
       />
 

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+﻿import { useEffect } from 'react';
 import { Helmet } from 'react-helmet-async';
 import Navbar from '@/components/layout/Navbar';
 import Footer from '@/components/layout/Footer';
@@ -9,7 +9,7 @@ import usePublicSettings from '@/hooks/usePublicSettings';
 export default function MainLayout() {
   const settings = usePublicSettings();
 
-  const siteName    = settings?.general?.siteName        || 'ToolNova';
+  const siteName    = settings?.general?.siteName        || 'Global Tech Tools';
   const description = settings?.general?.siteDescription || '';
   const keywords    = settings?.general?.keywords        || '';
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { Navigate, Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Settings, Mail, Wrench, Monitor, CreditCard,
@@ -85,7 +85,7 @@ function Sidebar({ user, initials, onClose, onLogout }) {
             </svg>
           </div>
           <div>
-            <p className="text-white font-semibold text-[15px] leading-none">ToolNova</p>
+            <p className="text-white font-semibold text-[15px] leading-none">Global Tech Tools</p>
             <p className="text-blue-200/60 text-[10px] tracking-[0.2em] uppercase mt-1">
               Admin Panel
             </p>

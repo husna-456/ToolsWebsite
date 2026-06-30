@@ -1,9 +1,9 @@
-import { Helmet } from 'react-helmet-async';
+﻿import { Helmet } from 'react-helmet-async';
 
-const BASE_URL = 'https://tools.innovate.com.pk';
+const BASE_URL = 'https://globaltechtool.com';
 
 export default function SEOHead({ tool, customTitle, customDesc }) {
-  const title    = customTitle || tool?.seoTitle || tool?.metaTitle || 'Innovate Tools — Free AI Tools';
+  const title    = customTitle || tool?.seoTitle || tool?.metaTitle || 'Global Tech Tools — Free AI Tools';
   const desc     = customDesc  || tool?.seoDescription || tool?.metaDesc || 'Free AI tools for writers, students and creators.';
   const canonical = tool ? `${BASE_URL}/tools/${tool.slug}/` : `${BASE_URL}/`;
 
