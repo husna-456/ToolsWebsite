@@ -6,6 +6,7 @@ import {
 import { useFileUpload } from '@/hooks/useFileUpload';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://globaltechtools.thefiveriverz.com';
+const BUILD_VERSION = 'v3-2026-06-30';
 
 const AUDIO_ONLY_SLUGS = ['audio-converter', 'audio-compressor', 'audio-trimmer'];
 const AUDIO_IN_SLUGS   = [...AUDIO_ONLY_SLUGS, 'audio-merger'];
@@ -411,6 +412,72 @@ function FileChip({ file, onRemove }) {
       <button onClick={onRemove} className="text-text-muted hover:text-red-500 transition-colors shrink-0">
         <X className="w-3.5 h-3.5" />
       </button>
+    </div>
+  );
+}
+
+// ── Debug panel component (shown while mobile issue is under investigation) ──
+function DebugPanel({ file, fileInputKey, error, debugLog, setDebugLog, apiBaseUrl, buildVersion }) {
+  const [healthResult, setHealthResult] = useState(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+
+  async function checkHealth() {
+    setHealthLoading(true);
+    setHealthResult(null);
+    try {
+      const r = await fetch(`${apiBaseUrl}/api/health/media`);
+      const text = await r.text();
+      setHealthResult({ status: r.status, body: text });
+    } catch (e) {
+      setHealthResult({ status: 'ERR', body: e.message });
+    } finally {
+      setHealthLoading(false);
+    }
+  }
+
+  const lineColor = (line) => {
+    if (line.includes('FAILED') || line.includes('empty') || line.includes('null') || line.includes('error')) return '#ff6666';
+    if (line.includes('PASSED') || line.includes('called') || line.includes('OK') || line.includes('returned')) return '#00cc66';
+    return '#00aaff';
+  };
+
+  return (
+    <div style={{ background: '#0d0d1a', border: '1px solid #333', borderRadius: 8, padding: 8, fontFamily: 'monospace', fontSize: 11 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <span style={{ color: '#ff9500', fontWeight: 'bold', fontSize: 12 }}>Debug — Build {buildVersion}</span>
+        <button onClick={() => setDebugLog([])} style={{ color: '#ff4444', background: 'none', border: '1px solid #ff4444', borderRadius: 4, padding: '1px 6px', cursor: 'pointer', fontSize: 10 }}>clear</button>
+      </div>
+      <div style={{ color: '#888', fontSize: 10, marginBottom: 4 }}>
+        API: <span style={{ color: '#00ccff' }}>{apiBaseUrl}</span>
+      </div>
+      <div style={{ color: '#aaa', marginBottom: 4, fontSize: 10 }}>
+        file: {file ? `"${file.name}" (${(file.size/1024).toFixed(1)}KB)` : 'null'} · key:{fileInputKey}
+      </div>
+      <div style={{ marginBottom: 6 }}>
+        <button
+          onClick={checkHealth}
+          disabled={healthLoading}
+          style={{ color: '#00ff88', background: 'none', border: '1px solid #00ff88', borderRadius: 4, padding: '2px 8px', cursor: 'pointer', fontSize: 10, opacity: healthLoading ? 0.5 : 1 }}
+        >
+          {healthLoading ? 'checking…' : 'Check /api/health/media'}
+        </button>
+        {healthResult && (
+          <div style={{ marginTop: 4, color: healthResult.status === 200 ? '#00cc66' : '#ff6666', fontSize: 10, wordBreak: 'break-all', whiteSpace: 'pre-wrap' }}>
+            HTTP {healthResult.status}: {healthResult.body}
+          </div>
+        )}
+      </div>
+      {error && (
+        <div style={{ color: '#ff4444', background: '#2a0000', border: '1px solid #ff4444', borderRadius: 4, padding: '3px 6px', marginBottom: 4, fontSize: 11 }}>
+          ⚠ Upload error: {error}
+        </div>
+      )}
+      {debugLog.length === 0
+        ? <div style={{ color: '#555' }}>Tap upload zone to start logging…</div>
+        : debugLog.map((line, i) => (
+          <div key={i} style={{ color: lineColor(line), borderBottom: '1px solid #1a1a2e', paddingBottom: 2, marginBottom: 2 }}>{line}</div>
+        ))
+      }
     </div>
   );
 }
@@ -930,7 +997,7 @@ export default function MediaToolShell({ tool }) {
                         <p className="text-xs text-text-muted mt-1">
                           {isVolumeBooster ? 'MP3, WAV, MP4, MOV' : acceptsAudio ? 'MP3, WAV, FLAC, OGG, M4A, WMA, OPUS + more' : 'MP4, WebM, MOV, AVI'} · Max {maxMb} MB
                         </p>
-                        <p className="text-[10px] font-bold text-orange-400 mt-1">Upload Fix Build v2</p>
+                        <p className="text-[10px] font-bold text-orange-400 mt-1">Build {BUILD_VERSION}</p>
                       </div>
                     </div>
                     <input
@@ -980,33 +1047,17 @@ export default function MediaToolShell({ tool }) {
               </div>
             )}
 
-            {/* ── DEBUG PANEL — remove after Android issue confirmed fixed ── */}
+            {/* ── DEBUG PANEL — remove after mobile issue confirmed fixed ── */}
             {acceptsAudio && (
-              <div style={{ background: '#0d0d1a', border: '1px solid #333', borderRadius: 8, padding: 8, fontFamily: 'monospace', fontSize: 11 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <span style={{ color: '#ff9500', fontWeight: 'bold', fontSize: 12 }}>Upload Fix Build v2 — Debug</span>
-                  <button
-                    onClick={() => setDebugLog([])}
-                    style={{ color: '#ff4444', background: 'none', border: '1px solid #ff4444', borderRadius: 4, padding: '1px 6px', cursor: 'pointer', fontSize: 10 }}
-                  >clear</button>
-                </div>
-                <div style={{ color: '#aaa', marginBottom: 4, fontSize: 10 }}>
-                  file: {file ? `"${file.name}" (${(file.size/1024).toFixed(1)}KB)` : 'null'} · key:{fileInputKey}
-                </div>
-                {error && (
-                  <div style={{ color: '#ff4444', background: '#2a0000', border: '1px solid #ff4444', borderRadius: 4, padding: '3px 6px', marginBottom: 4, fontSize: 11 }}>
-                    ⚠ Upload error: {error}
-                  </div>
-                )}
-                {debugLog.length === 0
-                  ? <div style={{ color: '#555' }}>Tap upload zone to start logging...</div>
-                  : debugLog.map((line, i) => (
-                    <div key={i} style={{ color: line.includes('FAILED') || line.includes('empty') || line.includes('null') ? '#ff6666' : line.includes('PASSED') || line.includes('called') ? '#00cc66' : '#00aaff', borderBottom: '1px solid #1a1a2e', paddingBottom: 2, marginBottom: 2 }}>
-                      {line}
-                    </div>
-                  ))
-                }
-              </div>
+              <DebugPanel
+                file={file}
+                fileInputKey={fileInputKey}
+                error={error}
+                debugLog={debugLog}
+                setDebugLog={setDebugLog}
+                apiBaseUrl={API_BASE_URL}
+                buildVersion={BUILD_VERSION}
+              />
             )}
           </div>
 

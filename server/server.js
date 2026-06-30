@@ -96,10 +96,65 @@ app.use('/',          require('./routes/seo'));
 app.use('/api/ocr',       require('./routes/ocr'));
 app.use('/api/subtitles', require('./routes/subtitles'));
 
-// Health check
+// Basic health check
 app.get('/api/health', (req, res) =>
   res.json({ status: 'ok', env: process.env.NODE_ENV, time: new Date() })
 );
+
+// Media tools health check — shows ffmpeg/ffprobe paths found at startup
+// and does a live executable test so we can diagnose production issues.
+app.get('/api/health/media', (req, res) => {
+  const { spawnSync } = require('child_process');
+  const fsH = require('fs');
+
+  function liveCheck(binPath) {
+    if (!binPath) return { exists: false, executable: false };
+    let exists = false;
+    try { exists = fsH.existsSync(binPath); } catch {}
+    let executable = false;
+    try {
+      const r = spawnSync(binPath, ['-version'], { timeout: 3000 });
+      executable = !r.error && r.status === 0;
+    } catch {}
+    return { exists, executable };
+  }
+
+  // Paths detected at startup (cached in fileProcessor module)
+  let ffmpegPath  = null;
+  let ffprobePath = null;
+  try {
+    const fp  = require('./services/fileProcessor');
+    ffmpegPath  = fp.FFMPEG_PATH  || null;
+    ffprobePath = fp.FFPROBE_PATH || null;
+  } catch {}
+
+  // Also report what the npm static packages say
+  let ffmpegStaticPath  = null;
+  let ffprobeStaticPath = null;
+  try { ffmpegStaticPath = require('ffmpeg-static') || null; } catch {}
+  try {
+    const pkg = require('ffprobe-static');
+    ffprobeStaticPath = pkg?.path || (typeof pkg === 'string' ? pkg : null);
+  } catch {}
+
+  const ffmpegCheck  = liveCheck(ffmpegPath);
+  const ffprobeCheck = liveCheck(ffprobePath);
+
+  res.json({
+    buildVersion:       'v3',
+    nodeVersion:        process.version,
+    nodeEnv:            process.env.NODE_ENV || 'unset',
+    time:               new Date().toISOString(),
+    ffmpegPath,
+    ffprobePath,
+    ffmpegExists:       ffmpegCheck.exists,
+    ffmpegExecutable:   ffmpegCheck.executable,
+    ffprobeExists:      ffprobeCheck.exists,
+    ffprobeExecutable:  ffprobeCheck.executable,
+    ffmpegStaticPath,
+    ffprobeStaticPath,
+  });
+});
 
 // ── Serve React Build in Production ──────────────────────────
 // Frontend is deployed separately on Vercel — no static file serving needed.

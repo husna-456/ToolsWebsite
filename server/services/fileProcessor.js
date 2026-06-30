@@ -1538,4 +1538,4 @@ async function processMedia(inputPath, slug, options = {}) {
   }
 }
 
-module.exports = { processImage, processMedia };
+module.exports = { processImage, processMedia, FFMPEG_PATH, FFPROBE_PATH };
