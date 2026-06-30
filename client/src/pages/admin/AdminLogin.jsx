@@ -53,8 +53,8 @@ export default function AdminLogin() {
             </svg>
           </div>
           <h1 className="font-bold text-2xl tracking-tight">
-            <span className="text-white">Tool</span>
-            <span style={{ background: 'linear-gradient(90deg, #60A5FA, #93C5FD)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>Nova</span>
+            <span className="text-white">Global Tech </span>
+            <span style={{ background: 'linear-gradient(90deg, #60A5FA, #93C5FD)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>Tools</span>
           </h1>
           <p className="text-indigo-400 text-sm mt-1">Admin Dashboard</p>
         </div>
