@@ -352,6 +352,8 @@ const getAudioProgress = (req, res) => {
 // ── POST /api/tools/:slug/process ────────────────────────────
 const processFile = async (req, res, next) => {
   const { slug } = req.params;
+  const ua = (req.headers['user-agent'] || '').slice(0, 80);
+  console.log(`[processFile] ── HIT slug=${slug} ip=${req.ip} ua="${ua}"`);
 
   const MULTI_SLUGS    = new Set(['image-merger', 'audio-merger', 'video-merger']);
   const SUBTITLE_SLUGS = new Set(['hardcode-subtitles']);
@@ -380,13 +382,14 @@ const processFile = async (req, res, next) => {
     cleanupPaths          = [inputPath, subtitleFile.path];
   } else {
     if (!req.file) {
+      console.warn(`[processFile] slug=${slug} — no file received (multer found nothing)`);
       return res.status(400).json({ success: false, error: 'No file uploaded.' });
     }
     inputPath    = req.file.path;
     cleanupPaths = [inputPath];
-    // Pass through for logging in processMedia
     options.originalname = req.file.originalname || '';
     options.multerMime   = req.file.mimetype || '';
+    console.log(`[processFile] slug=${slug} file: name="${options.originalname}" mime="${options.multerMime}" size=${req.file.size}B path="${inputPath}"`);
   }
 
   const cleanup = () => {

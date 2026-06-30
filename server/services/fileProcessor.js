@@ -258,16 +258,41 @@ function clamp(val, min, max) {
   return isNaN(n) ? min : Math.max(min, Math.min(max, n));
 }
 
-function runFfmpeg(buildFn) {
+// timeoutMs: hard cap on how long FFmpeg may run before being killed.
+// Default 90 s — enough for a 5-min audio file on a shared server while
+// still completing well inside Hostinger's 60-s nginx proxy_read_timeout
+// when combined with a fast upload.  For slow mobile uploads the caller
+// should reduce expectations (file size) rather than raise this limit.
+function runFfmpeg(buildFn, timeoutMs = 90000) {
   if (!FFMPEG_PATH) {
     return Promise.reject(new Error('Audio/video conversion is not available on this server. Please contact support.'));
   }
   return new Promise((resolve, reject) => {
     const cmd = ffmpeg();
     buildFn(cmd);
+
+    let settled = false;
+    const settle = (fn, val) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(val);
+    };
+
+    // Kill FFmpeg and reject if it exceeds the timeout.  Without this, a
+    // hung FFmpeg process (bad codec, corrupt input) keeps the HTTP request
+    // open until nginx closes the socket — surfacing as ERR_NETWORK on mobile.
+    const timer = setTimeout(() => {
+      try { cmd.kill('SIGKILL'); } catch {}
+      settle(reject, Object.assign(
+        new Error(`FFmpeg timed out after ${Math.round(timeoutMs / 1000)}s. Try a smaller file or a different format.`),
+        { statusCode: 500 }
+      ));
+    }, timeoutMs);
+
     cmd
-      .on('end',   () => resolve())
-      .on('error', (err) => reject(err))
+      .on('end',   () => settle(resolve, undefined))
+      .on('error', (err) => settle(reject, err))
       .run();
   });
 }
@@ -315,7 +340,7 @@ function probeMedia(filePath) {
         resolve(meta);
       });
     }),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('ffprobe timeout')), 15000)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('ffprobe timeout')), 8000)),
   ]);
 }
 

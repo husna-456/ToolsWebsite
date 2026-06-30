@@ -64,22 +64,27 @@ export function useFileUpload(slug) {
       const token = localStorage.getItem('it_token');
       const apiUrl = `${API_BASE_URL}/api/tools/${slug}/process`;
       console.log(`[upload] POST ${apiUrl} outputFormat=${options.format||'(default)'} mimeType=${options.mimeType||'(not sent)'}`);
+      console.log(`[upload] request started at ${new Date().toISOString()}`);
       const response = await axios.post(
         apiUrl,
         formData,
         {
           responseType: 'blob',
+          // 5-minute hard cap on the entire round-trip (upload + server processing).
+          // Without this, a hung FFmpeg or slow mobile upload keeps the request open
+          // until the nginx proxy drops the socket, giving a misleading ERR_NETWORK.
+          timeout: 300000,
           headers: {
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           onUploadProgress: (e) => {
             if (e.total) {
-              // Upload counts as first 60% of progress
               setProgress(Math.min(60, Math.round((e.loaded / e.total) * 60)));
             }
           },
         }
       );
+      console.log(`[upload] response received at ${new Date().toISOString()}`);
 
       setProgress(85); // processing phase
       console.log(`[upload] response received — content-type: ${response.headers?.['content-type']}`);
@@ -108,25 +113,48 @@ export function useFileUpload(slug) {
       setFilename(fname);
       setProgress(100);
     } catch (err) {
-      console.error(`[upload] error: status=${err.response?.status} message="${err.message}" code="${err.code}"`);
-      // Error body may be a Blob when responseType is 'blob'
+      const code   = err.code   || 'unknown';
+      const status = err.response?.status;
+      console.error(`[upload] FAILED at ${new Date().toISOString()} — code=${code} status=${status} message="${err.message}"`);
+
+      // When responseType:'blob', a 4xx/5xx body arrives as a Blob — parse it
+      // to show the real backend error message to the user.
       if (err.response?.data instanceof Blob) {
         try {
           const text = await err.response.data.text();
-          console.error(`[upload] error response body: ${text}`);
+          console.error(`[upload] backend error body: ${text}`);
           const json = JSON.parse(text);
-          setError(json.error || json.message || 'Processing failed.');
+          setError(json.error || json.message || `Server error ${status}.`);
         } catch {
-          setError('Processing failed. Please try again.');
+          setError(`Server error ${status || ''}. Please try again.`);
         }
-      } else {
-        const isNetworkErr = !err.response && (err.code === 'ERR_NETWORK' || err.message === 'Network Error');
-        const msg = isNetworkErr
-          ? 'Connection failed. Please check your internet and try again.'
-          : (err.response?.data?.error || err.message || 'Upload failed. Please try again.');
-        console.error(`[upload] error message shown to user: "${msg}"`);
-        setError(msg);
+        setProgress(0);
+        return;
       }
+
+      // No response received at all — diagnose the real cause instead of
+      // showing a generic "check your internet" message.
+      if (!err.response) {
+        let msg;
+        if (code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+          // axios hit its 5-minute timeout — server took too long
+          msg = `Request timed out (5 min). The server is taking too long — try a smaller file or a different format. (${code})`;
+        } else if (code === 'ERR_NETWORK' || err.message === 'Network Error') {
+          // Connection dropped — most likely nginx proxy timeout on the server
+          msg = `Network error (${code}) — the server did not respond. `
+              + `This usually means the server took too long (nginx timeout). `
+              + `Try a smaller file or check the /api/health/media endpoint.`;
+        } else {
+          msg = `Request failed: ${err.message} (${code})`;
+        }
+        console.error(`[upload] no-response error: ${msg}`);
+        setError(msg);
+        setProgress(0);
+        return;
+      }
+
+      // Any other error with a response
+      setError(err.response?.data?.error || err.message || 'Upload failed. Please try again.');
       setProgress(0);
     } finally {
       setLoading(false);
