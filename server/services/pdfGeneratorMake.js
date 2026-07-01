@@ -32,7 +32,7 @@ const fs   = require('fs');
 
 const FR = require('./FontRegistry');   // central font registry + resolution
 
-console.log('[PDF_VERSION] exact-editor-export-v1');
+console.log('[PDF_VERSION] exact-editor-export-v2-inline-font-audit');
 
 // ─────────────────────────────────────────────────────────────────
 // Utilities
@@ -404,8 +404,16 @@ function resolveInlineFont(cssFontFamily, available) {
   const name = cssFontFamily.replace(/['"]/g, '').split(',')[0].trim();
   if (!name) return null;
   const resolved = FR.resolveEditorFont(name, available);
+  const expectedKey = FR.EDITOR_FONT_TO_KEY[name] || name;
   if (!resolved) {
     console.warn(`[PDF][FONT][MISSING] "${name}" requested (inline run) but no font file is registered for it or its fallback chain.`);
+  } else if (resolved !== expectedKey) {
+    // Resolved successfully, but NOT to the literal font requested — it
+    // walked the fallback chain to a different family. This is the case
+    // that would silently explain "Amiri selected but something else
+    // rendered": the block-level renderers already log this; inline runs
+    // previously did not.
+    console.warn(`[PDF][FONT] fallback (inline run): requested="${name}" (expected ${expectedKey}) -> using ${resolved}`);
   }
   return resolved;
 }
