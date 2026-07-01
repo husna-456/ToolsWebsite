@@ -82,6 +82,7 @@ const FONT_FALLBACK = {
 const EDITOR_FONT_TO_KEY = {
   // Arabic (Google Fonts — all available as TTF)
   'Amiri':              'Amiri',
+  'Amiri Quran':        'Amiri', // no separate free TTF — same family, closest match
   'Noto Naskh Arabic':  'NotoNaskhArabic',
   'Scheherazade New':   'ScheherazadeNew',
   'Cairo':              'Cairo',

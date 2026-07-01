@@ -260,7 +260,10 @@ function resolveFont(editorName, available, script) {
   const k = FR.resolveEditorFont(editorName, available);
   if (k) return k;
   // Last resort — only reached when the selected font AND its entire
-  // fallback chain are missing from server/fonts/
+  // fallback chain are missing from server/fonts/. Never fail silently.
+  if (editorName) {
+    console.warn(`[PDF][FONT][MISSING] "${editorName}" requested (block-level) but no font file is registered for it or its fallback chain — using script-default last resort.`);
+  }
   if (script === 'urdu')   { for (const x of ['NotoNastaliqUrdu','Amiri'])                    if (available.has(x)) return x; }
   if (script === 'arabic') { for (const x of ['NotoNaskhArabic','Amiri','ScheherazadeNew'])   if (available.has(x)) return x; }
   if (script === 'latin')  { for (const x of ['Roboto','OpenSans','Lato','Poppins','Inter']) if (available.has(x)) return x; }
@@ -353,7 +356,11 @@ function pxToPt(cssVal) {
 // ─────────────────────────────────────────────────────────────────
 const PAGE_HEIGHT_PT      = 841.89; // A4
 const PAGE_MARGIN_TOP_PT  = 56;
-const PAGE_MARGIN_BOT_PT  = 64;
+// Extra headroom below body content: Nastaliq/Naskh glyphs commonly extend
+// past their nominal font-metrics box (tall diagonal ascenders/descenders),
+// and the footer's center text can wrap to 2 lines for a long document
+// title — both eat into the reserved bottom margin. 85pt gives real slack.
+const PAGE_MARGIN_BOT_PT  = 85;
 const PAGE_USABLE_PT      = PAGE_HEIGHT_PT - PAGE_MARGIN_TOP_PT - PAGE_MARGIN_BOT_PT;
 const SMALL_BLOCK_MAX_PT  = PAGE_USABLE_PT * 0.25; // per-task: never unbreakable past 25% of page height
 
@@ -391,16 +398,27 @@ function unbreakableIfSmall(nodes, estimatedHeightPt, ctx) {
 // FontRegistry for EDITOR_FONT_TO_KEY lookup + fallback chain.
 function resolveInlineFont(cssFontFamily, available) {
   if (!cssFontFamily) return null;
-  const name = cssFontFamily.replace(/^['"]|['"].*$/g, '').split(',')[0].trim();
+  // Strip quote characters anywhere in the string (not just at the
+  // boundaries) — covers both `"Amiri", serif` and stray/escaped-quote
+  // variants different browsers produce when serializing style attributes.
+  const name = cssFontFamily.replace(/['"]/g, '').split(',')[0].trim();
   if (!name) return null;
-  return FR.resolveEditorFont(name, available);
+  const resolved = FR.resolveEditorFont(name, available);
+  if (!resolved) {
+    console.warn(`[PDF][FONT][MISSING] "${name}" requested (inline run) but no font file is registered for it or its fallback chain.`);
+  }
+  return resolved;
 }
+
+// Verbose per-text-run font logging — opt-in via env var since it's one
+// log line per inline text run and would be excessive on by default.
+const DEBUG_INLINE_RUNS = process.env.PDF_DEBUG_INLINE === '1';
 
 // Parse rich contentEditable HTML → pdfmake inline text array.
 // Preserves: bold, italic, underline, strikethrough, font-family,
 // font-size, color, background from element tags and inline styles.
 //
-// base = { font, fontSize, available, bold?, italics?, ... }
+// base = { font, fontSize, available, bold?, italics?, direction? ... }
 function htmlToInlines(html, base) {
   if (!html || !html.trim()) return [];
 
@@ -430,6 +448,17 @@ function htmlToInlines(html, base) {
     if (styles.color)      inline.color      = styles.color;
     if (styles.background) inline.background = styles.background;
     if (styles.decoration) inline.decoration = styles.decoration;
+
+    if (DEBUG_INLINE_RUNS) {
+      console.log('[PDF][DEBUG][inline-run]', JSON.stringify({
+        textPreview:    text.length > 40 ? text.slice(0, 40) + '…' : text,
+        requestedFont:  styles.requestedFontName || null,
+        resolvedFont:   styles.font || '(inherited/base)',
+        fontSource:     styles.fontSource || 'block-default',
+        direction:      styles.direction || null,
+      }));
+    }
+
     result.push(inline);
   }
 
@@ -454,7 +483,8 @@ function htmlToInlines(html, base) {
       const face = $(node).attr('face');
       if (face) {
         const k = resolveInlineFont(face, inh.available);
-        if (k) next.font = k;
+        next.requestedFontName = face;
+        if (k) { next.font = k; next.fontSource = 'font-tag'; }
       }
       const fc = $(node).attr('color');
       if (fc) { const hex = cssColorToHex(fc); if (hex) next.color = hex; }
@@ -466,7 +496,8 @@ function htmlToInlines(html, base) {
       const css = parseCssDecls(styleAttr);
       if (css['font-family']) {
         const k = resolveInlineFont(css['font-family'], inh.available);
-        if (k) next.font = k;
+        next.requestedFontName = css['font-family'];
+        if (k) { next.font = k; next.fontSource = 'style-attr'; }
       }
       if (css['font-size']) {
         const pt = cssSizeToPt(css['font-size']);
@@ -543,7 +574,7 @@ function renderChapterHeading(block, fctx) {
 
   // Editor preview: arabicTitle at 27px (≈20pt), Urdu at 22px (≈17pt)
   const arabicInlines = htmlToInlines(safeStr(block.arabicTitle), {
-    font: fctx.NAF, fontSize: 20, bold: true, available: fctx.available,
+    font: fctx.NAF, fontSize: 20, bold: true, available: fctx.available, direction: 'rtl',
   });
   if (arabicInlines.length) {
     nodes.push({
@@ -553,7 +584,7 @@ function renderChapterHeading(block, fctx) {
   }
 
   const urduInlines = htmlToInlines(safeStr(block.urduSubtitle), {
-    font: fctx.NUF, fontSize: 17, bold: true, available: fctx.available,
+    font: fctx.NUF, fontSize: 17, bold: true, available: fctx.available, direction: 'rtl',
   });
   if (urduInlines.length) {
     nodes.push({
@@ -583,14 +614,14 @@ function renderHadith(block, fctx) {
   // Editor preview: Arabic/Urdu at 18px (≈14pt), lineHeight 1.8/2.0
   const numStr = safeStr(block.number).trim();
   const matnInlines = htmlToInlines(safeStr(block.arabicMatn), {
-    font: arabicKey, fontSize: 14, available: fctx.available,
+    font: arabicKey, fontSize: 14, available: fctx.available, direction: 'rtl',
   });
   const arabicInlines = numStr
     ? [{ text: `﴿${numStr}﴾ `, font: arabicKey, fontSize: 14 }, ...matnInlines]
     : matnInlines;
 
   const urduInlines = htmlToInlines(safeStr(block.urduTranslation), {
-    font: fctx.NUF, fontSize: 14, available: fctx.available,
+    font: fctx.NUF, fontSize: 14, available: fctx.available, direction: 'rtl',
   });
 
   const EMPTY = [{ text: ' ' }];
@@ -615,7 +646,7 @@ function renderHadith(block, fctx) {
 function renderFiqh(block, fctx) {
   // Editor preview: heading at 20px (≈15pt), points at 17px (≈13pt)
   const headingInlines = htmlToInlines(safeStr(block.heading || 'فقہ الحدیث:'), {
-    font: fctx.NAF, fontSize: 15, bold: true, available: fctx.available,
+    font: fctx.NAF, fontSize: 15, bold: true, available: fctx.available, direction: 'rtl',
   });
   const headingNode = {
     text: headingInlines.length
@@ -627,7 +658,7 @@ function renderFiqh(block, fctx) {
   const points = Array.isArray(block.points) ? block.points : [];
   const pointNodes = points.map((pt, i) => {
     const ptInlines = htmlToInlines(safeStr(pt), {
-      font: fctx.NUF, fontSize: 13, available: fctx.available,
+      font: fctx.NUF, fontSize: 13, available: fctx.available, direction: 'rtl',
     });
     return {
       text: [
@@ -659,7 +690,7 @@ function renderFiqh(block, fctx) {
 function renderReference(block, fctx) {
   // Editor preview: 13px (≈10pt)
   const inlines = htmlToInlines(safeStr(block.content), {
-    font: fctx.NAF, fontSize: 10, available: fctx.available,
+    font: fctx.NAF, fontSize: 10, available: fctx.available, direction: 'rtl',
   });
   if (!inlines.length) return [];
   const nodes = [
@@ -686,14 +717,14 @@ function renderVerse(block, fctx) {
   }
 
   const arabicInlines = htmlToInlines(safeStr(block.arabicText), {
-    font: arabicKey, fontSize: 14, available: fctx.available,
+    font: arabicKey, fontSize: 14, available: fctx.available, direction: 'rtl',
   });
   if (arabicInlines.length) {
     nodes.push({ text: arabicInlines, alignment: 'center', lineHeight: 1.8, margin: [0, 10, 0, 4] });
   }
 
   const urduInlines = htmlToInlines(safeStr(block.urduText), {
-    font: fctx.NUF, fontSize: 14, available: fctx.available,
+    font: fctx.NUF, fontSize: 14, available: fctx.available, direction: 'rtl',
   });
   if (urduInlines.length) {
     nodes.push({ text: urduInlines, alignment: 'center', lineHeight: 2.0, margin: [0, 0, 0, 10] });
@@ -745,7 +776,7 @@ function renderFreeText(block, fctx) {
   // Preview hardcodes font-size: 16px (= 12pt). Per-character size changes
   // are stored as inline <span style="font-size:..."> inside block.content.
   const inlines = htmlToInlines(safeStr(block.content), {
-    font: fontKey, fontSize: 12, available: fctx.available,
+    font: fontKey, fontSize: 12, available: fctx.available, direction: dir,
   });
 
   if (!inlines.length) return null;
@@ -868,7 +899,11 @@ function makeFooter(doc, fctx) {
     ? (safeStr(doc.pageNumberPosition) || 'header-right')
     : 'none';
   const hairline = doc.footerHairline !== false;
-  const center   = stripHtml(doc.footerCenter || '');
+  // Truncated defensively: an unexpectedly long footer title wrapping to a
+  // 2nd line grows the footer taller than the reserved bottom margin
+  // accounts for, which can visually clip against body content above it.
+  const rawCenter = stripHtml(doc.footerCenter || '');
+  const center    = rawCenter.length > 70 ? rawCenter.slice(0, 69) + '…' : rawCenter;
   return (pg) => {
     try {
       const ct    = pos === 'footer-center' ? String(pg) : center;
