@@ -340,6 +340,52 @@ function pxToPt(cssVal) {
   return m ? Math.round(parseFloat(m[1]) * 0.75) : 0;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// unbreakable-block gating
+//
+// pdfmake's `unbreakable: true` is an all-or-nothing constraint: if the
+// block doesn't fit in whatever space remains on the current page, the
+// WHOLE block moves to the next page, leaving the remaining space on the
+// current page blank. Marking anything non-trivial unbreakable (a full
+// hadith table, a long fiqh list) is what produces large blank areas and
+// content jumping pages. This estimates a block's rendered height so
+// `unbreakable` is only ever applied to genuinely small groups.
+// ─────────────────────────────────────────────────────────────────
+const PAGE_HEIGHT_PT      = 841.89; // A4
+const PAGE_MARGIN_TOP_PT  = 56;
+const PAGE_MARGIN_BOT_PT  = 64;
+const PAGE_USABLE_PT      = PAGE_HEIGHT_PT - PAGE_MARGIN_TOP_PT - PAGE_MARGIN_BOT_PT;
+const SMALL_BLOCK_MAX_PT  = PAGE_USABLE_PT * 0.25; // per-task: never unbreakable past 25% of page height
+
+function inlineCharCount(inlines) {
+  if (!Array.isArray(inlines)) return 0;
+  return inlines.reduce((sum, i) => sum + (typeof i.text === 'string' ? i.text.length : 0), 0);
+}
+
+// Rough estimate only — good enough to gate "is this small?", not for
+// precise layout. Arabic/Urdu glyphs average wider than Latin at the same
+// point size, so a slightly larger per-char width is used for RTL.
+function estimateTextHeightPt(charCount, fontSize, lineHeight, colWidthPt, rtl) {
+  if (!charCount) return fontSize * lineHeight;
+  const avgCharWidth = fontSize * (rtl ? 0.62 : 0.5);
+  const charsPerLine = Math.max(1, Math.floor(colWidthPt / avgCharWidth));
+  const lines = Math.max(1, Math.ceil(charCount / charsPerLine));
+  return lines * fontSize * lineHeight;
+}
+
+// Wraps `nodes` as an unbreakable stack only if their estimated combined
+// height stays under SMALL_BLOCK_MAX_PT; otherwise returns them as a plain
+// array so they flow/split normally across a page break.
+function unbreakableIfSmall(nodes, estimatedHeightPt, ctx) {
+  const small = estimatedHeightPt <= SMALL_BLOCK_MAX_PT;
+  if (ctx) {
+    console.log('[PDF][DEBUG][unbreakable-gate]', JSON.stringify({
+      ...ctx, estimatedHeightPt: Math.round(estimatedHeightPt), thresholdPt: Math.round(SMALL_BLOCK_MAX_PT), unbreakable: small,
+    }));
+  }
+  return small ? { stack: nodes, unbreakable: true } : nodes;
+}
+
 // Resolve CSS font-family string → registered pdfmake key.
 // Parses the first name from a CSS font-family list, then delegates to
 // FontRegistry for EDITOR_FONT_TO_KEY lookup + fallback chain.
@@ -518,9 +564,11 @@ function renderChapterHeading(block, fctx) {
 
   if (!nodes.length) return null;
   if (nodes.length === 1) nodes[0].margin[3] = 14;
-  // Keep title+subtitle together so a page break never lands between them —
-  // this is a short, fixed-size group so it can't create large blank space.
-  return { stack: nodes, unbreakable: true };
+  // Keep title+subtitle together, but ONLY if the combined text is actually
+  // small — an unusually long pasted title must still be free to flow.
+  const estPt = estimateTextHeightPt(inlineCharCount(arabicInlines), 20, 1.6, 481, true)
+              + estimateTextHeightPt(inlineCharCount(urduInlines),   17, 1.8, 481, true);
+  return unbreakableIfSmall(nodes, estPt, { block: 'chapter_heading' });
 }
 
 function renderHadith(block, fctx) {
@@ -556,10 +604,11 @@ function renderHadith(block, fctx) {
     },
     layout: 'noBorders',
     margin: [0, 14, 0, 0],
-    // A single hadith's 2-column table must never split mid-row across a
-    // page break. The table itself is small (one row), so this can't
-    // create the large-blank-space problem long unbreakable blocks cause.
-    unbreakable: true,
+    // NOT unbreakable: a hadith can be long, and forcing the whole table
+    // to stay together pushes it entirely to the next page whenever it
+    // doesn't fit the remaining space — that's exactly what produces large
+    // blank areas. pdfmake tables split rows across pages by default, so
+    // long Arabic/Urdu matn and translation flow naturally instead.
   };
 }
 
@@ -589,13 +638,22 @@ function renderFiqh(block, fctx) {
     };
   });
 
-  if (!pointNodes.length) return { stack: [headingNode], unbreakable: true };
+  if (!pointNodes.length) {
+    const estPt = estimateTextHeightPt(inlineCharCount(headingNode.text), 15, 1.6, 481, true);
+    return unbreakableIfSmall([headingNode], estPt, { block: 'fiqh_heading_only' });
+  }
 
-  // Keep the heading glued to its first point only (never orphaned alone at
-  // the bottom of a page). The rest of a long points list still flows and
-  // breaks normally — wrapping the whole list would risk large blank space.
-  const firstGroup = { stack: [headingNode, pointNodes[0]], unbreakable: true };
-  return [firstGroup, ...pointNodes.slice(1)];
+  // Try to keep the heading glued to its first point (avoids an orphaned
+  // heading alone at page bottom) — but ONLY if that pair is actually
+  // small; a long first point must stay free to flow/split like the rest.
+  // The remaining points always flow individually regardless.
+  const headingPt = estimateTextHeightPt(inlineCharCount(headingNode.text), 15, 1.6, 481, true);
+  const point1Pt   = estimateTextHeightPt(inlineCharCount(pointNodes[0].text), 13, 2.0, 481, true);
+  const firstGroup = unbreakableIfSmall(
+    [headingNode, pointNodes[0]], headingPt + point1Pt, { block: 'fiqh_heading_plus_point1' }
+  );
+  const rest = pointNodes.slice(1);
+  return Array.isArray(firstGroup) ? [...firstGroup, ...rest] : [firstGroup, ...rest];
 }
 
 function renderReference(block, fctx) {
@@ -604,22 +662,31 @@ function renderReference(block, fctx) {
     font: fctx.NAF, fontSize: 10, available: fctx.available,
   });
   if (!inlines.length) return [];
-  return {
-    stack: [
-      { canvas: [{ type: 'line', x1: 330, y1: 0, x2: 481, y2: 0, lineWidth: 0.8, lineColor: '#555' }], margin: [0, 8, 0, 3] },
-      { text: inlines, alignment: 'right', lineHeight: 1.5, color: '#333', margin: [0, 0, 0, 6] },
-    ],
-    // Tiny block — the decorative underline must never be separated from its text.
-    unbreakable: true,
-  };
+  const nodes = [
+    { canvas: [{ type: 'line', x1: 330, y1: 0, x2: 481, y2: 0, lineWidth: 0.8, lineColor: '#555' }], margin: [0, 8, 0, 3] },
+    { text: inlines, alignment: 'right', lineHeight: 1.5, color: '#333', margin: [0, 0, 0, 6] },
+  ];
+  const estPt = estimateTextHeightPt(inlineCharCount(inlines), 10, 1.5, 481, true) + 15; // + decorative line
+  return unbreakableIfSmall(nodes, estPt, { block: 'reference' });
 }
 
 function renderVerse(block, fctx) {
   // Editor preview: 18px (≈14pt)
   const nodes = [];
 
+  // Respect a per-block Arabic font override the same way hadith does
+  // (e.g. selecting "Amiri" for an ayah) instead of always using the
+  // document's default Arabic font.
+  const arabicKey = block.arabicFont ? fctx.res(block.arabicFont, 'arabic') : fctx.NAF;
+  if (block.arabicFont) {
+    const expectedKey = FR.EDITOR_FONT_TO_KEY[block.arabicFont] || block.arabicFont;
+    if (arabicKey !== expectedKey) {
+      console.warn(`[PDF][FONT] fallback: selected="${block.arabicFont}" (expected ${expectedKey}) -> using ${arabicKey}`);
+    }
+  }
+
   const arabicInlines = htmlToInlines(safeStr(block.arabicText), {
-    font: fctx.NAF, fontSize: 14, available: fctx.available,
+    font: arabicKey, fontSize: 14, available: fctx.available,
   });
   if (arabicInlines.length) {
     nodes.push({ text: arabicInlines, alignment: 'center', lineHeight: 1.8, margin: [0, 10, 0, 4] });
@@ -634,8 +701,10 @@ function renderVerse(block, fctx) {
 
   if (!nodes.length) return null;
   if (nodes.length === 1) nodes[0].margin = [0, 10, 0, 10];
-  // Keep the ayah and its translation together — a short, fixed-size group.
-  return { stack: nodes, unbreakable: true };
+  // Keep the ayah and its translation together, but only if genuinely small.
+  const estPt = estimateTextHeightPt(inlineCharCount(arabicInlines), 14, 1.8, 481, true)
+              + estimateTextHeightPt(inlineCharCount(urduInlines),   14, 2.0, 481, true);
+  return unbreakableIfSmall(nodes, estPt, { block: 'verse' });
 }
 
 function renderFreeText(block, fctx) {
@@ -705,6 +774,30 @@ function renderFreeText(block, fctx) {
   return node;
 }
 
+// ── Per-block debug logging helpers ────────────────────────────────
+function blockTextLength(block, type) {
+  switch (type) {
+    case 'chapter_heading': return safeStr(block.arabicTitle).length + safeStr(block.urduSubtitle).length;
+    case 'hadith':          return safeStr(block.arabicMatn).length + safeStr(block.urduTranslation).length;
+    case 'fiqh':            return safeStr(block.heading).length + (Array.isArray(block.points) ? block.points.join('').length : 0);
+    case 'reference':       return safeStr(block.content).length;
+    case 'verse':           return safeStr(block.arabicText).length + safeStr(block.urduText).length;
+    default:                return safeStr(block.content).length;
+  }
+}
+
+function blockSelectedFont(block, type) {
+  if (type === 'hadith' || type === 'verse') return block.arabicFont || null;
+  if (type === 'free_text') return block.fontFamily || null;
+  return null;
+}
+
+function resultIsUnbreakable(r) {
+  if (!r) return false;
+  if (Array.isArray(r)) return r.some((n) => n && n.unbreakable);
+  return !!r.unbreakable;
+}
+
 function buildContent(blocks, fctx) {
   const content    = [];
   const safeBlocks = Array.isArray(blocks) ? blocks : [];
@@ -723,6 +816,18 @@ function buildContent(blocks, fctx) {
         case 'verse':           r = renderVerse(block, fctx);          break;
         default:                r = renderFreeText(block, fctx);       break;
       }
+
+      console.log('[PDF][DEBUG][block]', JSON.stringify({
+        index:        i,
+        type,
+        textLength:   blockTextLength(block, type),
+        selectedFont: blockSelectedFont(block, type),
+        direction:    type === 'free_text' ? (safeStr(block.direction) || 'rtl') : 'rtl',
+        unbreakable:  resultIsUnbreakable(r),
+        marginTop:    type === 'free_text' ? pxToPt(block.marginTop)    : null,
+        marginBottom: type === 'free_text' ? pxToPt(block.marginBottom) : null,
+      }));
+
       if (Array.isArray(r)) content.push(...r.filter(Boolean));
       else if (r)           content.push(r);
     } catch (err) {
@@ -802,7 +907,7 @@ async function _buildPDFBuffer(fontResult, doc) {
   console.log('[PDF][DEBUG]', JSON.stringify({
     engine:     'pdfmake',
     pageSize:   'A4',
-    pageMargins: [57, 71, 57, 71],
+    pageMargins: [57, PAGE_MARGIN_TOP_PT, 57, PAGE_MARGIN_BOT_PT],
     blockCount,
     blocksByType: byType,
     fontsAvailable: [...available],
@@ -814,7 +919,7 @@ async function _buildPDFBuffer(fontResult, doc) {
   const printer = new PdfPrinter(desc);
   const docDef  = {
     pageSize:     'A4',
-    pageMargins:  [57, 71, 57, 71],
+    pageMargins:  [57, PAGE_MARGIN_TOP_PT, 57, PAGE_MARGIN_BOT_PT],
     defaultStyle: { font: fctx.NAF, fontSize: 13 },
     header:  makeHeader(doc, fctx),
     footer:  makeFooter(doc, fctx),
