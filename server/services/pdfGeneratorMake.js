@@ -305,6 +305,21 @@ function cssSizeToPt(sizeStr) {
   return n;
 }
 
+// Like cssSizeToPt but allows negative values (letter-spacing is commonly
+// tightened with e.g. "-0.05em"; cssSizeToPt rejects non-positive numbers).
+function cssSignedSizeToPt(sizeStr) {
+  if (!sizeStr) return 0;
+  const m = String(sizeStr).trim().match(/^(-?[\d.]+)\s*(px|pt|em|rem)?$/i);
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  if (isNaN(n) || n === 0) return 0;
+  const unit = (m[2] || 'px').toLowerCase();
+  if (unit === 'pt') return n;
+  if (unit === 'px') return n * 0.75;
+  if (unit === 'em' || unit === 'rem') return n * 12;
+  return n;
+}
+
 function parseCssDecls(styleStr) {
   const obj = {};
   if (!styleStr) return obj;
@@ -503,11 +518,19 @@ function renderChapterHeading(block, fctx) {
 
   if (!nodes.length) return null;
   if (nodes.length === 1) nodes[0].margin[3] = 14;
-  return nodes;
+  // Keep title+subtitle together so a page break never lands between them —
+  // this is a short, fixed-size group so it can't create large blank space.
+  return { stack: nodes, unbreakable: true };
 }
 
 function renderHadith(block, fctx) {
   const arabicKey = block.arabicFont ? fctx.res(block.arabicFont, 'arabic') : fctx.NAF;
+  if (block.arabicFont) {
+    const expectedKey = FR.EDITOR_FONT_TO_KEY[block.arabicFont] || block.arabicFont;
+    if (arabicKey !== expectedKey) {
+      console.warn(`[PDF][FONT] fallback: selected="${block.arabicFont}" (expected ${expectedKey}) -> using ${arabicKey}`);
+    }
+  }
 
   // Editor preview: Arabic/Urdu at 18px (≈14pt), lineHeight 1.8/2.0
   const numStr = safeStr(block.number).trim();
@@ -533,6 +556,10 @@ function renderHadith(block, fctx) {
     },
     layout: 'noBorders',
     margin: [0, 14, 0, 0],
+    // A single hadith's 2-column table must never split mid-row across a
+    // page break. The table itself is small (one row), so this can't
+    // create the large-blank-space problem long unbreakable blocks cause.
+    unbreakable: true,
   };
 }
 
@@ -541,27 +568,34 @@ function renderFiqh(block, fctx) {
   const headingInlines = htmlToInlines(safeStr(block.heading || 'فقہ الحدیث:'), {
     font: fctx.NAF, fontSize: 15, bold: true, available: fctx.available,
   });
-  const nodes = [{
+  const headingNode = {
     text: headingInlines.length
       ? headingInlines
       : [{ text: 'فقہ الحدیث:', font: fctx.NAF, fontSize: 15, bold: true }],
     alignment: 'right', lineHeight: 1.6, margin: [0, 8, 0, 4],
-  }];
+  };
 
   const points = Array.isArray(block.points) ? block.points : [];
-  points.forEach((pt, i) => {
+  const pointNodes = points.map((pt, i) => {
     const ptInlines = htmlToInlines(safeStr(pt), {
       font: fctx.NUF, fontSize: 13, available: fctx.available,
     });
-    nodes.push({
+    return {
       text: [
         { text: `(${i + 1}) `, font: fctx.NUF, fontSize: 13 },
         ...(ptInlines.length ? ptInlines : [{ text: ' ', font: fctx.NUF }]),
       ],
       alignment: 'right', lineHeight: 2.0, margin: [0, 2, 0, 2],
-    });
+    };
   });
-  return nodes;
+
+  if (!pointNodes.length) return { stack: [headingNode], unbreakable: true };
+
+  // Keep the heading glued to its first point only (never orphaned alone at
+  // the bottom of a page). The rest of a long points list still flows and
+  // breaks normally — wrapping the whole list would risk large blank space.
+  const firstGroup = { stack: [headingNode, pointNodes[0]], unbreakable: true };
+  return [firstGroup, ...pointNodes.slice(1)];
 }
 
 function renderReference(block, fctx) {
@@ -570,10 +604,14 @@ function renderReference(block, fctx) {
     font: fctx.NAF, fontSize: 10, available: fctx.available,
   });
   if (!inlines.length) return [];
-  return [
-    { canvas: [{ type: 'line', x1: 330, y1: 0, x2: 481, y2: 0, lineWidth: 0.8, lineColor: '#555' }], margin: [0, 8, 0, 3] },
-    { text: inlines, alignment: 'right', lineHeight: 1.5, color: '#333', margin: [0, 0, 0, 6] },
-  ];
+  return {
+    stack: [
+      { canvas: [{ type: 'line', x1: 330, y1: 0, x2: 481, y2: 0, lineWidth: 0.8, lineColor: '#555' }], margin: [0, 8, 0, 3] },
+      { text: inlines, alignment: 'right', lineHeight: 1.5, color: '#333', margin: [0, 0, 0, 6] },
+    ],
+    // Tiny block — the decorative underline must never be separated from its text.
+    unbreakable: true,
+  };
 }
 
 function renderVerse(block, fctx) {
@@ -596,7 +634,8 @@ function renderVerse(block, fctx) {
 
   if (!nodes.length) return null;
   if (nodes.length === 1) nodes[0].margin = [0, 10, 0, 10];
-  return nodes;
+  // Keep the ayah and its translation together — a short, fixed-size group.
+  return { stack: nodes, unbreakable: true };
 }
 
 function renderFreeText(block, fctx) {
@@ -623,6 +662,17 @@ function renderFreeText(block, fctx) {
     ? fctx.res(editorFont, script)
     : (isLtr ? fctx.LF : fctx.NUF);
 
+  // Flag it when the requested font isn't the one actually embedded (e.g.
+  // "Jameel Noori Nastaleeq" has no redistributable free TTF and always
+  // falls back to NotoNastaliqUrdu) — this is the concrete, debuggable
+  // signal for "selected font not applied in PDF".
+  if (editorFont) {
+    const expectedKey = FR.EDITOR_FONT_TO_KEY[editorFont] || editorFont;
+    if (fontKey !== expectedKey) {
+      console.warn(`[PDF][FONT] fallback: selected="${editorFont}" (expected ${expectedKey}) -> using ${fontKey}`);
+    }
+  }
+
   // Preview hardcodes font-size: 16px (= 12pt). Per-character size changes
   // are stored as inline <span style="font-size:..."> inside block.content.
   const inlines = htmlToInlines(safeStr(block.content), {
@@ -637,12 +687,22 @@ function renderFreeText(block, fctx) {
   const mt = pxToPt(block.marginTop)    || 4;
   const mb = pxToPt(block.marginBottom) || 4;
 
-  return {
+  const node = {
     text:       inlines,
     alignment:  pdfAlign(safeStr(block.textAlign), dir),
     lineHeight: lineHeight,
     margin:     [0, mt, 0, mb],
   };
+
+  // Letter-spacing is only safe for LTR/Latin text. Applying extra spacing
+  // between Arabic/Urdu codepoints breaks the contextual joining that forms
+  // Nastaleeq/Naskh ligatures, so it's intentionally never applied for RTL.
+  if (isLtr) {
+    const cs = cssSignedSizeToPt(block.letterSpacing);
+    if (cs) node.characterSpacing = cs;
+  }
+
+  return node;
 }
 
 function buildContent(blocks, fctx) {
@@ -733,9 +793,23 @@ async function _buildPDFBuffer(fontResult, doc) {
     AF:  res('Amiri',              'arabic'),  // Amiri (for GPOS-tested Amiri usage)
   };
 
-  const blockCount = Array.isArray(doc.blocks) ? doc.blocks.length : 0;
+  const blocks      = Array.isArray(doc.blocks) ? doc.blocks : [];
+  const blockCount  = blocks.length;
+  const byType      = {};
+  blocks.forEach((b) => { const t = safeStr(b?.type) || 'free_text'; byType[t] = (byType[t] || 0) + 1; });
+
   console.time('[PDF] generate');
-  console.log(`[PDF] start: fonts=[${[...available].join(',')}] NAF=${fctx.NAF} NUF=${fctx.NUF} LF=${fctx.LF} blocks=${blockCount}`);
+  console.log('[PDF][DEBUG]', JSON.stringify({
+    engine:     'pdfmake',
+    pageSize:   'A4',
+    pageMargins: [57, 71, 57, 71],
+    blockCount,
+    blocksByType: byType,
+    fontsAvailable: [...available],
+    defaultArabicFont: fctx.NAF,
+    defaultUrduFont:   fctx.NUF,
+    defaultLatinFont:  fctx.LF,
+  }));
 
   const printer = new PdfPrinter(desc);
   const docDef  = {
@@ -744,31 +818,51 @@ async function _buildPDFBuffer(fontResult, doc) {
     defaultStyle: { font: fctx.NAF, fontSize: 13 },
     header:  makeHeader(doc, fctx),
     footer:  makeFooter(doc, fctx),
-    content: buildContent(doc.blocks || [], fctx),
+    content: buildContent(blocks, fctx),
   };
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+    // 60s — generous headroom for large, multi-page Arabic/Urdu documents on
+    // shared-hosting CPU (complex-script shaping is slower than Latin text).
+    // The previous 25s cutoff could fire on legitimately slow-but-successful
+    // large documents, which then look like a failure with no real cause.
     const timer = setTimeout(() => {
-      reject(new Error('[PDF] Timed out after 25s.'));
-    }, 25000);
+      if (settled) return;
+      settled = true;
+      try { pdfDocRef && pdfDocRef.destroy && pdfDocRef.destroy(); } catch (_) {}
+      reject(new Error('[PDF] Timed out after 60s.'));
+    }, 60000);
 
+    let pdfDocRef = null;
     try {
       const pdfDoc = printer.createPdfKitDocument(docDef);
+      pdfDocRef = pdfDoc;
       const chunks = [];
       pdfDoc.on('data',  (c) => chunks.push(c));
       pdfDoc.on('end',   () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         const buf = Buffer.concat(chunks);
         console.timeEnd('[PDF] generate');
         console.log('[PDF] done, bytes:', buf.length);
         resolve(buf);
       });
-      pdfDoc.on('error', (err) => { clearTimeout(timer); reject(err); });
+      pdfDoc.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
       pdfDoc.end();
     } catch (err) {
-      clearTimeout(timer);
-      console.error('[PDF] createPdfKitDocument error:', err.message);
-      reject(err);
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        console.error('[PDF] createPdfKitDocument error:', err.message);
+        reject(err);
+      }
     }
   });
 }
