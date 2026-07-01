@@ -15,6 +15,15 @@ import api from '@/services/api';
 // ── Constants ───────────────────────────────────────────────────
 const LS_KEY = 'htbk_docs_v3';
 
+// Staged progress copy shown while the AI Quick Import request is in flight.
+const AI_FORMAT_STAGES = [
+  'Formatting text…',
+  'Analyzing…',
+  'Generating headings…',
+  'Creating blocks…',
+  'Finalizing…',
+];
+
 // Expanded Google Fonts URL — English, Urdu, and Arabic professional fonts
 const FONTS_URL =
   'https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;700' +
@@ -2622,6 +2631,7 @@ export default function TextToPdfPage() {
   const [aiText,  setAIText]  = useState('');
   const [aiLoad,  setAILoad]  = useState(false);
   const [aiErr,   setAIErr]   = useState('');
+  const [aiStage, setAIStage] = useState('');
 
   // Find & Replace
   const [showFindReplace, setShowFindReplace] = useState(false);
@@ -2873,10 +2883,19 @@ export default function TextToPdfPage() {
 
   // ── AI Quick Import ────────────────────────────────────────
   async function handleAIImport() {
+    if (aiLoad) return; // ignore duplicate/double-click triggers while a request is in flight
     if (!aiText.trim()) return;
-    setAILoad(true); setAIErr('');
+    setAILoad(true); setAIErr(''); setAIStage(AI_FORMAT_STAGES[0]);
+
+    let stageIdx = 0;
+    const stageTimer = setInterval(() => {
+      stageIdx = Math.min(stageIdx + 1, AI_FORMAT_STAGES.length - 1);
+      setAIStage(AI_FORMAT_STAGES[stageIdx]);
+    }, 2500);
+
     try {
-      const data = await api.post('/tools/text-to-pdf/format', { text: aiText.trim() });
+      // Large pastes are auto-chunked server-side, so this can legitimately take a while.
+      const data = await api.post('/tools/text-to-pdf/format', { text: aiText.trim() }, { timeout: 150000 });
       const newBlocks = (data.blocks || []).map(b => {
         const block = { ...b, id: genId() };
         // For free_text blocks: detect language and apply appropriate font/direction/alignment
@@ -2893,9 +2912,20 @@ export default function TextToPdfPage() {
       if (currentDoc?.name === 'Untitled Document' && data.name) patchDoc({ name: data.name });
       setAIText(''); setShowAI(false);
     } catch (err) {
-      setAIErr(err.message || 'Formatting failed.');
+      // err.status is only set when the backend actually responded — in that case
+      // err.message is already a specific, provider-derived error (see textToPdfController.js).
+      // No response at all means the failure happened on the client/network side.
+      if (err.code === 'ECONNABORTED' || err.code === 'ERR_CANCELED') {
+        setAIErr('Request timed out. Please try again.');
+      } else if (!err.status) {
+        setAIErr('Network connection failed. Please check your internet connection and try again.');
+      } else {
+        setAIErr(err.message || 'Unexpected server error. Please try again.');
+      }
     } finally {
+      clearInterval(stageTimer);
       setAILoad(false);
+      setAIStage('');
     }
   }
 
@@ -3085,7 +3115,7 @@ export default function TextToPdfPage() {
                   className="mt-2 flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white rounded-lg disabled:opacity-40 hover:opacity-90"
                   style={{ background:'var(--brand)' }}>
                   {aiLoad ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                  {aiLoad ? 'Formatting…' : 'Format & Add Blocks'}
+                  {aiLoad ? (aiStage || 'Formatting…') : 'Format & Add Blocks'}
                 </button>
               </div>
             )}

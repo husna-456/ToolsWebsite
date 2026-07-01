@@ -27,7 +27,15 @@ api.interceptors.response.use(
       error.response?.data?.message ||
       error.message ||
       'Something went wrong';
-    return Promise.reject({ message, status: error.response?.status });
+    return Promise.reject({
+      message,
+      status:    error.response?.status,
+      // Backend-defined error code (e.g. RATE_LIMIT, AUTH_ERROR) when a response
+      // was received; otherwise the client/network-level code (e.g. ECONNABORTED
+      // for a timeout) so callers can distinguish "server said no" from "never reached it".
+      code:      error.response?.data?.code || error.code,
+      requestId: error.response?.data?.requestId,
+    });
   }
 );
 

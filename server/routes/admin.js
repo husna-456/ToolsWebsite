@@ -15,6 +15,7 @@ const {
   getWebToolsSettings, updateWebToolSettings,
   getProfile, updateProfile, changePassword,
 } = require('../controllers/adminController');
+const textToPdfMetrics = require('../utils/textToPdfMetrics');
 
 // All admin routes require a valid admin JWT
 router.use(adminAuth);
@@ -80,6 +81,9 @@ router.put('/settings/security',         updateSecuritySettings);
 // ── Per-tool runtime settings ──────────────────────────────────
 router.get('/web-tools-settings',        getWebToolsSettings);
 router.put('/web-tools-settings/:slug',  updateWebToolSettings);
+
+// ── Monitoring ─────────────────────────────────────────────────
+router.get('/text-to-pdf-metrics', (req, res) => res.json(textToPdfMetrics.getSnapshot()));
 
 // ── Profile ────────────────────────────────────────────────────
 router.get('/profile',             getProfile);
