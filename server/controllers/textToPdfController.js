@@ -1,9 +1,48 @@
 const rateLimit = require('express-rate-limit');
 const crypto    = require('crypto');
+const fs        = require('fs');
+const os        = require('os');
+const path      = require('path');
 const metrics   = require('../utils/textToPdfMetrics');
 // groq-sdk is required lazily inside textToPdfFormat so a missing/broken
 // groq-sdk installation does NOT prevent the module from loading.
 // textToPdfGenerate (the PDF download handler) never uses groq-sdk.
+
+// ── Production debug visibility for PDF generation ──────────────
+// Master switch, sourced live (not cached) so it can be toggled via
+// Hostinger's environment-variable panel without a redeploy.
+function pdfDebugEnabled() { return process.env.PDF_DEBUG_INLINE === '1'; }
+
+const PDF_DEBUG_DIR = path.join(os.tmpdir(), 'pdf-debug-reports');
+const DEBUG_ID_RE   = /^[a-f0-9-]{36}$/i; // UUID only — prevents path traversal
+
+function writeDebugReport(id, report) {
+  try {
+    fs.mkdirSync(PDF_DEBUG_DIR, { recursive: true });
+    fs.writeFileSync(path.join(PDF_DEBUG_DIR, `${id}.json`), JSON.stringify(report, null, 2));
+    return true;
+  } catch (err) {
+    console.error('[PDF][DEBUG] failed to write debug report:', err.message);
+    return false;
+  }
+}
+
+// ── GET /api/tools/text-to-pdf/debug/:id ────────────────────────
+// Only serves reports written by this same request cycle when
+// PDF_DEBUG_INLINE=1 was set — not a permanent exposed endpoint.
+function textToPdfDebugReport(req, res) {
+  if (!pdfDebugEnabled()) return res.status(404).json({ error: 'Debug mode is not enabled.' });
+  const { id } = req.params;
+  if (!DEBUG_ID_RE.test(id)) return res.status(400).json({ error: 'Invalid debug report id.' });
+  const filePath = path.join(PDF_DEBUG_DIR, `${id}.json`);
+  try {
+    const data = fs.readFileSync(filePath, 'utf8');
+    res.set('Content-Type', 'application/json');
+    res.send(data);
+  } catch (_) {
+    res.status(404).json({ error: 'Debug report not found (it may have expired).' });
+  }
+}
 
 // ── Rate limiter: 10 requests / minute per IP ──────────────────
 const textToPdfLimiter = rateLimit({
@@ -38,7 +77,7 @@ async function textToPdfGenerate(req, res) {
     }));
 
     const { generatePDF } = require('../services/pdfGeneratorMake');
-    const pdfBuffer = await generatePDF(documentData);
+    const { buffer: pdfBuffer, debugRuns, version, violations } = await generatePDF(documentData);
 
     // Strip non-ASCII from filename (HTTP headers: ASCII only)
     const rawName = (documentData.name || documentData.title || 'document')
@@ -49,6 +88,37 @@ async function textToPdfGenerate(req, res) {
 
     if (!pdfBuffer || pdfBuffer.length < 100) {
       return res.status(500).json({ success: false, error: 'PDF generation produced empty output.' });
+    }
+
+    // Always set — verifiable via curl -I / browser devtools, no server
+    // access or log access required to confirm which build is actually live.
+    res.set('X-PDF-Version', version);
+
+    if (pdfDebugEnabled()) {
+      // Debug mode: if any run explicitly requested Amiri but the final
+      // pdfmake node didn't end up with font:"Amiri", surface it as a hard
+      // API error instead of silently shipping the PDF — undeniable proof
+      // of the exact failing run, no PDF-metadata or log-diving needed.
+      if (violations && violations.length) {
+        return res.status(500).json({
+          error:      'Amiri was requested but final pdfmake node is not Amiri',
+          version,
+          violations,
+        });
+      }
+
+      const debugId = crypto.randomUUID();
+      const wrote = writeDebugReport(debugId, {
+        version,
+        generatedAt: new Date().toISOString(),
+        blockCount:  blocks.length,
+        runCount:    (debugRuns || []).length,
+        runs:        debugRuns || [],
+      });
+      if (wrote) {
+        res.set('X-PDF-Debug-Id', debugId);
+        res.set('X-PDF-Debug-Url', `/api/tools/text-to-pdf/debug/${debugId}`);
+      }
     }
 
     res.set({
@@ -658,4 +728,4 @@ async function textToPdfFormat(req, res) {
   }
 }
 
-module.exports = { textToPdfFormat, textToPdfGenerate, textToPdfLimiter };
+module.exports = { textToPdfFormat, textToPdfGenerate, textToPdfLimiter, textToPdfDebugReport };

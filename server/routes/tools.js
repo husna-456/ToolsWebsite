@@ -8,7 +8,7 @@ const {
 const { checkUsageLimit } = require('../middleware/usageCheck');
 const { adaptiveUpload }  = require('../middleware/upload');
 const {
-  textToPdfFormat, textToPdfGenerate, textToPdfLimiter,
+  textToPdfFormat, textToPdfGenerate, textToPdfLimiter, textToPdfDebugReport,
 } = require('../controllers/textToPdfController');
 
 router.get('/',              getTools);
@@ -26,6 +26,7 @@ router.post('/meme-studio/caption',             runMemeCaption);
 // ── Text to PDF ───────────────────────────────────────────────
 router.post('/text-to-pdf/format',   textToPdfLimiter, textToPdfFormat);
 router.post('/text-to-pdf/generate', textToPdfLimiter, textToPdfGenerate);
+router.get('/text-to-pdf/debug/:id', textToPdfDebugReport);
 
 // ── Generic slug routes ───────────────────────────────────────
 router.get('/:slug',            getTool);

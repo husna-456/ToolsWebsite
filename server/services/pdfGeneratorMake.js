@@ -32,7 +32,41 @@ const fs   = require('fs');
 
 const FR = require('./FontRegistry');   // central font registry + resolution
 
-console.log('[PDF_VERSION] exact-editor-export-v2-inline-font-audit');
+// Single source of truth for the version marker — reused for the console
+// log, PDF document metadata (visible in any viewer's Document Properties,
+// no server access required), and the X-PDF-Version response header.
+const PDF_VERSION = 'exact-editor-export-v3-amiri-forced-override';
+console.log('[PDF_VERSION]', PDF_VERSION);
+
+// Master switch for the production debug-visibility tooling below. Sourced
+// live from process.env (not cached at module load) so it can be toggled
+// via Hostinger's environment-variable panel without a redeploy.
+function debugInlineEnabled() { return process.env.PDF_DEBUG_INLINE === '1'; }
+
+// Arabic-script Unicode ranges (Arabic, Arabic Supplement, Arabic
+// Extended-A, Arabic Presentation Forms A/B) — covers Urdu too, since Urdu
+// is written in an extended Arabic script.
+const ARABIC_SCRIPT_RE = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/;
+function containsArabicScript(text) { return !!text && ARABIC_SCRIPT_RE.test(text); }
+
+// Normalizes a raw CSS font-family value (from a style attribute, a <font
+// face> attribute, or any other source) into a clean comparable name.
+// Handles: surrounding/embedded quotes, comma-separated fallback stacks,
+// extra whitespace, case differences, and CSS custom properties (var(...),
+// which cannot be resolved without the full stylesheet — safely ignored
+// rather than crashing).
+function normalizeFontFamily(raw) {
+  if (!raw) return { raw: raw || '', normalized: '', isAmiriVariant: false };
+  let s = String(raw).trim();
+  if (/^var\(/i.test(s)) return { raw, normalized: '', isAmiriVariant: false };
+  // First comma-separated entry in the font stack, quotes stripped anywhere.
+  const first = s.split(',')[0].replace(/['"]/g, '').trim();
+  const normalized = first.toLowerCase();
+  // Any family whose name contains "amiri" (Amiri, "Amiri", Amiri Quran,
+  // amiri, AMIRI, Amiri-Regular, etc.) is treated as an Amiri request.
+  const isAmiriVariant = normalized.includes('amiri');
+  return { raw, normalized, isAmiriVariant };
+}
 
 // ─────────────────────────────────────────────────────────────────
 // Utilities
@@ -393,34 +427,40 @@ function unbreakableIfSmall(nodes, estimatedHeightPt, ctx) {
   return small ? { stack: nodes, unbreakable: true } : nodes;
 }
 
-// Resolve CSS font-family string → registered pdfmake key.
-// Parses the first name from a CSS font-family list, then delegates to
-// FontRegistry for EDITOR_FONT_TO_KEY lookup + fallback chain.
+// Resolve CSS font-family string → registered pdfmake key. Returns a
+// structured result (not just the key) so callers can apply the forced
+// Amiri override and build a full audit trail.
 function resolveInlineFont(cssFontFamily, available) {
-  if (!cssFontFamily) return null;
-  // Strip quote characters anywhere in the string (not just at the
-  // boundaries) — covers both `"Amiri", serif` and stray/escaped-quote
-  // variants different browsers produce when serializing style attributes.
-  const name = cssFontFamily.replace(/['"]/g, '').split(',')[0].trim();
-  if (!name) return null;
-  const resolved = FR.resolveEditorFont(name, available);
-  const expectedKey = FR.EDITOR_FONT_TO_KEY[name] || name;
-  if (!resolved) {
-    console.warn(`[PDF][FONT][MISSING] "${name}" requested (inline run) but no font file is registered for it or its fallback chain.`);
-  } else if (resolved !== expectedKey) {
-    // Resolved successfully, but NOT to the literal font requested — it
-    // walked the fallback chain to a different family. This is the case
-    // that would silently explain "Amiri selected but something else
-    // rendered": the block-level renderers already log this; inline runs
-    // previously did not.
-    console.warn(`[PDF][FONT] fallback (inline run): requested="${name}" (expected ${expectedKey}) -> using ${resolved}`);
+  const { raw, normalized, isAmiriVariant } = normalizeFontFamily(cssFontFamily);
+  if (!normalized) return { resolved: null, raw, normalized, isAmiriVariant: false };
+
+  // Hard override: any font-family naming Amiri in any form resolves
+  // straight to the 'Amiri' registry key, bypassing EDITOR_FONT_TO_KEY /
+  // FONT_FALLBACK entirely. This can't be defeated by an unexpected name
+  // variant (quotes, casing, "Amiri Quran", a trailing fallback stack…).
+  if (isAmiriVariant) {
+    if (available.has('Amiri')) return { resolved: 'Amiri', raw, normalized, isAmiriVariant: true };
+    console.warn(`[PDF][FONT][MISSING] Amiri requested (raw="${raw}") but the Amiri font file itself is not registered.`);
+    return { resolved: null, raw, normalized, isAmiriVariant: true };
   }
-  return resolved;
+
+  // First dequoted, trimmed entry of the font stack, ORIGINAL case
+  // preserved — FontRegistry.resolveEditorFont handles case-insensitive
+  // matching internally, but exact-case is tried first there.
+  const firstName  = raw.split(',')[0].replace(/['"]/g, '').trim();
+  const resolved    = FR.resolveEditorFont(firstName, available);
+  const expectedKey = FR.EDITOR_FONT_TO_KEY[firstName] || firstName;
+  if (!resolved) {
+    console.warn(`[PDF][FONT][MISSING] "${firstName}" requested (inline run) but no font file is registered for it or its fallback chain.`);
+  } else if (resolved !== expectedKey) {
+    console.warn(`[PDF][FONT] fallback (inline run): requested="${firstName}" (expected ${expectedKey}) -> using ${resolved}`);
+  }
+  return { resolved, raw: firstName, normalized, isAmiriVariant: false };
 }
 
 // Verbose per-text-run font logging — opt-in via env var since it's one
 // log line per inline text run and would be excessive on by default.
-const DEBUG_INLINE_RUNS = process.env.PDF_DEBUG_INLINE === '1';
+const DEBUG_INLINE_RUNS = debugInlineEnabled();
 
 // Parse rich contentEditable HTML → pdfmake inline text array.
 // Preserves: bold, italic, underline, strikethrough, font-family,
@@ -457,14 +497,35 @@ function htmlToInlines(html, base) {
     if (styles.background) inline.background = styles.background;
     if (styles.decoration) inline.decoration = styles.decoration;
 
-    if (DEBUG_INLINE_RUNS) {
-      console.log('[PDF][DEBUG][inline-run]', JSON.stringify({
-        textPreview:    text.length > 40 ? text.slice(0, 40) + '…' : text,
-        requestedFont:  styles.requestedFontName || null,
-        resolvedFont:   styles.font || '(inherited/base)',
-        fontSource:     styles.fontSource || 'block-default',
-        direction:      styles.direction || null,
-      }));
+    // Forced Arabic-script override: if this run was ever styled with any
+    // Amiri variant AND the actual text contains Arabic-script codepoints,
+    // guarantee font:"Amiri" on the final node regardless of what the
+    // registry-resolution chain produced. This is checked here (not at
+    // style-parsing time) because only here do we know the real text.
+    const hasArabic = containsArabicScript(text);
+    if (styles.isAmiriVariant && hasArabic && styles.available?.has('Amiri')) {
+      inline.font = 'Amiri';
+    }
+
+    const requestedAmiri = !!styles.isAmiriVariant;
+    const violatesAmiri  = requestedAmiri && inline.font !== 'Amiri';
+
+    if (DEBUG_INLINE_RUNS || styles.debugCollector) {
+      const record = {
+        textPreview:       text.length > 60 ? text.slice(0, 60) + '…' : text,
+        containsArabic:    hasArabic,
+        rawFontFamily:      styles.requestedFontName || null,
+        rawStyleAttr:       styles.rawStyleAttr || null,
+        normalizedFontFamily: styles.normalizedFontName || null,
+        isAmiriVariant:    requestedAmiri,
+        resolvedPdfmakeFont: styles.font || null,
+        finalNodeFont:      inline.font || '(inherited/base, none set)',
+        fontSource:         styles.fontSource || 'block-default',
+        direction:          styles.direction || null,
+        violatesAmiri,
+      };
+      if (DEBUG_INLINE_RUNS) console.log('[PDF][DEBUG][inline-run]', JSON.stringify(record));
+      if (styles.debugCollector) styles.debugCollector.push(record);
     }
 
     result.push(inline);
@@ -490,9 +551,11 @@ function htmlToInlines(html, base) {
     if (tag === 'font') {
       const face = $(node).attr('face');
       if (face) {
-        const k = resolveInlineFont(face, inh.available);
-        next.requestedFontName = face;
-        if (k) { next.font = k; next.fontSource = 'font-tag'; }
+        const r = resolveInlineFont(face, inh.available);
+        next.requestedFontName   = face;
+        next.normalizedFontName  = r.normalized;
+        next.isAmiriVariant      = r.isAmiriVariant;
+        if (r.resolved) { next.font = r.resolved; next.fontSource = 'font-tag'; }
       }
       const fc = $(node).attr('color');
       if (fc) { const hex = cssColorToHex(fc); if (hex) next.color = hex; }
@@ -503,9 +566,12 @@ function htmlToInlines(html, base) {
     if (styleAttr) {
       const css = parseCssDecls(styleAttr);
       if (css['font-family']) {
-        const k = resolveInlineFont(css['font-family'], inh.available);
-        next.requestedFontName = css['font-family'];
-        if (k) { next.font = k; next.fontSource = 'style-attr'; }
+        const r = resolveInlineFont(css['font-family'], inh.available);
+        next.requestedFontName   = css['font-family'];
+        next.rawStyleAttr        = styleAttr;
+        next.normalizedFontName  = r.normalized;
+        next.isAmiriVariant      = r.isAmiriVariant;
+        if (r.resolved) { next.font = r.resolved; next.fontSource = 'style-attr'; }
       }
       if (css['font-size']) {
         const pt = cssSizeToPt(css['font-size']);
@@ -582,7 +648,7 @@ function renderChapterHeading(block, fctx) {
 
   // Editor preview: arabicTitle at 27px (≈20pt), Urdu at 22px (≈17pt)
   const arabicInlines = htmlToInlines(safeStr(block.arabicTitle), {
-    font: fctx.NAF, fontSize: 20, bold: true, available: fctx.available, direction: 'rtl',
+    font: fctx.NAF, fontSize: 20, bold: true, available: fctx.available, direction: 'rtl', debugCollector: fctx.debugRuns,
   });
   if (arabicInlines.length) {
     nodes.push({
@@ -592,7 +658,7 @@ function renderChapterHeading(block, fctx) {
   }
 
   const urduInlines = htmlToInlines(safeStr(block.urduSubtitle), {
-    font: fctx.NUF, fontSize: 17, bold: true, available: fctx.available, direction: 'rtl',
+    font: fctx.NUF, fontSize: 17, bold: true, available: fctx.available, direction: 'rtl', debugCollector: fctx.debugRuns,
   });
   if (urduInlines.length) {
     nodes.push({
@@ -622,14 +688,14 @@ function renderHadith(block, fctx) {
   // Editor preview: Arabic/Urdu at 18px (≈14pt), lineHeight 1.8/2.0
   const numStr = safeStr(block.number).trim();
   const matnInlines = htmlToInlines(safeStr(block.arabicMatn), {
-    font: arabicKey, fontSize: 14, available: fctx.available, direction: 'rtl',
+    font: arabicKey, fontSize: 14, available: fctx.available, direction: 'rtl', debugCollector: fctx.debugRuns,
   });
   const arabicInlines = numStr
     ? [{ text: `﴿${numStr}﴾ `, font: arabicKey, fontSize: 14 }, ...matnInlines]
     : matnInlines;
 
   const urduInlines = htmlToInlines(safeStr(block.urduTranslation), {
-    font: fctx.NUF, fontSize: 14, available: fctx.available, direction: 'rtl',
+    font: fctx.NUF, fontSize: 14, available: fctx.available, direction: 'rtl', debugCollector: fctx.debugRuns,
   });
 
   const EMPTY = [{ text: ' ' }];
@@ -654,7 +720,7 @@ function renderHadith(block, fctx) {
 function renderFiqh(block, fctx) {
   // Editor preview: heading at 20px (≈15pt), points at 17px (≈13pt)
   const headingInlines = htmlToInlines(safeStr(block.heading || 'فقہ الحدیث:'), {
-    font: fctx.NAF, fontSize: 15, bold: true, available: fctx.available, direction: 'rtl',
+    font: fctx.NAF, fontSize: 15, bold: true, available: fctx.available, direction: 'rtl', debugCollector: fctx.debugRuns,
   });
   const headingNode = {
     text: headingInlines.length
@@ -666,7 +732,7 @@ function renderFiqh(block, fctx) {
   const points = Array.isArray(block.points) ? block.points : [];
   const pointNodes = points.map((pt, i) => {
     const ptInlines = htmlToInlines(safeStr(pt), {
-      font: fctx.NUF, fontSize: 13, available: fctx.available, direction: 'rtl',
+      font: fctx.NUF, fontSize: 13, available: fctx.available, direction: 'rtl', debugCollector: fctx.debugRuns,
     });
     return {
       text: [
@@ -698,7 +764,7 @@ function renderFiqh(block, fctx) {
 function renderReference(block, fctx) {
   // Editor preview: 13px (≈10pt)
   const inlines = htmlToInlines(safeStr(block.content), {
-    font: fctx.NAF, fontSize: 10, available: fctx.available, direction: 'rtl',
+    font: fctx.NAF, fontSize: 10, available: fctx.available, direction: 'rtl', debugCollector: fctx.debugRuns,
   });
   if (!inlines.length) return [];
   const nodes = [
@@ -725,14 +791,14 @@ function renderVerse(block, fctx) {
   }
 
   const arabicInlines = htmlToInlines(safeStr(block.arabicText), {
-    font: arabicKey, fontSize: 14, available: fctx.available, direction: 'rtl',
+    font: arabicKey, fontSize: 14, available: fctx.available, direction: 'rtl', debugCollector: fctx.debugRuns,
   });
   if (arabicInlines.length) {
     nodes.push({ text: arabicInlines, alignment: 'center', lineHeight: 1.8, margin: [0, 10, 0, 4] });
   }
 
   const urduInlines = htmlToInlines(safeStr(block.urduText), {
-    font: fctx.NUF, fontSize: 14, available: fctx.available, direction: 'rtl',
+    font: fctx.NUF, fontSize: 14, available: fctx.available, direction: 'rtl', debugCollector: fctx.debugRuns,
   });
   if (urduInlines.length) {
     nodes.push({ text: urduInlines, alignment: 'center', lineHeight: 2.0, margin: [0, 0, 0, 10] });
@@ -784,7 +850,7 @@ function renderFreeText(block, fctx) {
   // Preview hardcodes font-size: 16px (= 12pt). Per-character size changes
   // are stored as inline <span style="font-size:..."> inside block.content.
   const inlines = htmlToInlines(safeStr(block.content), {
-    font: fontKey, fontSize: 12, available: fctx.available, direction: dir,
+    font: fontKey, fontSize: 12, available: fctx.available, direction: dir, debugCollector: fctx.debugRuns,
   });
 
   if (!inlines.length) return null;
@@ -939,6 +1005,11 @@ async function _buildPDFBuffer(fontResult, doc) {
     NUF: res('Noto Nastaliq Urdu', 'urdu'),   // default Urdu    (≈ Jameel Noori Nastaleeq)
     LF:  res('Roboto',             'latin'),   // default Latin
     AF:  res('Amiri',              'arabic'),  // Amiri (for GPOS-tested Amiri usage)
+    // Shared per-request collector — every htmlToInlines() call that's
+    // given `debugCollector: fctx.debugRuns` in its base object appends
+    // one audit record per inline text run here. Always collected (cheap
+    // for a single request); the controller decides whether to expose it.
+    debugRuns: [],
   };
 
   const blocks      = Array.isArray(doc.blocks) ? doc.blocks : [];
@@ -967,6 +1038,14 @@ async function _buildPDFBuffer(fontResult, doc) {
     header:  makeHeader(doc, fctx),
     footer:  makeFooter(doc, fctx),
     content: buildContent(blocks, fctx),
+    // PDF_VERSION visible in any viewer's Document Properties (Keywords/
+    // Subject) — verifiable without any server access at all.
+    info: {
+      title:    doc.name || 'Document',
+      subject:  `PDF_VERSION:${PDF_VERSION}`,
+      keywords: `PDF_VERSION:${PDF_VERSION}`,
+      creator:  'pdfmake',
+    },
   };
 
   return new Promise((resolve, reject) => {
@@ -995,7 +1074,7 @@ async function _buildPDFBuffer(fontResult, doc) {
         const buf = Buffer.concat(chunks);
         console.timeEnd('[PDF] generate');
         console.log('[PDF] done, bytes:', buf.length);
-        resolve(buf);
+        resolve({ buffer: buf, debugRuns: fctx.debugRuns });
       });
       pdfDoc.on('error', (err) => {
         if (settled) return;
@@ -1034,15 +1113,28 @@ async function generatePDF(doc) {
   console.log(`[PDF] fonts resolved: ${[...available].join(', ')}`);
 
   // Layer 2: build PDF; on GPOS null-anchor escape, strip harakat and retry.
+  // Always returns { buffer, debugRuns, version, violations } — debugRuns is
+  // collected regardless of debug mode (cheap for one request); callers
+  // decide whether to expose/persist it.
+  let result;
   try {
-    return await _buildPDFBuffer(fontData, doc);
+    result = await _buildPDFBuffer(fontData, doc);
   } catch (e) {
     if (e && typeof e.message === 'string' && e.message.includes('xCoordinate')) {
       console.warn('[PDF] GPOS null-anchor escaped patch — retrying with harakat stripped');
-      return await _buildPDFBuffer(fontData, stripDocHarakat(doc));
+      result = await _buildPDFBuffer(fontData, stripDocHarakat(doc));
+    } else {
+      throw e;
     }
-    throw e;
   }
+
+  const violations = (result.debugRuns || []).filter((r) => r.violatesAmiri);
+  if (violations.length && debugInlineEnabled()) {
+    console.error('[PDF][FONT][VIOLATION] Amiri requested but final node font is not Amiri:',
+      JSON.stringify(violations));
+  }
+
+  return { buffer: result.buffer, debugRuns: result.debugRuns, version: PDF_VERSION, violations };
 }
 
-module.exports = { generatePDF };
+module.exports = { generatePDF, PDF_VERSION };

@@ -234,19 +234,37 @@ function getAmiriPath() {
   return scanFonts()['Amiri']?.normal || null;
 }
 
+// Lowercase-keyed lookup built once, so callers can match "amiri", "AMIRI",
+// "Amiri Quran", etc. against the same EDITOR_FONT_TO_KEY table without
+// every caller needing to duplicate case-insensitive matching logic.
+const EDITOR_FONT_TO_KEY_LOWER = {};
+for (const [name, key] of Object.entries(EDITOR_FONT_TO_KEY)) {
+  EDITOR_FONT_TO_KEY_LOWER[name.toLowerCase()] = key;
+}
+
 // ── Font resolution ───────────────────────────────────────────────
 // Converts an editor font name to a registered pdfmake key.
-// Walks EDITOR_FONT_TO_KEY then FONT_FALLBACK chain.
-// Returns null if nothing is available (caller must handle last-resort).
+// Walks EDITOR_FONT_TO_KEY then FONT_FALLBACK chain. Falls back to a
+// case-insensitive match (e.g. "amiri", "AMIRI") if the exact-case lookup
+// misses, then to a case-insensitive match against the registry keys
+// themselves. Returns null if nothing is available (caller handles last-resort).
 function resolveEditorFont(editorFontName, available) {
   if (!editorFontName || !available) return null;
-  const startKey = EDITOR_FONT_TO_KEY[editorFontName] || editorFontName;
+  const lower = editorFontName.toLowerCase();
+  const startKey = EDITOR_FONT_TO_KEY[editorFontName]
+    || EDITOR_FONT_TO_KEY_LOWER[lower]
+    || editorFontName;
   let key = startKey;
   const seen = new Set();
   while (key && !seen.has(key)) {
     if (available.has(key)) return key;
     seen.add(key);
     key = FONT_FALLBACK[key];
+  }
+  // Last resort: case-insensitive match directly against registry keys
+  // (e.g. someone passes "notonaskharabic" with no space).
+  for (const k of available) {
+    if (k.toLowerCase() === lower) return k;
   }
   return null;
 }
