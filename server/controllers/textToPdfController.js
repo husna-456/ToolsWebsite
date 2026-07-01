@@ -70,18 +70,19 @@ async function textToPdfGenerate(req, res) {
 
 // ── POST /api/tools/text-to-pdf/format (AI quick-import) ──────
 // Returns blocks in the new block-based format.
-const MODEL                 = 'llama-3.1-8b-instant';
-const MAX_COMPLETION_TOKENS = 8000;  // headroom above SAFE_CHUNK_TOKENS — JSON output runs larger than input
-const SAFE_CHUNK_TOKENS     = 2500;  // per-chunk input budget (leaves room for prompt + output)
-const HARD_MAX_TOKENS       = 20000; // reject upfront rather than queue 8+ sequential chunks
-const PER_ATTEMPT_TIMEOUT   = 25000; // ms — per HTTP attempt to Groq
-const MAX_RETRIES           = 3;
-const RETRY_BASE_MS         = 600;
-const RETRY_MAX_MS          = 6000;
+const MODEL               = 'llama-3.1-8b-instant';
+const MAX_OUTPUT_TOKENS   = 8000;  // headroom above SAFE_CHUNK_TOKENS — JSON output runs larger than input
+const SAFE_CHUNK_TOKENS   = 2500;  // per-chunk input budget (leaves room for prompt + output)
+const HARD_MAX_TOKENS     = 20000; // reject upfront rather than queue 8+ sequential chunks
+const PER_ATTEMPT_TIMEOUT = 25000; // ms — per HTTP attempt to Groq
+const MAX_RETRIES         = 3;
+const RETRY_BASE_MS       = 600;
+const RETRY_MAX_MS        = 6000;
 
 const FORMAT_SYSTEM =
-  'You are an Islamic book typesetter. Return ONLY valid JSON — no markdown, no backticks, no extra text, no explanation before or after. ' +
-  'The response MUST be a single JSON object of the exact shape {"name":"title","blocks":[...]} and nothing else. Plain text only in all string fields.';
+  'You are an Islamic book typesetter. Return ONLY one JSON object of the exact shape {"name":"title","blocks":[...]} and nothing else. ' +
+  'Rules: no markdown, no code fences, no explanations, no extra text before or after the JSON. ' +
+  'Preserve all Arabic and Urdu text exactly as given — do not translate, do not summarize, do not paraphrase. Plain text only in every string field.';
 
 function buildFormatPrompt(text) {
   return `Analyze the text and return ONLY this JSON (no markdown, no explanation):
@@ -181,42 +182,75 @@ function extractCompleteBlocksJSON(raw) {
 }
 
 // Never calls JSON.parse() blindly on model output. Tries strict parsing,
-// then salvages complete blocks from truncated JSON, then — rather than
-// failing the chunk — falls back to the chunk's own source text so no
-// content is ever lost, only its AI-generated structure.
-function parseAIResponse(raw, chunkText, ctx) {
+// then salvages complete blocks from truncated JSON. Returns null (instead
+// of throwing) when neither works, so the caller can escalate to an AI
+// repair pass before ever giving up on structure.
+function parseLocallyOrNull(raw, ctx) {
   const candidate = extractJSON(raw);
 
-  if (looksLikeJSON(candidate)) {
-    const strict = tryParseStrict(candidate);
-    if (strict.ok && Array.isArray(strict.data.blocks) && strict.data.blocks.length) {
-      return { blocks: strict.data.blocks, name: strict.data.name, mode: 'json' };
-    }
-
-    logEvent('warn', 'json_parse_failed', {
-      ...ctx,
-      parserError: strict.ok ? 'blocks array missing or empty' : strict.error.message,
-    });
-
-    const salvaged = extractCompleteBlocksJSON(raw) || extractCompleteBlocksJSON(candidate);
-    if (salvaged?.blocks?.length) {
-      logEvent('warn', 'json_salvaged_truncated', {
-        ...ctx,
-        salvagedBlockCount: salvaged.blocks.length,
-        rawLength:          raw.length,
-      });
-      return { blocks: salvaged.blocks, name: salvaged.name, mode: 'salvaged' };
-    }
-  } else {
+  if (!looksLikeJSON(candidate)) {
     logEvent('warn', 'non_json_response', { ...ctx, rawLength: raw.length });
+    return null;
   }
 
-  logEvent('warn', 'plain_text_fallback', { ...ctx });
-  return {
-    blocks: [{ type: 'free_text', content: stripMd(chunkText) }],
-    name:   undefined,
-    mode:   'plain_text_fallback',
-  };
+  const strict = tryParseStrict(candidate);
+  if (strict.ok && Array.isArray(strict.data.blocks) && strict.data.blocks.length) {
+    return { blocks: strict.data.blocks, name: strict.data.name, mode: 'json' };
+  }
+
+  logEvent('warn', 'json_parse_failed', {
+    ...ctx,
+    parserError: strict.ok ? 'blocks array missing or empty' : strict.error.message,
+  });
+
+  const salvaged = extractCompleteBlocksJSON(raw) || extractCompleteBlocksJSON(candidate);
+  if (salvaged?.blocks?.length) {
+    logEvent('warn', 'json_salvaged_truncated', {
+      ...ctx,
+      salvagedBlockCount: salvaged.blocks.length,
+      rawLength:          raw.length,
+    });
+    return { blocks: salvaged.blocks, name: salvaged.name, mode: 'salvaged' };
+  }
+
+  return null;
+}
+
+// Tier 3: ask the model, once, to convert its own broken output into valid
+// JSON. Reuses the retry wrapper so transient failures on the repair call
+// itself are handled the same way, but any failure here is swallowed —
+// the caller always has the plain-text fallback as a last resort.
+async function repairJSONViaAI(groq, brokenRaw, ctx) {
+  try {
+    const params = {
+      model:       MODEL,
+      temperature: 0,
+      max_tokens:  MAX_OUTPUT_TOKENS,
+      messages: [
+        {
+          role:    'system',
+          content: 'You repair malformed JSON. Return ONLY one valid JSON object of the exact shape ' +
+                    '{"name":"title","blocks":[...]} and nothing else — no markdown, no code fences, no explanation.',
+        },
+        {
+          role:    'user',
+          content: 'Convert this output into valid JSON matching the schema only. Preserve all Arabic and Urdu ' +
+                    `text exactly — do not translate or summarize:\n\n${brokenRaw}`,
+        },
+      ],
+    };
+
+    const { response } = await callGroqWithRetry(groq, params, { ...ctx, repair: true });
+    const raw = extractContent(response);
+    logEvent('info', 'repair_response_received', { ...ctx, rawLength: raw.length });
+
+    if (!raw) return null;
+    const local = parseLocallyOrNull(raw, { ...ctx, repair: true });
+    return local ? { ...local, mode: 'ai_repaired' } : null;
+  } catch (err) {
+    logEvent('warn', 'ai_repair_failed', { ...ctx, error: err?.message || String(err) });
+    return null;
+  }
 }
 
 function stripMd(str) {
@@ -313,14 +347,24 @@ function splitTextIntoChunks(text, maxTokens) {
   return chunks.length ? chunks : [text];
 }
 
+// Config-level failures — every chunk would fail identically, so the request
+// aborts immediately instead of degrading section-by-section (see the
+// per-chunk loop in textToPdfFormat).
+const FATAL_ERROR_CODES = new Set(['AUTH_ERROR', 'FORBIDDEN', 'MODEL_NOT_FOUND']);
+
 // ── Error classification ────────────────────────────────────────
 // Maps Groq SDK errors (typed classes with .status) to an HTTP status, a
-// stable machine-readable code, and a safe, specific, user-facing message.
-// Parsing failures never reach here — parseAIResponse() always degrades
-// gracefully instead of throwing (see below).
+// stable machine-readable code, and a user-facing message. The real provider
+// message is always appended when we have one — an unmapped status (or a
+// genuine internal exception) never gets silently reduced to "unexpected
+// error"; that string is reserved for the one case where there truly is no
+// message to show. Parsing failures never reach here — formatChunk() always
+// degrades gracefully instead of throwing (see repairJSONViaAI / plain-text
+// fallback below).
 function classifyError(err) {
   const Groq = require('groq-sdk');
   const status = err?.status;
+  const providerMessage = (err?.error?.message || err?.message || '').slice(0, 300) || null;
   const isTimeout = err instanceof Groq.APIConnectionTimeoutError || err?.name === 'APIConnectionTimeoutError';
   const isConnError = !isTimeout && (
     err instanceof Groq.APIConnectionError ||
@@ -328,32 +372,44 @@ function classifyError(err) {
   );
 
   if (isTimeout) {
-    return { code: 'TIMEOUT', httpStatus: 504, retryable: true, userMessage: 'The AI service took too long to respond. Please try again.' };
+    return { code: 'TIMEOUT', httpStatus: 504, retryable: true, userMessage: 'Request timed out: the AI service took too long to respond. Please try again.' };
   }
   if (isConnError) {
-    return { code: 'NETWORK_ERROR', httpStatus: 503, retryable: true, userMessage: 'Could not reach the AI service. Please check your connection and try again.' };
+    return { code: 'NETWORK_ERROR', httpStatus: 503, retryable: true, userMessage: 'Network connection failed: could not reach the AI service. Please check your connection and try again.' };
   }
   if (status === 401) {
-    return { code: 'AUTH_ERROR', httpStatus: 502, retryable: false, userMessage: 'The AI service rejected our API key. Please contact support.' };
+    return { code: 'AUTH_ERROR', httpStatus: 502, retryable: false, userMessage: `Invalid API key: the AI service rejected our credentials${providerMessage ? ` (${providerMessage})` : ''}. Please contact support.` };
   }
   if (status === 403) {
-    return { code: 'FORBIDDEN', httpStatus: 502, retryable: false, userMessage: 'Access to the AI service was denied. Please contact support.' };
+    return { code: 'FORBIDDEN', httpStatus: 502, retryable: false, userMessage: `Access denied: the AI service refused this request${providerMessage ? ` (${providerMessage})` : ''}. Please contact support.` };
   }
-  if (status === 400) {
-    const bodyMsg = err?.error?.message || err?.message || '';
-    if (/too large|context length|maximum context|reduce.*(message|token)/i.test(bodyMsg)) {
-      return { code: 'INPUT_TOO_LARGE', httpStatus: 413, retryable: false, userMessage: 'This section of text is too large for the AI to process. Please shorten it and try again.' };
+  if (status === 404) {
+    return { code: 'MODEL_NOT_FOUND', httpStatus: 502, retryable: false, userMessage: `Wrong model name: the AI service could not find the requested model${providerMessage ? ` (${providerMessage})` : ''}. Please contact support.` };
+  }
+  if (status === 400 || status === 422) {
+    if (/too large|context length|maximum context|reduce.*(message|token)/i.test(providerMessage || '')) {
+      return { code: 'INPUT_TOO_LARGE', httpStatus: 413, retryable: false, userMessage: 'Input too large: this section of text is too large for the AI to process. Please shorten it and try again.' };
     }
-    return { code: 'INVALID_REQUEST', httpStatus: 400, retryable: false, userMessage: 'The AI service rejected the request as invalid. Please try again with different text.' };
+    return { code: 'INVALID_REQUEST', httpStatus: 400, retryable: false, userMessage: `The AI service rejected the request as invalid${providerMessage ? `: ${providerMessage}` : '.'}` };
   }
   if (status === 429) {
-    return { code: 'RATE_LIMIT', httpStatus: 429, retryable: true, userMessage: 'The AI service is rate-limited right now. Please wait a few seconds and try again.' };
+    return { code: 'RATE_LIMIT', httpStatus: 429, retryable: true, userMessage: 'Rate limit exceeded: the AI service is receiving too many requests. Please wait a few seconds and try again.' };
   }
   if (status >= 500) {
-    return { code: 'SERVICE_UNAVAILABLE', httpStatus: 503, retryable: true, userMessage: 'The AI service is temporarily unavailable. Please try again shortly.' };
+    return { code: 'SERVICE_UNAVAILABLE', httpStatus: 503, retryable: true, userMessage: `The AI service is temporarily unavailable${providerMessage ? `: ${providerMessage}` : '.'} Please try again shortly.` };
+  }
+  if (status) {
+    // An error status we don't have a specific branch for — still surface
+    // the real message rather than falling back to a generic one.
+    return { code: 'UPSTREAM_ERROR', httpStatus: status, retryable: false, userMessage: `AI service error (${status})${providerMessage ? `: ${providerMessage}` : '.'}` };
   }
 
-  return { code: 'INTERNAL_ERROR', httpStatus: 500, retryable: false, userMessage: 'Formatting failed due to an unexpected error. Please try again.' };
+  return {
+    code:        'INTERNAL_ERROR',
+    httpStatus:  500,
+    retryable:   false,
+    userMessage: providerMessage ? `Unexpected server error: ${providerMessage}` : 'Formatting failed due to an unexpected error. Please try again.',
+  };
 }
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -404,13 +460,14 @@ async function callGroqWithRetry(groq, params, ctx) {
 
 async function formatChunk(groq, chunkText, ctx) {
   const params = {
-    model:                 MODEL,
-    temperature:           0.2,
-    max_completion_tokens: MAX_COMPLETION_TOKENS,
-    // Forces syntactically valid JSON out of the model. Doesn't guarantee our
-    // exact {name, blocks} shape or protect against max-token truncation —
-    // parseAIResponse() below still has to verify/salvage/fall back.
-    response_format:       { type: 'json_object' },
+    model:       MODEL,
+    temperature: 0.2,
+    max_tokens:  MAX_OUTPUT_TOKENS,
+    // No response_format: Groq's json_object/json_schema mode is not reliably
+    // supported across all models (llama-3.1-8b-instant included) and a
+    // rejected/unsupported param here previously surfaced as an opaque
+    // "unexpected error". Strict JSON is enforced via the prompt instead,
+    // backed by the parse -> salvage -> AI-repair -> plain-text chain below.
     messages: [
       { role: 'system', content: FORMAT_SYSTEM },
       { role: 'user',   content: buildFormatPrompt(chunkText) },
@@ -424,14 +481,35 @@ async function formatChunk(groq, chunkText, ctx) {
   console.dir(response, { depth: null });
 
   const raw = extractContent(response);
-  if (!raw) logEvent('warn', 'empty_ai_response', ctx);
+  logEvent('info', 'content_extracted', { ...ctx, extractedContent: raw, rawLength: raw.length });
+  if (!raw) logEvent('warn', 'empty_ai_response', { ...ctx, message: 'AI returned empty or invalid response.' });
 
-  const { blocks, name, mode } = parseAIResponse(raw, chunkText, ctx);
-  if (mode !== 'json') {
-    logEvent('warn', 'chunk_used_fallback_parsing', { ...ctx, mode, blockCount: blocks.length });
+  // Tier 1+2: parse strictly, or salvage complete blocks from truncated JSON.
+  let result = raw ? parseLocallyOrNull(raw, ctx) : null;
+  let repairAttempted = false;
+
+  // Tier 3: one AI-assisted repair pass on whatever broken text we got back.
+  if (!result && raw) {
+    repairAttempted = true;
+    logEvent('warn', 'attempting_ai_repair', ctx);
+    result = await repairJSONViaAI(groq, raw, ctx);
   }
 
-  return { name, blocks, retryCount, timedOut, usage: response.usage, parseMode: mode };
+  // Tier 4: never fail the chunk — keep its own source text as a paragraph block.
+  if (!result) {
+    logEvent('warn', 'plain_text_fallback', { ...ctx, repairAttempted });
+    result = {
+      blocks: [{ type: 'free_text', content: stripMd(chunkText) }],
+      name:   undefined,
+      mode:   'plain_text_fallback',
+    };
+  }
+
+  if (result.mode !== 'json') {
+    logEvent('warn', 'chunk_used_fallback_parsing', { ...ctx, mode: result.mode, blockCount: result.blocks.length });
+  }
+
+  return { name: result.name, blocks: result.blocks, retryCount, timedOut, usage: response.usage, parseMode: result.mode };
 }
 
 async function textToPdfFormat(req, res) {
@@ -514,13 +592,28 @@ async function textToPdfFormat(req, res) {
           providerMessage: chunkErr?.error?.message || chunkErr?.message || null,
           stack:           chunkErr?.stack || null,
         });
-        metrics.recordRequest({ success: false, durationMs, retries: retryCount, timedOut: timedOutAny, chunkCount, code: classified.code });
 
-        const message = chunkCount > 1
-          ? `Formatting failed while processing section ${i + 1} of ${chunkCount}: ${classified.userMessage}`
-          : classified.userMessage;
+        if (FATAL_ERROR_CODES.has(classified.code)) {
+          // Config-level failure (bad key / no access / wrong model): every
+          // remaining chunk would fail identically, so stop and surface the
+          // real cause immediately instead of retrying it five more times.
+          metrics.recordRequest({ success: false, durationMs, retries: retryCount, timedOut: timedOutAny, chunkCount, code: classified.code });
+          const message = chunkCount > 1
+            ? `Formatting failed while processing section ${i + 1} of ${chunkCount}: ${classified.userMessage}`
+            : classified.userMessage;
+          return res.status(classified.httpStatus).json({ error: message, code: classified.code, requestId });
+        }
 
-        return res.status(classified.httpStatus).json({ error: message, code: classified.code, requestId });
+        // Everything else (exhausted retries on 429/503/timeout/network, or an
+        // odd per-chunk 400) degrades this one section to plain text instead
+        // of failing the whole document — the remaining chunks still run.
+        parseFallbacks += 1;
+        allBlocks.push({ type: 'free_text', content: stripMd(chunks[i]), id: `${i + 1}-1` });
+        logEvent('warn', 'chunk_degraded_to_plain_text', {
+          ...chunkCtx,
+          code:            classified.code,
+          providerMessage: chunkErr?.error?.message || chunkErr?.message || null,
+        });
       }
     }
 
