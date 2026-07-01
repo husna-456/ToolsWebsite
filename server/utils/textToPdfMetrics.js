@@ -11,14 +11,16 @@ const state = {
   timeouts:        0,
   chunkedRequests: 0,
   chunksProcessed: 0,
+  parseFallbacks:  0, // chunks where the model's JSON didn't parse cleanly (salvaged or plain-text)
   totalDurationMs: 0,
   failuresByCode:  {},
 };
 
-function recordRequest({ success, durationMs, retries = 0, timedOut = false, chunkCount = 1, code = null }) {
+function recordRequest({ success, durationMs, retries = 0, timedOut = false, chunkCount = 1, parseFallbacks = 0, code = null }) {
   state.requests += 1;
   state.totalDurationMs += durationMs;
   state.retries += retries;
+  state.parseFallbacks += parseFallbacks;
   if (timedOut) state.timeouts += 1;
   if (chunkCount > 1) state.chunkedRequests += 1;
   state.chunksProcessed += chunkCount;
@@ -44,6 +46,7 @@ function getSnapshot() {
     timeouts:            state.timeouts,
     chunkedRequests:     state.chunkedRequests,
     chunksProcessed:     state.chunksProcessed,
+    parseFallbacks:      state.parseFallbacks,
     failuresByCode:      { ...state.failuresByCode },
   };
 }

@@ -70,17 +70,18 @@ async function textToPdfGenerate(req, res) {
 
 // ── POST /api/tools/text-to-pdf/format (AI quick-import) ──────
 // Returns blocks in the new block-based format.
-const MODEL               = 'llama-3.1-8b-instant';
-const MAX_OUTPUT_TOKENS   = 4096;
-const SAFE_CHUNK_TOKENS   = 2500;  // per-chunk input budget (leaves room for prompt + output)
-const HARD_MAX_TOKENS     = 20000; // reject upfront rather than queue 8+ sequential chunks
-const PER_ATTEMPT_TIMEOUT = 25000; // ms — per HTTP attempt to Groq
-const MAX_RETRIES         = 3;
-const RETRY_BASE_MS       = 600;
-const RETRY_MAX_MS        = 6000;
+const MODEL                 = 'llama-3.1-8b-instant';
+const MAX_COMPLETION_TOKENS = 8000;  // headroom above SAFE_CHUNK_TOKENS — JSON output runs larger than input
+const SAFE_CHUNK_TOKENS     = 2500;  // per-chunk input budget (leaves room for prompt + output)
+const HARD_MAX_TOKENS       = 20000; // reject upfront rather than queue 8+ sequential chunks
+const PER_ATTEMPT_TIMEOUT   = 25000; // ms — per HTTP attempt to Groq
+const MAX_RETRIES           = 3;
+const RETRY_BASE_MS         = 600;
+const RETRY_MAX_MS          = 6000;
 
 const FORMAT_SYSTEM =
-  'You are an Islamic book typesetter. Return ONLY valid JSON — no markdown, no backticks, no extra text. Plain text only in all fields.';
+  'You are an Islamic book typesetter. Return ONLY valid JSON — no markdown, no backticks, no extra text, no explanation before or after. ' +
+  'The response MUST be a single JSON object of the exact shape {"name":"title","blocks":[...]} and nothing else. Plain text only in all string fields.';
 
 function buildFormatPrompt(text) {
   return `Analyze the text and return ONLY this JSON (no markdown, no explanation):
@@ -107,6 +108,115 @@ function extractJSON(raw) {
   const end   = raw.lastIndexOf('}');
   if (start !== -1 && end > start) return raw.slice(start, end + 1).trim();
   return raw.trim();
+}
+
+// Pulls the model's text out of whatever shape the SDK/provider handed back.
+// Groq's SDK always returns response.choices[0].message.content, but this
+// stays defensive against provider/SDK changes rather than assuming one shape.
+function extractContent(response) {
+  const candidates = [
+    response?.choices?.[0]?.message?.content,
+    response?.data?.choices?.[0]?.message?.content,
+    response?.choices?.[0]?.text,
+    response?.data?.choices?.[0]?.text,
+    response?.output,
+    response?.data?.output,
+    response?.output_text,
+    response?.data?.output_text,
+  ];
+  const found = candidates.find((c) => typeof c === 'string' && c.trim().length > 0);
+  return (found || '').trim();
+}
+
+function looksLikeJSON(str) {
+  const s = str.trim();
+  return s.startsWith('{') || s.startsWith('[');
+}
+
+function tryParseStrict(str) {
+  try { return { ok: true, data: JSON.parse(str) }; }
+  catch (err) { return { ok: false, error: err }; }
+}
+
+// Salvages a truncated `{"name":...,"blocks":[{...},{...},<cut off>` payload
+// (the common failure mode when generation hits the token limit mid-array)
+// by keeping only block objects that are structurally complete and discarding
+// the partial trailing one, rather than losing the whole response.
+function extractCompleteBlocksJSON(raw) {
+  const blocksKeyIdx = raw.indexOf('"blocks"');
+  if (blocksKeyIdx === -1) return null;
+  const arrStart = raw.indexOf('[', blocksKeyIdx);
+  if (arrStart === -1) return null;
+
+  let depth = 1; // already inside the blocks array
+  let inStr = false;
+  let esc = false;
+  let lastCompleteEnd = -1;
+
+  for (let i = arrStart + 1; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{' || ch === '[') depth++;
+    else if (ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 1 && ch === '}') lastCompleteEnd = i + 1; // closed a top-level block element
+      if (depth === 0) break; // the blocks array itself closed cleanly
+    }
+  }
+
+  if (lastCompleteEnd === -1) return null;
+
+  const nameMatch = raw.match(/"name"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  const blocksJson = raw.slice(arrStart, lastCompleteEnd);
+  const rebuilt = `{"name":${JSON.stringify(nameMatch ? nameMatch[1] : '')},"blocks":${blocksJson}]}`;
+
+  const result = tryParseStrict(rebuilt);
+  return result.ok ? result.data : null;
+}
+
+// Never calls JSON.parse() blindly on model output. Tries strict parsing,
+// then salvages complete blocks from truncated JSON, then — rather than
+// failing the chunk — falls back to the chunk's own source text so no
+// content is ever lost, only its AI-generated structure.
+function parseAIResponse(raw, chunkText, ctx) {
+  const candidate = extractJSON(raw);
+
+  if (looksLikeJSON(candidate)) {
+    const strict = tryParseStrict(candidate);
+    if (strict.ok && Array.isArray(strict.data.blocks) && strict.data.blocks.length) {
+      return { blocks: strict.data.blocks, name: strict.data.name, mode: 'json' };
+    }
+
+    logEvent('warn', 'json_parse_failed', {
+      ...ctx,
+      parserError: strict.ok ? 'blocks array missing or empty' : strict.error.message,
+    });
+
+    const salvaged = extractCompleteBlocksJSON(raw) || extractCompleteBlocksJSON(candidate);
+    if (salvaged?.blocks?.length) {
+      logEvent('warn', 'json_salvaged_truncated', {
+        ...ctx,
+        salvagedBlockCount: salvaged.blocks.length,
+        rawLength:          raw.length,
+      });
+      return { blocks: salvaged.blocks, name: salvaged.name, mode: 'salvaged' };
+    }
+  } else {
+    logEvent('warn', 'non_json_response', { ...ctx, rawLength: raw.length });
+  }
+
+  logEvent('warn', 'plain_text_fallback', { ...ctx });
+  return {
+    blocks: [{ type: 'free_text', content: stripMd(chunkText) }],
+    name:   undefined,
+    mode:   'plain_text_fallback',
+  };
 }
 
 function stripMd(str) {
@@ -204,19 +314,11 @@ function splitTextIntoChunks(text, maxTokens) {
 }
 
 // ── Error classification ────────────────────────────────────────
-// Maps both Groq SDK errors (typed classes with .status) and our own
-// synthetic errors (empty/unparsable response) to an HTTP status, a stable
-// machine-readable code, and a safe, specific, user-facing message.
-const SYNTHETIC_ERRORS = {
-  EMPTY_RESPONSE: { httpStatus: 502, retryable: false, userMessage: 'The AI returned an empty response. Please try again.' },
-  PARSE_ERROR:    { httpStatus: 502, retryable: false, userMessage: 'The AI response could not be understood. Please try again.' },
-};
-
+// Maps Groq SDK errors (typed classes with .status) to an HTTP status, a
+// stable machine-readable code, and a safe, specific, user-facing message.
+// Parsing failures never reach here — parseAIResponse() always degrades
+// gracefully instead of throwing (see below).
 function classifyError(err) {
-  if (err?.code && SYNTHETIC_ERRORS[err.code]) {
-    return { code: err.code, ...SYNTHETIC_ERRORS[err.code] };
-  }
-
   const Groq = require('groq-sdk');
   const status = err?.status;
   const isTimeout = err instanceof Groq.APIConnectionTimeoutError || err?.name === 'APIConnectionTimeoutError';
@@ -302,9 +404,13 @@ async function callGroqWithRetry(groq, params, ctx) {
 
 async function formatChunk(groq, chunkText, ctx) {
   const params = {
-    model:       MODEL,
-    temperature: 0.2,
-    max_tokens:  MAX_OUTPUT_TOKENS,
+    model:                 MODEL,
+    temperature:           0.2,
+    max_completion_tokens: MAX_COMPLETION_TOKENS,
+    // Forces syntactically valid JSON out of the model. Doesn't guarantee our
+    // exact {name, blocks} shape or protect against max-token truncation —
+    // parseAIResponse() below still has to verify/salvage/fall back.
+    response_format:       { type: 'json_object' },
     messages: [
       { role: 'system', content: FORMAT_SYSTEM },
       { role: 'user',   content: buildFormatPrompt(chunkText) },
@@ -313,29 +419,19 @@ async function formatChunk(groq, chunkText, ctx) {
 
   const { response, retryCount, timedOut } = await callGroqWithRetry(groq, params, ctx);
 
-  const raw = response.choices[0]?.message?.content?.trim();
-  if (!raw) {
-    const err = new Error('AI returned an empty response.');
-    err.code = 'EMPTY_RESPONSE';
-    throw err;
+  // Log the complete raw response BEFORE any parsing is attempted.
+  console.log('RAW AI RESPONSE', { requestId: ctx.requestId, chunkIndex: ctx.chunkIndex, chunkCount: ctx.chunkCount });
+  console.dir(response, { depth: null });
+
+  const raw = extractContent(response);
+  if (!raw) logEvent('warn', 'empty_ai_response', ctx);
+
+  const { blocks, name, mode } = parseAIResponse(raw, chunkText, ctx);
+  if (mode !== 'json') {
+    logEvent('warn', 'chunk_used_fallback_parsing', { ...ctx, mode, blockCount: blocks.length });
   }
 
-  let parsed;
-  try {
-    parsed = JSON.parse(extractJSON(raw));
-  } catch {
-    const err = new Error('AI response could not be parsed as JSON.');
-    err.code = 'PARSE_ERROR';
-    throw err;
-  }
-
-  if (!Array.isArray(parsed.blocks)) {
-    const err = new Error('AI response was missing a valid blocks array.');
-    err.code = 'PARSE_ERROR';
-    throw err;
-  }
-
-  return { name: parsed.name, blocks: parsed.blocks, retryCount, timedOut, usage: response.usage };
+  return { name, blocks, retryCount, timedOut, usage: response.usage, parseMode: mode };
 }
 
 async function textToPdfFormat(req, res) {
@@ -384,6 +480,7 @@ async function textToPdfFormat(req, res) {
       logEvent('info', 'chunking_input', { requestId, chunkCount, tokenEstimate });
 
     let docName = null;
+    let parseFallbacks = 0;
     const allBlocks = [];
 
     for (let i = 0; i < chunks.length; i++) {
@@ -392,6 +489,7 @@ async function textToPdfFormat(req, res) {
         const result = await formatChunk(groq, chunks[i], chunkCtx);
         retryCount  += result.retryCount;
         timedOutAny  = timedOutAny || result.timedOut;
+        if (result.parseMode !== 'json') parseFallbacks += 1;
         if (!docName && result.name) docName = result.name;
 
         const blocks = (result.blocks || []).map((b, idx) => ({ ...b, id: `${i + 1}-${idx + 1}` }));
@@ -401,6 +499,7 @@ async function textToPdfFormat(req, res) {
           ...chunkCtx,
           blockCount:       blocks.length,
           retryCount:       result.retryCount,
+          parseMode:        result.parseMode,
           promptTokens:      result.usage?.prompt_tokens ?? null,
           completionTokens:  result.usage?.completion_tokens ?? null,
         });
@@ -444,8 +543,8 @@ async function textToPdfFormat(req, res) {
     });
 
     const durationMs = Date.now() - startedAt;
-    logEvent('info', 'request_succeeded', { requestId, durationMs, retryCount, chunkCount, blockCount: blocks.length });
-    metrics.recordRequest({ success: true, durationMs, retries: retryCount, timedOut: timedOutAny, chunkCount });
+    logEvent('info', 'request_succeeded', { requestId, durationMs, retryCount, chunkCount, parseFallbacks, blockCount: blocks.length });
+    metrics.recordRequest({ success: true, durationMs, retries: retryCount, timedOut: timedOutAny, chunkCount, parseFallbacks });
 
     return res.json({ success: true, name: docName || 'Untitled Document', blocks, requestId });
   } catch (err) {
